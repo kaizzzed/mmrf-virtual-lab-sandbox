@@ -128,7 +128,9 @@ try {
   await open('GeneExpression');
   await page.getByRole('button',{name:'Submit',exact:true}).first().click();
   await expect(page.locator('body')).toContainText(new RegExp(`${female.length}\\s*Samples`),{timeout:60000});
-  await expect(page.locator('svg text').filter({hasText:/^KRAS$/}).first()).toBeVisible();
+  await expect(page.locator('body')).toContainText(/1000\s*Genes/);
+  // With 1,000 rows ProteinPaint hides row labels, so check the row exists.
+  await expect(page.locator('[data-testid="sjpp-matrix-label-left"]').filter({hasText:/^KRAS$/}).first()).toBeAttached();
   await capture('expression-clustering');
   await open('ProteinPaint');
   await page.getByRole('searchbox',{name:'Gene symbol, position, or alias'}).fill('c-Myc');

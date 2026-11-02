@@ -184,6 +184,12 @@ class SyntheticIntegrity(unittest.TestCase):
             with closing(sqlite3.connect(Path(first) / 'genes.sqlite')) as db:
                 for alias in ('c-Myc', 'ENSG00000136997', 'ENST00000621592', 'NM_002467'):
                     self.assertEqual('MYC', db.execute('SELECT name FROM genealias WHERE alias=?', (alias,)).fetchone()[0])
+                # ProteinPaint rejects expression genes absent from both tables.
+                known = {name for (name,) in db.execute('SELECT name FROM genes UNION SELECT alias FROM genealias')}
+                for symbol, gid, _ in generator.load_gene_panel():
+                    self.assertIn(symbol, known)
+                    self.assertIn(gid, known)
+                self.assertEqual('XIST', db.execute("SELECT name FROM genealias WHERE alias='ENSG00000229807'").fetchone()[0])
             header = next(line for line in (Path(first) / 'variants.vcf').read_text().splitlines() if line.startswith('#CHROM'))
             self.assertEqual(samples, set(header.split('\t')[9:]))
             reference = {}

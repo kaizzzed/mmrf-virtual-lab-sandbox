@@ -688,6 +688,12 @@ CREATE TABLE codingGenes (name TEXT COLLATE NOCASE);
         db.execute("INSERT INTO gene2coord VALUES (?,?,?,?)", (symbol, chrom, start, stop))
         db.execute("INSERT INTO gene2canonicalisoform VALUES (?,?)", (symbol, gid))
         db.execute("INSERT INTO codingGenes VALUES (?)", (symbol,))
+    # Expression-only genes have no model; aliases make ProteinPaint accept
+    # them in gene-expression requests and find them by exact symbol or ID.
+    modelled = {symbol for symbol, *_ in EXPRESSION_MODELS}
+    db.executemany("INSERT INTO genealias VALUES (?,?)",
+                   [(alias, symbol) for symbol, gid, _ in load_gene_panel() if symbol not in modelled
+                    for alias in (symbol, gid)])
     db.commit()
     db.close()
 
