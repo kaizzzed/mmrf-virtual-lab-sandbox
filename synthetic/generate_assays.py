@@ -1,4 +1,5 @@
 """Build assay matrices from the shared synthetic scenario values."""
+import gzip
 import json
 from pathlib import Path
 import random
@@ -10,23 +11,33 @@ from embedding import cell_coordinates
 
 root = Path('/home/root/pp/tp')
 cases = json.loads((root / 'cases.json').read_text())
-expression = json.loads((root / 'expression.json').read_text())
-counts = json.loads((root / 'counts.json').read_text())
-genes = list(expression)
 samples = [c['sample_id'] for c in cases]
+with gzip.open(root / 'counts.tsv.gz', 'rt') as handle:
+    assert handle.readline().rstrip('\n').split('\t')[3:] == samples
+    rows = [line.rstrip('\n').split('\t') for line in handle]
+panel = [row[0] for row in rows]
+counts = np.array([row[3:] for row in rows], dtype=np.float64)
+lengths = np.array([row[2] for row in rows], dtype=np.float64)
+# Bulk TPM follows the usual definition: length-normalized, scaled per sample.
+rate = counts / lengths[:, None]
+expression = rate / rate.sum(axis=0) * 1e6
+# Single-cell fixtures stay on the 36 genes with gene models.
+with sqlite3.connect(root / 'genes.sqlite') as db:
+    modelled = {name for (name,) in db.execute('select name from genes')}
+genes = [gene for gene in panel if gene in modelled]
 rng = random.Random(1783)
 
 
-def matrix(path, names, values):
+def matrix(path, names, values, items=None):
     with h5py.File(path, 'w') as handle:
         text = h5py.string_dtype('utf-8')
-        handle.create_dataset('item', data=genes, dtype=text)
+        handle.create_dataset('item', data=items or genes, dtype=text)
         handle.create_dataset('samples', data=names, dtype=text)
         handle.create_dataset('matrix', data=np.array(values, dtype=np.float32))
 
 
-matrix(root / 'expression.h5', samples, [[expression[g][s] for s in samples] for g in genes])
-matrix(root / 'counts.h5', samples, [[counts[g][s] for s in samples] for g in genes])
+matrix(root / 'expression.h5', samples, expression, panel)
+matrix(root / 'counts.h5', samples, counts, panel)
 (root / 'singlecell/umap').mkdir(parents=True, exist_ok=True)
 (root / 'singlecell/expression').mkdir(parents=True, exist_ok=True)
 (root / 'singlecell/meta').mkdir(parents=True, exist_ok=True)

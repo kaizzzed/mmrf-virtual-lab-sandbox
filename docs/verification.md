@@ -47,8 +47,9 @@ views. Browser tests use an isolated headless Chromium profile and save PNGs in
 
 The local scenario suite additionally checks all six gene tracks, reference
 sequence rendering and feature bands at multiple window widths, both designed
-survival comparisons, and native KRAS differential expression with at least ten
-significant genes.
+survival comparisons, native KRAS differential expression with at least ten
+significant genes, and t(4;14) differential expression with NSD2 at the
+smallest p-value.
 
 For a deployed sandbox, replace the example hostname:
 

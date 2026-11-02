@@ -1,11 +1,13 @@
 """Exercise real sandbox APIs and cross-service synthetic ID consistency."""
 import argparse
+import gzip
 import json
 from pathlib import Path
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import sqlite3
 from sandbox_connection import connection
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -216,9 +218,26 @@ de = {'genome': 'hg38', 'dslabel': 'MMRF', 'samplelst': {'groups': groups}, 'met
       'volcanoRender': {'pixelWidth': 600, 'pixelHeight': 400, 'significanceThresholds': {'pValueCutoff': 1.3, 'pValueType': 'adjusted', 'foldChangeCutoff': 1}}}
 assert call('/protein-paint/termdb/DE', {**de, 'preAnalysis': True})['data'] == {'female': len(female), 'male': len(cases) - len(female)}
 result = call('/protein-paint/termdb/DE', de)
-expression = json.loads((root / 'generated/expression.json').read_text())
-assert result['data']['totalRows'] == len(expression) and result['data']['volcanoPng']
+with gzip.open(root / 'generated/counts.tsv.gz', 'rt') as handle:
+    panel = sum(1 for _ in handle) - 1
+with sqlite3.connect(root / 'generated/genes.sqlite') as db:
+    modelled = db.execute('select count(*) from genes').fetchone()[0]
+# The count filter removes barely expressed genes from the 10,000-gene panel.
+assert panel / 2 < result['data']['totalRows'] <= panel and result['data']['volcanoPng']
 pseudobulk = call('/protein-paint/termdb/DE', {**de, 'pseudobulk': {'assay': 'geneExpression', 'memberId': 'Cell Type', 'category': 'Plasma'}})
-assert pseudobulk['data']['totalRows'] == len(expression) and pseudobulk['data']['volcanoPng']
+assert pseudobulk['data']['totalRows'] == modelled and pseudobulk['data']['volcanoPng']
 print('PASS: actual bulk and single-cell pseudobulk differential expression and volcano rendering')
+
+# Fold change is log2(group 2 / group 1); Absent first makes NSD2 positive.
+translocated = ['t(4;14): Present' in c['cgs_risk_key_criteria']['other_criteria'] for c in cases]
+groups = [{'name': name, 'values': [{'sampleId': i + 1} for i, present in enumerate(translocated) if present == wanted]}
+          for name, wanted in (('Absent', False), ('Present', True))]
+dots = call('/protein-paint/termdb/DE', {**de, 'samplelst': {'groups': groups}})['data']['dots']
+genes = {dot['gene_name']: dot for dot in dots}
+# Wilcoxon p-values saturate, so several genes can share the smallest value.
+smallest = min(dot['adjusted_p_value'] for dot in dots)
+assert genes['NSD2']['fold_change'] > 2 and genes['NSD2']['adjusted_p_value'] <= smallest * 1.01, genes.get('NSD2')
+assert genes['FGFR3']['fold_change'] > 3 and genes['FGFR3']['adjusted_p_value'] < 1e-10, genes.get('FGFR3')
+print(f"PASS: t(4;14) differential expression gives NSD2 the smallest p-value "
+      f"(log2FC {genes['NSD2']['fold_change']:.2f}) and raises FGFR3")
 print('Sandbox integration smoke checks passed')

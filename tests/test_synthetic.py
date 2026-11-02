@@ -9,12 +9,27 @@ from unittest.mock import patch
 import gzip
 import hashlib
 import math
+import re
 import statistics
 from collections import Counter
 
 spec = importlib.util.spec_from_file_location('generator', Path(__file__).resolve().parents[1] / 'synthetic/generate.py')
 generator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(generator)
+
+
+def read_counts(out):
+    """Return sample IDs, Ensembl IDs and {symbol: counts} from the gene matrix."""
+    with gzip.open(Path(out) / 'counts.tsv.gz', 'rt') as handle:
+        samples = handle.readline().rstrip('\n').split('\t')[3:]
+        rows = [line.rstrip('\n').split('\t') for line in handle]
+    return samples, [row[1] for row in rows], {row[0]: [int(v) for v in row[3:]] for row in rows}
+
+
+def log_cpm(counts):
+    libraries = [sum(column) for column in zip(*counts.values())]
+    return {gene: [math.log2(v / size * 1e6 + 1) for v, size in zip(values, libraries)]
+            for gene, values in counts.items()}
 
 
 class SyntheticIntegrity(unittest.TestCase):
@@ -26,6 +41,14 @@ class SyntheticIntegrity(unittest.TestCase):
         with patch.object(generator, 'REFERENCE_LENGTH', 100):
             with self.assertRaisesRegex(ValueError, 'outside the synthetic reference'):
                 generator.validate_reference_models()
+
+    def test_expression_panel_uses_unique_public_gene_ids(self):
+        panel = generator.load_gene_panel()
+        self.assertTrue(set(generator.NAMED_EXPRESSION_GENES) <= {symbol for symbol, *_ in panel})
+        self.assertTrue(all(re.fullmatch(r'ENSG\d{11}', gid) for _, gid, _ in panel))
+        self.assertEqual(len({gid for _, gid, _ in panel}), len(panel))
+        locations = dict((symbol, location) for symbol, _, location in panel)
+        self.assertEqual((locations['NSD2'], locations['FGFR3']), ('4p16.3', '4p16.3'))
 
     def test_demo_scenarios_support_survival_and_differential_expression(self):
         for seed in (42, 7, 103):
@@ -51,31 +74,55 @@ class SyntheticIntegrity(unittest.TestCase):
                     self.assertEqual(case['outcomes']['censor_os'], int(case['vital_status'] == 'Dead'))
                     self.assertEqual(case['demographic']['vital_status'], case['vital_status'])
 
-                expression = json.loads((Path(out) / 'expression.json').read_text())
-                counts = json.loads((Path(out) / 'counts.json').read_text())
-                self.assertGreaterEqual(len(expression), 20)
-                effects = []
-                for gene, values in expression.items():
-                    self.assertEqual(set(values), {c['sample_id'] for c in cases})
-                    effect = (statistics.mean(math.log2(values[c['sample_id']]) for c in mutated)
-                              - statistics.mean(math.log2(values[c['sample_id']]) for c in wildtype))
-                    if abs(effect) > 1:
-                        effects.append(effect)
-                    self.assertTrue(all(isinstance(v, int) and v > 0 for v in counts[gene].values()))
+                samples, gene_ids, counts = read_counts(out)
+                self.assertEqual(samples, [c['sample_id'] for c in cases])
+                self.assertEqual(len(counts), generator.EXPRESSION_GENE_COUNT)
+                self.assertTrue(all(v >= 0 for values in counts.values() for v in values))
+                index = {c['case_id']: i for i, c in enumerate(cases)}
+                cpm = log_cpm(counts)
+
+                def difference(gene, first, second):
+                    return (statistics.mean(cpm[gene][index[c['case_id']]] for c in first)
+                            - statistics.mean(cpm[gene][index[c['case_id']]] for c in second))
+                effects = [difference(gene, mutated, wildtype) for gene in generator.EXPRESSION_GENES]
+                effects = [v for v in effects if abs(v) > 1]
                 self.assertGreaterEqual(len(effects), 10)
                 self.assertTrue(any(v > 1 for v in effects) and any(v < -1 for v in effects))
+
+                # t(4;14) raises NSD2 in every carrier and FGFR3 in most carriers.
+                translocated = [c for c in cases if 't(4;14)' in generator.present_markers(c)]
+                others = [c for c in cases if c not in translocated]
+                self.assertGreaterEqual(len(translocated), 50)
+                self.assertGreater(difference('NSD2', translocated, others), 2)
+                others_nsd2 = sorted(cpm['NSD2'][index[c['case_id']]] for c in others)
+                self.assertGreater(min(cpm['NSD2'][index[c['case_id']]] for c in translocated),
+                                   others_nsd2[len(others_nsd2) // 2])
+                fgfr3_ceiling = max(cpm['FGFR3'][index[c['case_id']]] for c in others) + 2
+                fgfr3_high = statistics.mean(cpm['FGFR3'][index[c['case_id']]] > fgfr3_ceiling for c in translocated)
+                self.assertTrue(.55 < fgfr3_high < .9, fgfr3_high)
+                self.assertLess(difference('CCND1', translocated, others), -1)
+                # Other comparisons do not inherit the NSD2 signal.
+                female = [c for c in cases if c['gender'] == 'female']
+                male = [c for c in cases if c['gender'] == 'male']
+                self.assertLess(abs(difference('NSD2', female, male)), .3)
+                self.assertGreater(difference('XIST', female, male), 4)
+                self.assertLess(difference('RPS4Y1', female, male), -4)
+
                 # Downloaded RNA counts match the matrix used for native DE.
-                gene_ids = {g[1]: g[0] for g in generator.EXPRESSION_MODELS}
-                tsv = next(f for f in files if f['data_format'] == 'TSV')
-                rows = (Path(out) / tsv['file_name']).read_text().splitlines()[1:]
-                self.assertEqual(len(rows), len(expression))
+                tsv = next((c, f) for c, f in zip(cases, files) if f['data_format'] == 'TSV')
+                rows = (Path(out) / tsv[1]['file_name']).read_text().splitlines()[1:]
+                self.assertEqual(len(rows), len(counts))
+                by_id = dict(zip(gene_ids, counts.values()))
                 for row in rows:
                     gene_id, sample, count = row.split('\t')
-                    self.assertEqual(int(count), counts[gene_ids[gene_id]][sample])
+                    self.assertEqual(sample, tsv[0]['sample_id'])
+                    self.assertEqual(int(count), by_id[gene_id][index[tsv[0]['case_id']]])
                 with closing(sqlite3.connect(Path(out) / 'termdb.sqlite')) as db:
                     for number, case in enumerate(cases, 1):
                         actual = db.execute('select value from anno_categorical where sample=? and term_id=?', (number, 'kras_status')).fetchone()[0]
                         self.assertEqual(actual, 'Mutated' if case['case_id'] in kras else 'No mutation')
+                        actual = db.execute('select value from anno_categorical where sample=? and term_id=?', (number, 't4_14_status')).fetchone()[0]
+                        self.assertEqual(actual, 'Present' if case in translocated else 'Absent')
                         days, dead = db.execute('select tte, exit_code from survival where sample=?', (number,)).fetchone()
                         self.assertAlmostEqual(days * 365.25, case['days_to_last_follow_up'])
                         self.assertEqual(dead, case['outcomes']['censor_os'])

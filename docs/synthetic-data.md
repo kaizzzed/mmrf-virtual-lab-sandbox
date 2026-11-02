@@ -8,10 +8,11 @@ generator version reproduces the same records. No patient dataset is used.
 - **Survival:** High risk and KRAS-mutated groups have shorter simulated event
   times. Independent censoring produces overlapping curves rather than perfect
   separation. Effect sizes are arbitrary, not fitted clinical estimates.
-- **Expression:** 36 genes share uneven latent groups and correlated variation.
-  Sixteen genes also have an artificial KRAS-associated expression shift, giving
-  differential expression a useful top-10 result. Count matrices derive from
-  the same expression values; downloadable RNA-Seq TSVs match the count matrix.
+- **Expression:** RNA-Seq counts cover 10,000 public gene symbols. The original
+  36 genes keep their uneven latent groups and artificial KRAS shifts, giving
+  KRAS differential expression a useful top-10 result. See
+  [expression model](#expression-model). Bulk TPM derives from the counts;
+  downloadable RNA-Seq TSVs match the count matrix.
 - **Mutations:** Six genes have recurring public protein-change examples plus
   invented background variants. Carrier frequencies and hotspot weights are
   arbitrary. TP53 variants match the corresponding CGS marker.
@@ -19,6 +20,59 @@ generator version reproduces the same records. No patient dataset is used.
 The KRAS survival effect is a test scenario, not a claim that every KRAS mutation
 predicts poor survival in myeloma. Expression signatures and background variant
 annotations are also demonstration constructs.
+
+## Expression model
+
+`synthetic/public-genes.tsv` lists the 36 original genes, the named genes
+below, and a deterministic sample of HGNC protein-coding genes; see
+`synthetic/build_gene_panel.py`. Symbols, Ensembl gene IDs, and cytogenetic
+locations come from the [HGNC complete set](https://www.genenames.org/download/)
+(retrieved 2026-11-02, [CC0](https://www.genenames.org/about/license/)).
+Transcript lengths used for TPM are artificial.
+
+Each gene has a baseline level and residual variation. About 30% of unnamed
+genes are barely expressed, and the differential expression count filter removes
+some of them. Counts are Poisson draws from each sample's library size, which
+averages about 30 million reads. The named patterns follow public descriptions of myeloma
+biology, but **all magnitudes and frequencies are illustrative**. No values
+are fitted to patient data.
+
+| Pattern | Effect in the fixtures |
+| --- | --- |
+| Plasma-cell identity and housekeeping | SDC1, CD38, TNFRSF17, XBP1, MZB1, JCHAIN, B2M, ACTB, and ribosomal genes are highly expressed |
+| Clonal immunoglobulin | Each sample has one dominant light chain (kappa 63%, lambda 37%) and, in most samples, one dominant heavy chain; immunoglobulin reads total about 30% |
+| Tumor purity | Lower purity raises myeloid, erythroid, and T-cell genes (LYZ, S100A8/9, HBB, CD3E, and others) |
+| Proliferation | A continuous score shifts MKI67, TOP2A, CCNB1, and about 170 other genes together |
+| Sex | XIST is expressed in female samples; RPS4Y1, DDX3Y, and other Y genes in male samples |
+| t(4;14) | **NSD2 up about 7-fold in every carrier**; FGFR3 strongly up in 72% of carriers; CCND2 up, CCND1 down; 350 secondary genes shift modestly |
+| t(14;16), t(14;20) | MAF or MAFB up, with CCND2, ITGB7 (and CX3CR1 for MAF); shared 200-gene secondary program |
+| Copy number | 1q gain raises 1q genes about 1.5-fold; del(17p) and del(1p32) lower genes in those regions; biallelic del(1p32) silences CDKN2C and FAF1 |
+
+Translocation and copy-number states come from each case's CGS markers, so a
+cohort filtered on `t(4;14): Present` contains the overexpressing samples.
+NSD2 and FGFR3 are excluded from the original latent groups so that t(4;14)
+drives them. The secondary program genes are chosen at random for each seed;
+they demonstrate the scale of a real comparison, not specific targets.
+
+Sources for the named patterns: t(4;14) increases FGFR3 expression
+([Chesi et al., 1997](https://pubmed.ncbi.nlm.nih.gov/9207791/)) and
+dysregulates NSD2/MMSET ([Chesi et al., 1998](https://pubmed.ncbi.nlm.nih.gov/9787135/));
+NSD2 transcripts are overexpressed in all t(4;14) cases
+([Keats et al., 2005](https://pubmed.ncbi.nlm.nih.gov/15677557/)), while a
+subset lacks FGFR3 expression ([Santra et al., 2003](https://pubmed.ncbi.nlm.nih.gov/12433679/)).
+MAF targets include CCND2 and ITGB7 ([Hurt et al., 2004](https://pubmed.ncbi.nlm.nih.gov/14998494/));
+translocation groups differ in D-type cyclin expression
+([Bergsagel et al., 2005](https://pubmed.ncbi.nlm.nih.gov/15755896/)).
+
+### Comparing t(4;14) in differential expression
+
+Use **t(4;14) translocation** in ProteinPaint, or Virtual Lab cohorts filtered on
+the CGS marker `t(4;14): Present` versus `t(4;14): Absent`. NSD2 is higher in
+the **Present** group. ProteinPaint plots log2(group 2 / group 1). With
+**Present vs others** or Present as group 1, NSD2 and FGFR3 appear at the
+left (negative); put Absent first to show them on the right. Only the original
+36 genes have gene models, protein tracks, and single-cell values. Other genes
+appear in bulk expression and differential expression.
 
 ## Reference annotations
 

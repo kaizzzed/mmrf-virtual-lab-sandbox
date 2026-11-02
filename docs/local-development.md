@@ -58,4 +58,6 @@ are random, weighted to make High risk the smaller group, with matching risk
 labels. These weights are arbitrary, not clinical prevalence estimates.
 TP53 carrier status matches its CGS marker. High risk and KRAS mutations have
 designed survival effects, and KRAS status changes a subset of expression genes.
+CGS translocation and copy-number markers drive expression; t(4;14) cases
+overexpress NSD2.
 See [data generation and sources](synthetic-data.md).

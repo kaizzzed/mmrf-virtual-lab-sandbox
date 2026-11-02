@@ -10,6 +10,7 @@ export default function (_common, refs) {
   function value(record, id) {
     if (id === 'cgs_risk_category') return record.cgs_risk_key_criteria.cgs_risk_category;
     if (id === 'kras_status') return kras.has(record.case_id) ? 'Mutated' : 'No mutation';
+    if (id === 't4_14_status') return record.cgs_risk_key_criteria.other_criteria.includes('t(4;14): Present') ? 'Present' : 'Absent';
     return record[id];
   }
   function selected(record, index, filter) {

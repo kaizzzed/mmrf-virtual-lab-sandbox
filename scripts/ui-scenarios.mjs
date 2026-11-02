@@ -126,27 +126,45 @@ try {
     console.log(`PASS: native survival curves show poorer outcomes for ${worse} versus ${better}`);
   }
 
-  await open('DE');
-  await page.getByText('Add group', {exact: true}).click();
-  await page.getByText('KRAS mutation status', {exact: true}).click();
+  // "New group vs others" compares the selected group (group 1) with the rest;
+  // the volcano plots log2(others / selected group).
+  async function differentialExpression(term, value, count) {
+    await open('DE');
+    await page.getByText('Add group', {exact: true}).click();
+    await page.getByText(term, {exact: true}).click();
+    await page.locator('tr').filter({hasText: `${value} (n=${count})`}).getByRole('checkbox').check();
+    await page.getByRole('button', {name: 'Apply', exact: true}).click();
+    const preanalysis = page.waitForResponse(r => r.url().includes('/termdb/DE') && r.request().postDataJSON()?.preAnalysis);
+    await page.getByText('Submit (New group vs others)', {exact: true}).click();
+    const groups = (await (await preanalysis).json()).data;
+    expect(groups['New group']).toBe(count);
+    const analysis = page.waitForResponse(r => r.url().includes('/termdb/DE') && !r.request().postDataJSON()?.preAnalysis);
+    await page.getByRole('button', {name: 'Run Differential Gene Expression Analysis', exact: true}).click();
+    const result = (await (await analysis).json()).data;
+    await expect(page.getByText('Volcano', {exact: true})).toBeVisible();
+    await page.getByText('Show p-value table', {exact: true}).click();
+    return result;
+  }
+
   const krasCount = new Set(variants.filter(v => v.symbol === 'KRAS').map(v => v.case_id)).size;
-  await page.locator('tr').filter({hasText: `Mutated (n=${krasCount})`}).getByRole('checkbox').check();
-  await page.getByRole('button', {name: 'Apply', exact: true}).click();
-  const preanalysis = page.waitForResponse(r => r.url().includes('/termdb/DE') && r.request().postDataJSON()?.preAnalysis);
-  await page.getByText('Submit (New group vs others)', {exact: true}).click();
-  const groups = (await (await preanalysis).json()).data;
-  expect(groups['New group']).toBe(krasCount);
-  const analysis = page.waitForResponse(r => r.url().includes('/termdb/DE') && !r.request().postDataJSON()?.preAnalysis);
-  await page.getByRole('button', {name: 'Run Differential Gene Expression Analysis', exact: true}).click();
-  const result = (await (await analysis).json()).data;
-  const significant = result.dots.filter(g => g.adjusted_p_value < .05 && Math.abs(g.fold_change) > 1);
+  const kras = await differentialExpression('KRAS mutation status', 'Mutated', krasCount);
+  const significant = kras.dots.filter(g => g.adjusted_p_value < .05 && Math.abs(g.fold_change) > 1);
   expect(significant.length).toBeGreaterThanOrEqual(10);
   expect(significant.some(g => g.fold_change > 1)).toBe(true);
   expect(significant.some(g => g.fold_change < -1)).toBe(true);
-  await expect(page.getByText('Volcano', {exact: true})).toBeVisible();
-  await page.getByText('Show p-value table', {exact: true}).click();
   await capture('kras-differential-expression');
   console.log(`PASS: native differential expression returns ${significant.length} significant genes for KRAS-mutated versus remaining cases`);
+
+  const t414Count = cases.filter(c => c.cgs_risk_key_criteria.other_criteria.includes('t(4;14): Present')).length;
+  const t414 = await differentialExpression('t(4;14) translocation', 'Present', t414Count);
+  const nsd2 = t414.dots.find(g => g.gene_name === 'NSD2');
+  // Higher in t(4;14) Present, so negative when Present is the selected group.
+  // Wilcoxon p-values saturate; NSD2 shares the smallest value.
+  expect(nsd2.fold_change).toBeLessThan(-2);
+  expect(nsd2.adjusted_p_value).toBeLessThanOrEqual(Math.min(...t414.dots.map(g => g.adjusted_p_value)) * 1.01);
+  expect(t414.dots.find(g => g.gene_name === 'FGFR3').fold_change).toBeLessThan(-3);
+  await capture('t4-14-differential-expression');
+  console.log(`PASS: t(4;14) Present versus others gives NSD2 the smallest p-value (log2FC others/Present ${nsd2.fold_change.toFixed(2)})`);
   expect(errors).toEqual([]);
 } catch (error) {
   if (page && !page.isClosed()) {
