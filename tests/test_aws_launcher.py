@@ -163,6 +163,17 @@ class LauncherTests(unittest.TestCase):
         operator.empty_repository.assert_not_called()
         self.assertFalse(any(call.args[0] == "apply" for call in operator.tf.call_args_list))
 
+    def test_lock_ignores_leftover_file_and_refuses_held_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            # A file left by an interrupted run holds no OS lock.
+            (Path(directory) / "operator.lock").write_text("12345")
+            with launcher.lock(Path(directory)):
+                with self.assertRaisesRegex(ValueError, "Another launcher command is running"):
+                    with launcher.lock(Path(directory)):
+                        pass
+            with launcher.lock(Path(directory)):
+                pass
+
     def test_deploy_applies_exactly_the_saved_plan(self):
         operator = launcher.Operator(CONFIG)
         for name in ["preflight", "build", "init_terraform", "outputs", "publish", "install"]:

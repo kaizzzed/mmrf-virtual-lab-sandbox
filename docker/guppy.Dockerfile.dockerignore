@@ -1,0 +1,3 @@
+# Local installs or builds in .sources/guppy must not overwrite the image's npm ci output.
+node_modules
+dist
