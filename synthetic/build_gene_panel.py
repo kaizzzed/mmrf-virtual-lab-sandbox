@@ -22,7 +22,6 @@ STANDARD_LOCATION = re.compile(r'^(\d+|X|Y)[pq]')
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('hgnc')
-    parser.add_argument('--size', type=int, default=generator.EXPRESSION_GENE_COUNT)
     args = parser.parse_args()
     with open(args.hgnc, newline='') as handle:
         rows = {row['symbol']: row for row in csv.DictReader(handle, delimiter='\t') if row['status'] == 'Approved'}
@@ -35,7 +34,7 @@ def main():
                    if row['locus_type'] == 'gene with protein product' and row['ensembl_gene_id']
                    and STANDARD_LOCATION.match(row['location']) and symbol not in named),
                   key=lambda symbol: hashlib.sha256(symbol.encode()).hexdigest())
-    selected = named + sorted(pool[:args.size - len(named)])
+    selected = named + sorted(pool[:generator.EXPRESSION_GENE_COUNT - len(named)])
     output = Path(__file__).with_name('public-genes.tsv')
     with output.open('w') as handle:
         handle.write('symbol\tensembl_gene_id\tlocation\n')

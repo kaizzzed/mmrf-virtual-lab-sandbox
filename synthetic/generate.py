@@ -571,7 +571,7 @@ def generate(out, count=1000, seed=42):
     write_json(out / "provenance.json", {"synthetic": True, "generator_version": 7, "seed": seed,
                                          "cases": count, "source": "Seeded synthetic demo scenarios; no patient inputs",
                                          "reference_proteins": {g: p["source"] for g,p in PUBLIC_PROTEINS.items()},
-                                         "expression_genes": {"count": len(panel), "symbols": "HGNC complete set (CC0)"},
+                                         "expression_genes": {"count": len(panel), "symbols": "deterministic sample from the HGNC complete set (CC0)"},
                                          "survival_effects": "Designed poorer outcomes for high-risk and KRAS-mutated groups; not clinical estimates",
                                          "expression_effects": "Literature-shaped myeloma programs with illustrative magnitudes; not fitted to patient data"})
     make_termdb(out, records, variants)
