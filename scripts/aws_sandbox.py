@@ -7,6 +7,7 @@ import argparse
 import base64
 import hashlib
 from contextlib import contextmanager
+import fcntl
 import ipaddress
 import json
 import os
@@ -335,14 +336,18 @@ def confirm(config, yes, action):
 @contextmanager
 def lock(directory):
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "operator.lock"
-    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    os.write(fd, str(os.getpid()).encode())
-    os.close(fd)
+    # The OS releases a flock when its process exits, so an interrupted run
+    # (closed laptop, kill -9) cannot leave a stale lock. The file is never
+    # deleted; removing a lock path would let two launchers lock different files.
+    fd = os.open(directory / "operator.lock", os.O_CREAT | os.O_WRONLY, 0o600)
     try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another launcher command is running in this checkout") from None
         yield
     finally:
-        path.unlink()
+        os.close(fd)
 
 
 def initialize(args):
