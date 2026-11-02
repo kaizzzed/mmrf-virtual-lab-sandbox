@@ -138,7 +138,8 @@ try {
     await page.getByText('Submit (New group vs others)', {exact: true}).click();
     const groups = (await (await preanalysis).json()).data;
     expect(groups['New group']).toBe(count);
-    const analysis = page.waitForResponse(r => r.url().includes('/termdb/DE') && !r.request().postDataJSON()?.preAnalysis);
+    // edgeR on 10,000 genes and 1,000 samples takes about 40 seconds.
+    const analysis = page.waitForResponse(r => r.url().includes('/termdb/DE') && !r.request().postDataJSON()?.preAnalysis, {timeout: 180000});
     await page.getByRole('button', {name: 'Run Differential Gene Expression Analysis', exact: true}).click();
     const result = (await (await analysis).json()).data;
     await expect(page.getByText('Volcano', {exact: true})).toBeVisible();
