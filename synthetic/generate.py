@@ -15,7 +15,7 @@ GENES = [
     ("NRAS", "ENSG00000213281", "chr1", 20000),
     ("TP53", "ENSG00000141510", "chr17", 30000),
     ("BRAF", "ENSG00000157764", "chr7", 40000),
-    ("DIS3", "ENSG00000150907", "chr13", 50000),
+    ("DIS3", "ENSG00000083520", "chr13", 50000),
     ("MYC", "ENSG00000136997", "chr8", 60000),
 ]
 COHORT_FIELDS = json.loads((Path(__file__).resolve().parents[1] / 'config/cohort-fields.json').read_text())
