@@ -53,6 +53,7 @@ while True:
             for index in indices:
                 call(f'/{index}', 'DELETE')
             subprocess.run(SEED, check=True)
-    except OSError:
-        subprocess.run(SEED, check=True)
+    except OSError as exc:
+        # Never seed without the check and cleanup above; retry them instead.
+        print(f'Search unavailable, retrying: {exc}', flush=True)
     time.sleep(10)
