@@ -134,6 +134,8 @@ class Operator:
         print("Read-only account/network/instance checks passed. IAM/SCP permissions, quotas and CloudFront VPC-origin support still require live provisioning.")
 
     def build(self):
+        # A failed build must not leave an older record for --skip-build to publish.
+        (self.directory / "build.json").unlink(missing_ok=True)
         self.run([sys.executable, "scripts/fetch_sources.py"])
         self.run([sys.executable, "synthetic/generate.py"])
         override = self.directory / "build-compose.json"
