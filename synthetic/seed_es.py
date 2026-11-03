@@ -2,6 +2,7 @@
 import json
 import os
 import hashlib
+import sqlite3
 from pathlib import Path
 import time
 import urllib.error
@@ -78,6 +79,28 @@ def file_schema(props):
         current.setdefault(parts[-1], {'type': 'keyword'})
 
 
+DETAIL_NUMBERS = {'gene_start', 'gene_end', 'aa_start', 'aa_end', 'relationship_age_at_diagnosis', 'years_smoked'}
+
+
+def detail_schema(kind, props):
+    """Expose fields the case, gene, and mutation detail pages query.
+
+    Guppy rejects a whole GraphQL query that names an unmapped field, so these
+    pages showed "Not Found". Unpopulated fields return null. Paths come from the
+    frontend detail queries; regenerate them with scripts/detail_fields.py.
+    """
+    paths = json.loads((Path(__file__).resolve().parents[1] / 'config/detail-fields.json').read_text())
+    for path in paths.get(kind, []):
+        parts = path.split('.')
+        current = props
+        for part in parts[:-1]:
+            if part in current and 'properties' not in current[part]:
+                break  # Never retype an existing value field as an object.
+            current = current.setdefault(part, {'type': 'nested', 'properties': {}})['properties']
+        else:
+            current.setdefault(parts[-1], {'type': 'integer' if parts[-1] in DETAIL_NUMBERS else 'keyword'})
+
+
 def embedded_file_schemas(props):
     # Guppy shares nested GraphQL type names across indices. Embedded case files
     # must expose the same optional object fields as the file-centric index.
@@ -152,9 +175,15 @@ if __name__ == "__main__":
     for case in cases:
         case['available_variation_data'] = ['ssm', 'cnv']
         case['gene'] = []
+    with sqlite3.connect(root / "genes.sqlite") as db:
+        coordinates = {name: (chrom, start, stop) for name, chrom, start, stop in db.execute("SELECT name, chr, start, stop FROM gene2coord")}
     occurrences = []
     for number, v in enumerate(variants):
-        gene = {"gene_id": v["gene_id"], "symbol": v["symbol"], "name": "Synthetic " + v["symbol"], "biotype": "protein_coding", "is_cancer_gene_census": True}
+        chrom, start, stop = coordinates[v["symbol"]]
+        # Synthetic genome coordinates; external references stay empty rather than invented.
+        gene = {"gene_id": v["gene_id"], "symbol": v["symbol"], "name": "Synthetic " + v["symbol"], "biotype": "protein_coding", "is_cancer_gene_census": True,
+                "gene_chromosome": chrom.removeprefix('chr'), "gene_start": start, "gene_end": stop, "gene_strand": 1,
+                "external_db_ids": {"entrez_gene": [], "hgnc": [], "omim_gene": [], "uniprotkb_swissprot": []}}
         mutation = {"ssm_id": v['ssm_id'], "chromosome": v["chr"], "start_position": v["pos"],
                     "end_position": v["pos"] + len(v['ref']) - 1, "reference_allele": v["ref"], "tumor_allele": v["alt"],
                     "mutation_type": "Simple Somatic Mutation", "mutation_subtype": (
@@ -220,6 +249,7 @@ if __name__ == "__main__":
         if kind == 'file':
             file_schema(props)
         embedded_file_schemas(props)
+        detail_schema(kind, props)
         normalize_types(props)
         if kind == 'gene_centric':
             props['case']['properties']['project']['type'] = 'object'
