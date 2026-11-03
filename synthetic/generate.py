@@ -401,7 +401,7 @@ def make_expression(out, cases, variants, seed):
         if 't(4;14)' in markers:
             shifts.append((where['NSD2'], nsd2_variation))
             if fgfr3:
-                shifts.append((where['FGFR3'], FGFR3_EFFECT))
+                shifts.append((where['FGFR3'], driver * FGFR3_EFFECT))
         for index, shift in shifts:
             values[index] += shift
 
