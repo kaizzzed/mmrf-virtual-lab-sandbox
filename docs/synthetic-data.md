@@ -19,11 +19,12 @@ generator version reproduces the same records. No patient dataset is used.
 
 CGS markers follow approximate frequencies reported for newly diagnosed
 myeloma: t(4;14) 15%, t(14;16) 4%, t(14;20) 1.5%, 1q gain about 35%
-(about 60% with an IgH translocation), del(17p) 9%, TP53 mutation about 10%
+(about 60% with an IgH translocation), del(17p) 9%, TP53 mutation about 9%
 (about half with del(17p)), and del(1p32) 11% (1.5% biallelic). High risk follows
 the [IMS/IMWG consensus criteria](https://doi.org/10.1200/JCO-24-01893) and
-covers about a third of cases. TP53 is slightly above its usual frequency so
-every demographic subgroup has at least 10 carriers for comparisons.
+covers about a third of cases. TP53 is slightly above its usual frequency so that,
+with the default seed and 1,000 cases, every demographic subgroup has at least
+10 carriers for comparisons; smaller cohorts or other seeds may have fewer.
 
 The KRAS survival effect is a test scenario, not a claim that every KRAS mutation
 predicts poor survival in myeloma. Expression signatures and background variant
