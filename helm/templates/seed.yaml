@@ -4,6 +4,8 @@ metadata:
   name: synthetic-seed
 spec:
   replicas: 1
+  # Old and new watchers must never seed at the same time.
+  strategy: {type: Recreate}
   selector:
     matchLabels: {app.kubernetes.io/name: seed, app.kubernetes.io/instance: {{ .Release.Name }}}
   template:

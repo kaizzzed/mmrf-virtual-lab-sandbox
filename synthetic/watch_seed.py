@@ -41,15 +41,17 @@ def marker():
 while True:
     try:
         stored = marker()
-        if stored is not None and (stored.get('fingerprint'), stored.get('seed_image')) != (expected, image):
-            # A new image can change mappings without changing fixtures, so reseed.
+        # A new image can change mappings without changing fixtures, so reseed.
+        if stored is None or (stored.get('fingerprint'), stored.get('seed_image')) != (expected, image):
+            # Clear outdated or partly deleted indices so seeds never mix versions.
+            # The marker goes first, so an interrupted run restarts here.
             # Synthetic, disposable indices only; the seed rebuilds all of them.
-            indices = [row['index'] for row in call('/_cat/indices/sandbox_*?format=json')]
-            print(f'Seed changed: replacing {len(indices)} sandbox indices', flush=True)
+            indices = sorted((row['index'] for row in call('/_cat/indices/sandbox_*?format=json')),
+                             key=lambda index: index != 'sandbox_seed_complete')
+            if indices:
+                print(f'Replacing {len(indices)} sandbox indices', flush=True)
             for index in indices:
                 call(f'/{index}', 'DELETE')
-            stored = None
-        if stored is None:
             subprocess.run(SEED, check=True)
     except OSError:
         subprocess.run(SEED, check=True)
