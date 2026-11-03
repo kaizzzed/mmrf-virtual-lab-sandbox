@@ -3,6 +3,7 @@ import argparse
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -195,3 +196,15 @@ class LauncherTests(unittest.TestCase):
         operator.deploy(yes=True)
         self.assertEqual(operator.tf.call_args_list[0].args, ("plan", "-input=false", "-out=sandbox.tfplan"))
         self.assertEqual(operator.tf.call_args_list[1].args, ("apply", "-input=false", "sandbox.tfplan"))
+        operator.build.assert_called_once_with()
+
+    def test_build_failure_stops_deploy_before_publishing(self):
+        operator = launcher.Operator(CONFIG)
+        for name in ["preflight", "init_terraform", "outputs", "publish", "install"]:
+            setattr(operator, name, Mock())
+        operator.tf = Mock()
+        operator.build = Mock(side_effect=subprocess.CalledProcessError(1, "docker"))
+        with self.assertRaises(subprocess.CalledProcessError):
+            operator.deploy(yes=True)
+        operator.tf.assert_any_call("apply", "-input=false", "sandbox.tfplan")
+        operator.publish.assert_not_called()

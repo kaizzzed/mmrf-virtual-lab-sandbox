@@ -5,6 +5,7 @@ are stored here; the selected AWS CLI profile supplies them on that computer.
 """
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from contextlib import contextmanager
 import fcntl
@@ -133,6 +134,8 @@ class Operator:
         print("Read-only account/network/instance checks passed. IAM/SCP permissions, quotas and CloudFront VPC-origin support still require live provisioning.")
 
     def build(self):
+        # A failed build must not leave an older record for --skip-build to publish.
+        (self.directory / "build.json").unlink(missing_ok=True)
         self.run([sys.executable, "scripts/fetch_sources.py"])
         self.run([sys.executable, "synthetic/generate.py"])
         override = self.directory / "build-compose.json"
@@ -223,14 +226,17 @@ class Operator:
 
     def deploy(self, yes=False, skip_build=False):
         self.preflight()
-        if not skip_build:
-            self.build()
-        elif not (self.directory / "build.json").exists():
+        if skip_build and not (self.directory / "build.json").exists():
             raise ValueError("Run build first before --skip-build")
         self.init_terraform()
         self.tf("plan", "-input=false", "-out=sandbox.tfplan")
         confirm(self.config, yes, "CREATE/UPDATE the displayed sandbox resources")
-        self.tf("apply", "-input=false", "sandbox.tfplan")
+        # Images build while AWS provisions; only publishing needs both.
+        with ThreadPoolExecutor(1) as pool:
+            build = None if skip_build else pool.submit(self.build)
+            self.tf("apply", "-input=false", "sandbox.tfplan")
+            if build:
+                build.result()
         outputs = self.outputs()
         self.install(outputs, self.publish(outputs))
 
