@@ -1,8 +1,8 @@
-"""Keep disposable Kubernetes search storage on this image's fixture version.
+"""Keep disposable Kubernetes search storage seeded by this image.
 
 Reseeds when storage is recreated, and replaces the sandbox indices when an
-upgrade ships different fixtures. Otherwise search would keep the old cohort
-while identity and ProteinPaint serve the new one.
+upgrade ships a different seed image or fixtures. Otherwise search would keep
+the old cohort or mappings while identity and ProteinPaint serve the new ones.
 """
 import json
 import os
@@ -22,9 +22,8 @@ image = os.environ.get('SEED_IMAGE', '')
 SEED = [sys.executable, str(Path(__file__).with_name('seed_es.py'))]
 
 
-def call(path, method='GET', data=None):
-    body = json.dumps(data).encode() if data is not None else None
-    request = urllib.request.Request(base + path, data=body, method=method, headers={'Content-Type': 'application/json'})
+def call(path, method='GET'):
+    request = urllib.request.Request(base + path, method=method)
     with urllib.request.urlopen(request, timeout=10) as response:
         return json.load(response)
 
@@ -42,18 +41,16 @@ def marker():
 while True:
     try:
         stored = marker()
-        if stored is not None and stored.get('fingerprint') != expected:
+        if stored is not None and (stored.get('fingerprint'), stored.get('seed_image')) != (expected, image):
+            # A new image can change mappings without changing fixtures, so reseed.
             # Synthetic, disposable indices only; the seed rebuilds all of them.
             indices = [row['index'] for row in call('/_cat/indices/sandbox_*?format=json')]
-            print(f'Fixtures changed: replacing {len(indices)} sandbox indices', flush=True)
+            print(f'Seed changed: replacing {len(indices)} sandbox indices', flush=True)
             for index in indices:
                 call(f'/{index}', 'DELETE')
             stored = None
         if stored is None:
             subprocess.run(SEED, check=True)
-        elif stored.get('seed_image') != image:
-            # Same fixtures from a rebuilt image: record it so dependents start.
-            call('/sandbox_seed_complete/_doc/ready?refresh=true', 'PUT', {**stored, 'seed_image': image})
     except OSError:
         subprocess.run(SEED, check=True)
     time.sleep(10)

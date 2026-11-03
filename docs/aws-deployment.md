@@ -92,7 +92,7 @@ are gone in the AWS console. There is no automatic shutdown.
 - ProteinPaint may use 6 GiB: each concurrent edgeR differential expression
   needs about 0.85 GiB, so about six can run at once. Wilcoxon needs far less.
 - Data is ephemeral and reseeded when Elasticsearch storage is recreated. An
-  upgrade that changes the fixtures replaces the search indices; Guppy and
+  upgrade that changes the seed image replaces the search indices; Guppy and
   Analysis restart and wait for that reseed, and the post-deploy check compares
   High risk case membership with `generated/cases.json`.
 - Keep account, region, and deployment name unchanged until teardown. If the
