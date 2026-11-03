@@ -393,7 +393,7 @@ def make_expression(out, cases, variants, seed):
         if markers & {'Monoallelic del(1p32)', 'Biallelic del(1p32)'}:
             shifts += [(index, -clone * s) for index, s in arms['1p32']]
         if 'Biallelic del(1p32)' in markers:
-            shifts += [(index, -6.0) for index in biallelic_targets]
+            shifts += [(index, -6.0 * clone) for index in biallelic_targets]
         for translocation, effects in TRANSLOCATION_EFFECTS.items():
             if translocation in markers:
                 shifts += [(where[g], shift if g == 'NSD2' else driver * shift) for g, shift in effects.items()]
