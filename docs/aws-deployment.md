@@ -42,9 +42,9 @@ unavailable. API access defaults to the detected public IPv4 address.
 python3 scripts/aws_sandbox.py deploy
 ```
 
-The command builds images, displays a Terraform plan, requests account-ID
-confirmation, provisions resources, publishes images, installs the chart, and
-checks HTTPS access and the synthetic API.
+The command displays a Terraform plan and requests account-ID confirmation.
+It then builds images while AWS provisions resources, publishes the images,
+installs the chart, and checks HTTPS access and the synthetic API.
 
 To finish building before provisioning:
 
@@ -54,8 +54,9 @@ python3 scripts/aws_sandbox.py deploy --skip-build
 ```
 
 Stop any local Compose stack before building if Docker memory is constrained.
-After a failed or interrupted deployment, resume with `deploy --skip-build`
-from the same checkout. Existing local images must still be present.
+After a failed or interrupted deployment, rerun `deploy` from the same
+checkout, adding `--skip-build` if the build finished. Existing local images
+must still be present.
 
 ## Access and test
 
