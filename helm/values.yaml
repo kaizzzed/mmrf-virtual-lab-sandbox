@@ -22,9 +22,11 @@ resources:
   elasticsearch:
     requests: {cpu: 250m, memory: 1Gi}
     limits: {memory: 2Gi}
+  # Each edgeR differential expression on 10,000 genes x 1,000 samples adds
+  # about 0.85 GiB to a 0.3 GiB baseline; 6Gi allows about six at once.
   proteinpaint:
-    requests: {cpu: 250m, memory: 512Mi}
-    limits: {memory: 2Gi}
+    requests: {cpu: 250m, memory: 1Gi}
+    limits: {memory: 6Gi}
   default:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 1Gi}

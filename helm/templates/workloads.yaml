@@ -14,9 +14,13 @@ spec:
   template:
     metadata:
       labels: {app.kubernetes.io/name: {{ $name }}, app.kubernetes.io/instance: {{ $.Release.Name }}}
-      {{- if eq $name "guppy" }}
+      {{- if or (eq $name "guppy") (eq $name "analysis") }}
       annotations:
+        # Restart search readers when fixtures change, after the reseed.
+        checksum/seed: {{ $.Values.images.seed | sha256sum }}
+        {{- if eq $name "guppy" }}
         checksum/config: {{ include (print $.Template.BasePath "/config.yaml") $ | sha256sum }}
+        {{- end }}
       {{- end }}
     spec:
       automountServiceAccountToken: false
@@ -24,7 +28,9 @@ spec:
       initContainers:
         - name: wait-for-synthetic-data
           image: {{ $.Values.waitImage | quote }}
-          command: [sh, -c, 'until curl -fsS http://elasticsearch:9200/sandbox_seed_complete/_count; do sleep 3; done']
+          env:
+            - {name: SEED_IMAGE, value: {{ $.Values.images.seed | quote }}}
+          command: [sh, -c, 'until curl -fsS http://elasticsearch:9200/sandbox_seed_complete/_doc/ready | grep -qF "\"seed_image\": \"$SEED_IMAGE\""; do sleep 3; done']
       {{- end }}
       containers:
         - name: {{ $name }}

@@ -4,6 +4,8 @@ metadata:
   name: synthetic-seed
 spec:
   replicas: 1
+  # Old and new watchers must never seed at the same time.
+  strategy: {type: Recreate}
   selector:
     matchLabels: {app.kubernetes.io/name: seed, app.kubernetes.io/instance: {{ .Release.Name }}}
   template:
@@ -18,3 +20,5 @@ spec:
           command: [python, watch_seed.py]
           env:
             - {name: GEN3_ES_ENDPOINT, value: 'http://elasticsearch:9200'}
+            # Recorded with the seed so dependents start only on this fixture version.
+            - {name: SEED_IMAGE, value: {{ .Values.images.seed | quote }}}

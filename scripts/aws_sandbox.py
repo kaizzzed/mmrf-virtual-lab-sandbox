@@ -281,6 +281,10 @@ def validate_origin(origin):
         raise ValueError("Expected this deployment's CloudFront HTTPS origin")
 
 
+class FixtureMismatch(Exception):
+    """Search does not yet serve the generated fixtures; retried while reseeding."""
+
+
 def check_site(credentials, attempts=60):
     validate_origin(credentials["origin"])
     basic = base64.b64encode((credentials["username"] + ":" + credentials["password"]).encode()).decode()
@@ -319,9 +323,21 @@ def check_site(credentials, attempts=60):
                 raise ValueError("Hosted Projects returned incompatible field shapes")
             if any(p["summary"].get("case_count") != 500 for p in projects):
                 raise ValueError("Hosted Projects must each contain 500 synthetic cases")
+            # Counts match across fixture versions; exact membership does not.
+            cases = json.loads((ROOT / "generated/cases.json").read_text())
+            expected = {c["case_id"] for c in cases if c["cgs_risk_key_criteria"]["cgs_risk_category"] == "High risk"}
+            query = 'query($f:JSON){Case_case(first:1000,filter:$f){case_id}}'
+            request = urllib.request.Request(origin + "/guppy/graphql",
+                data=json.dumps({"query": query, "variables": {"f": {"in": {"cgs_risk_key_criteria.cgs_risk_category": ["High risk"]}}}}).encode(),
+                headers={"Authorization": "Basic " + basic, "Content-Type": "application/json"})
+            with opener.open(request, timeout=30) as response:
+                result = json.load(response)
+            if {c["case_id"] for c in (result.get("data") or {}).get("Case_case") or []} != expected:
+                raise FixtureMismatch("Hosted search High risk cases differ from the generated fixtures")
             print("PASS: valid HTTPS, authenticated 1,000-case API and two projects; anonymous access denied")
+            print(f"PASS: hosted search serves the generated fixtures ({len(expected)} High risk cases match)")
             return
-        except (OSError, urllib.error.HTTPError):
+        except (OSError, urllib.error.HTTPError, FixtureMismatch):
             if attempt == attempts - 1:
                 raise
             time.sleep(10)

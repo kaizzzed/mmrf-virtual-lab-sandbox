@@ -44,22 +44,35 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(opener.open.call_count, 1)
 
     def test_live_acceptance_requires_expected_authenticated_fixture(self):
-        opener = Mock()
         projects = [{"project_id": name, "disease_type": ["Synthetic"], "primary_site": ["Synthetic"],
                      "summary": {"case_count": 500, "data_categories": [{"data_category": "Sequencing"}]}}
                     for name in ["SYNTHETIC-MM", "SYNTHETIC-RNA"]]
-        opener.open.side_effect = [urllib.error.HTTPError("https://unitfixture.cloudfront.net/sandbox/status", 401, "Unauthorized", {}, None),
-                                  json_response({"synthetic": True, "cases": 1000}),
-                                  json_response({"data": {"Project_project": projects}})]
         credentials = {"origin": "https://unitfixture.cloudfront.net", "username": "sandbox", "password": "unit-test-only"}
-        with patch.object(launcher.urllib.request, "build_opener", return_value=opener):
-            launcher.check_site(credentials, attempts=1)
-        request = opener.open.call_args_list[1].args[0]
-        self.assertEqual(request.full_url, credentials["origin"] + "/sandbox/status")
-        self.assertTrue(request.get_header("Authorization").startswith("Basic "))
-        projects_request = opener.open.call_args_list[2].args[0]
-        self.assertEqual(projects_request.full_url, credentials["origin"] + "/guppy/graphql")
-        self.assertEqual(projects_request.get_header("Authorization"), request.get_header("Authorization"))
+        risk = lambda category: {"cgs_risk_key_criteria": {"cgs_risk_category": category}}
+        fixtures = [{"case_id": "SYNTH-CASE-0001", **risk("High risk")}, {"case_id": "SYNTH-CASE-0002", **risk("Standard risk")}]
+        for served, passes in ((["SYNTH-CASE-0001"], True), (["SYNTH-CASE-0002"], False)):
+            with self.subTest(served=served), tempfile.TemporaryDirectory() as root:
+                (Path(root) / "generated").mkdir()
+                (Path(root) / "generated/cases.json").write_text(json.dumps(fixtures))
+                opener = Mock()
+                opener.open.side_effect = [urllib.error.HTTPError("https://unitfixture.cloudfront.net/sandbox/status", 401, "Unauthorized", {}, None),
+                                          json_response({"synthetic": True, "cases": 1000}),
+                                          json_response({"data": {"Project_project": projects}}),
+                                          json_response({"data": {"Case_case": [{"case_id": c} for c in served]}})]
+                with patch.object(launcher, "ROOT", Path(root)), \
+                        patch.object(launcher.urllib.request, "build_opener", return_value=opener):
+                    if not passes:
+                        # Same counts, different cohort: an upgrade that kept old search data.
+                        with self.assertRaises(launcher.FixtureMismatch):
+                            launcher.check_site(credentials, attempts=1)
+                        continue
+                    launcher.check_site(credentials, attempts=1)
+                request = opener.open.call_args_list[1].args[0]
+                self.assertEqual(request.full_url, credentials["origin"] + "/sandbox/status")
+                self.assertTrue(request.get_header("Authorization").startswith("Basic "))
+                projects_request = opener.open.call_args_list[2].args[0]
+                self.assertEqual(projects_request.full_url, credentials["origin"] + "/guppy/graphql")
+                self.assertEqual(projects_request.get_header("Authorization"), request.get_header("Authorization"))
 
     def test_live_acceptance_rejects_missing_or_invalid_project_schema(self):
         """A healthy identity response must not conceal a broken Projects page."""

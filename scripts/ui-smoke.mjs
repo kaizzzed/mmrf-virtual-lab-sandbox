@@ -100,6 +100,15 @@ try {
   await expect(projectPage.getByText('SYNTH-SAMPLE-0001.synthetic.fasta',{exact:true})).toBeVisible();
   await projectPage.close();
   console.log('PASS: Projects list, project summary and View Files navigation');
+  // Detail queries fail as a whole if Guppy lacks any field they name.
+  const kras = variants.find(v=>v.symbol==='KRAS');
+  for (const [path,heading,text] of [[`/cases/${cases[0].case_id}`,'Case Summary',cases[0].case_id],[`/genes/${kras.gene_id}`,'Gene Summary','Synthetic KRAS'],[`/ssms/${kras.ssm_id}`,'Mutation Summary',kras.ssm_id]]) {
+    await page.goto(origin+path,{waitUntil:'domcontentloaded'});
+    await expect(page.getByText(text,{exact:true}).first()).toBeVisible({timeout:30000});
+    await expect(page.getByText(/Not Found$/)).toHaveCount(0);
+    await capture(heading.toLowerCase().replace(' ','-'));
+  }
+  console.log('PASS: case, gene, and mutation detail pages render their records');
   const bulkResponse = page.waitForResponse(r => r.url().includes('/termdb/sampleScatter') && r.status() === 200);
   await open('Umap');
   const bulk = await (await bulkResponse).json();
