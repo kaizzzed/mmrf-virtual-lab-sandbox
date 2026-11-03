@@ -6,7 +6,9 @@ while identity and ProteinPaint serve the new one.
 """
 import json
 import os
+from pathlib import Path
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +19,7 @@ if base != 'http://elasticsearch:9200':
     raise SystemExit('Only the sandbox search service is supported')
 expected = fixture_fingerprint()
 image = os.environ.get('SEED_IMAGE', '')
+SEED = [sys.executable, str(Path(__file__).with_name('seed_es.py'))]
 
 
 def call(path, method='GET', data=None):
@@ -47,10 +50,10 @@ while True:
                 call(f'/{index}', 'DELETE')
             stored = None
         if stored is None:
-            subprocess.run(['python', 'seed_es.py'], check=True)
+            subprocess.run(SEED, check=True)
         elif stored.get('seed_image') != image:
             # Same fixtures from a rebuilt image: record it so dependents start.
             call('/sandbox_seed_complete/_doc/ready?refresh=true', 'PUT', {**stored, 'seed_image': image})
     except OSError:
-        subprocess.run(['python', 'seed_es.py'], check=True)
+        subprocess.run(SEED, check=True)
     time.sleep(10)
