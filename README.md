@@ -40,12 +40,13 @@ The deployment provides a password-protected CloudFront HTTPS URL.
 ## Data and development
 
 The default dataset has 1,000 cases, two projects, a six-gene mutation panel,
-36 expression genes, and 80,000 cells. Patient records and measurements are
+10,000 expression genes, and 80,000 cells. Patient records and measurements are
 fabricated. Public reference proteins and hotspot labels support the gene
 displays; genomic coordinates remain synthetic.
 
 Designed scenarios give High risk and KRAS-mutated groups poorer survival,
-and KRAS groups different expression profiles. These are demonstration effects,
+and KRAS groups different expression profiles. Expression also follows
+published myeloma patterns; for example, t(4;14) cases overexpress NSD2. These are demonstration effects,
 not clinical estimates. See [data generation and sources](docs/synthetic-data.md).
 
 - [Local development and fixture generation](docs/local-development.md)

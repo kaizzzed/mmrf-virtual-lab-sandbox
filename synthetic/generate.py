@@ -1,5 +1,6 @@
 """Generate fixtures from a seed only. No source-data input is accepted."""
 import argparse
+import gzip
 import hashlib
 import json
 import math
@@ -15,7 +16,7 @@ GENES = [
     ("NRAS", "ENSG00000213281", "chr1", 20000),
     ("TP53", "ENSG00000141510", "chr17", 30000),
     ("BRAF", "ENSG00000157764", "chr7", 40000),
-    ("DIS3", "ENSG00000150907", "chr13", 50000),
+    ("DIS3", "ENSG00000083520", "chr13", 50000),
     ("MYC", "ENSG00000136997", "chr8", 60000),
 ]
 COHORT_FIELDS = json.loads((Path(__file__).resolve().parents[1] / 'config/cohort-fields.json').read_text())
@@ -95,6 +96,44 @@ EXPRESSION_MODELS = GENES + [
     (symbol, PUBLIC_PROTEINS[symbol]['gene_id'], 'chr1', 100000 + i * 10000)
     for i, symbol in enumerate(EXPRESSION_GENES[6:])
 ]
+# Expression panel: the 36 genes above plus public HGNC symbols (CC0), selected by
+# build_gene_panel.py. Only these 36 have gene models, protein tracks and cells.
+GENE_PANEL = Path(__file__).with_name('public-genes.tsv')
+EXPRESSION_GENE_COUNT = 10000
+LN_TO_LOG2 = 1 / math.log(2)
+# Named programs follow published myeloma patterns (docs/synthetic-data.md).
+# Every magnitude below is an illustrative log2 shift, not a fitted estimate.
+PLASMA_CELL_GENES = ('SDC1', 'CD38', 'TNFRSF17', 'SLAMF7', 'PRDM1', 'IRF4', 'XBP1', 'MZB1',
+                     'JCHAIN', 'TXNDC5', 'SSR4', 'FKBP11', 'DERL3', 'HSPA5')
+HOUSEKEEPING_GENES = ('ACTB', 'GAPDH', 'B2M', 'RPLP0', 'EEF1A1', 'TPT1', 'FTL', 'TMSB4X')
+PROLIFERATION_GENES = ('MKI67', 'TOP2A', 'CCNB1', 'CCNB2', 'CDK1', 'BIRC5', 'AURKA', 'AURKB',
+                       'TYMS', 'RRM2', 'CENPF', 'BUB1', 'KIF11', 'PLK1', 'UBE2C', 'CDC20',
+                       'TK1', 'ZWINT', 'NUSAP1', 'PRC1', 'PCNA', 'E2F1')
+# Non-plasma bone-marrow cells; expression rises as tumor purity falls.
+MICROENVIRONMENT_GENES = ('LYZ', 'S100A8', 'S100A9', 'HBB', 'HBA1', 'HBA2', 'CD14', 'MPO',
+                          'ELANE', 'LTF', 'CAMP', 'CD3E', 'NKG7')
+Y_GENES = ('RPS4Y1', 'DDX3Y', 'KDM5D', 'UTY', 'EIF1AY', 'USP9Y', 'ZFY')
+LIGHT_CHAINS = {'kappa': ('IGKC',), 'lambda': ('IGLC1', 'IGLC2', 'IGLC3')}
+HEAVY_CHAINS = {'IgG': ('IGHG1', 'IGHG2', 'IGHG3', 'IGHG4'), 'IgA': ('IGHA1', 'IGHA2'), 'IgM': ('IGHM',)}
+# Driver genes of the IgH translocations already present as CGS markers.
+# t(4;14) raises NSD2 in every carrier; FGFR3 only where der(14) is retained.
+TRANSLOCATION_EFFECTS = {
+    't(4;14)': {'NSD2': 2.8, 'CCND2': 1.5, 'CCND1': -2.0},
+    't(14;16)': {'MAF': 4.5, 'CCND2': 2.0, 'ITGB7': 2.5, 'CX3CR1': 3.0, 'CCND1': -2.0},
+    't(14;20)': {'MAFB': 5.0, 'CCND2': 2.0, 'ITGB7': 2.5, 'CCND1': -2.0},
+}
+FGFR3_EFFECT, FGFR3_EXPRESSING_FRACTION = 7.0, .72
+# Typical log2 TPM-scale levels; unnamed genes draw from a bimodal distribution.
+BASELINES = {
+    **dict.fromkeys(PLASMA_CELL_GENES, 10.0), **dict.fromkeys(HOUSEKEEPING_GENES, 11.0),
+    **dict.fromkeys(MICROENVIRONMENT_GENES, 6.0), **dict.fromkeys(PROLIFERATION_GENES, 4.5),
+    **{gene: 9.0 for genes in (*LIGHT_CHAINS.values(), *HEAVY_CHAINS.values()) for gene in genes},
+    **dict.fromkeys(Y_GENES, 5.0), 'XIST': -4.0, 'B2M': 13.0,
+    'NSD2': 4.5, 'FGFR3': -1.5, 'CCND1': 3.0, 'CCND2': 4.0, 'MAF': 1.0, 'MAFB': -1.0,
+    'ITGB7': 2.0, 'CX3CR1': -.5, 'CKS1B': 5.0, 'CDKN2C': 4.0, 'FAF1': 5.0,
+}
+NAMED_EXPRESSION_GENES = tuple(dict.fromkeys(
+    [*BASELINES, *(gene for effects in TRANSLOCATION_EFFECTS.values() for gene in effects), 'FGFR3']))
 REFERENCE_LENGTH = 500000
 CODONS = {
     'A': 'GCT', 'C': 'TGT', 'D': 'GAT', 'E': 'GAA', 'F': 'TTT', 'G': 'GGT',
@@ -220,28 +259,156 @@ def apply_demo_outcomes(cases, variants, seed):
                             'surivival_time_os': days, 'survival_time_pfs': days}
 
 
+def load_gene_panel():
+    """Return (symbol, Ensembl gene ID, cytogenetic location) rows."""
+    rows = [tuple(line.split('\t')) for line in GENE_PANEL.read_text().splitlines()[1:]]
+    ids = {symbol: gid for symbol, gid, *_ in EXPRESSION_MODELS}
+    if [row[0] for row in rows[:len(EXPRESSION_GENES)]] != EXPRESSION_GENES or any(
+            ids[symbol] != gid for symbol, gid, _ in rows[:len(EXPRESSION_GENES)]):
+        raise ValueError('Gene panel must start with the modelled expression genes')
+    if len(rows) != EXPRESSION_GENE_COUNT or len({row[0] for row in rows}) != len(rows):
+        raise ValueError('Gene panel size or symbols are invalid')
+    return rows
+
+
+def gene_length(symbol):
+    """Artificial, deterministic transcript length (about 0.7-11.6 kb) for TPM."""
+    fraction = int.from_bytes(hashlib.sha256(symbol.encode()).digest()[:8], 'big') / 2 ** 64
+    return round(2 ** (9.5 + 4 * fraction))
+
+
+def poisson(rng, mean):
+    if mean > 40:
+        return max(0, round(rng.gauss(mean, math.sqrt(mean))))
+    limit, count, product = math.exp(-mean), 0, rng.random()
+    while product > limit:
+        count += 1
+        product *= rng.random()
+    return count
+
+
+def present_markers(case):
+    return {label for label, _, state in (item.partition(': ') for item in
+            case['cgs_risk_key_criteria']['other_criteria']) if state == 'Present'}
+
+
 def make_expression(out, cases, variants, seed):
-    """Shared latent modules give uneven clustering and a KRAS comparison signal."""
+    """Simulate RNA-Seq counts for the public gene panel.
+
+    Log2 abundances combine gene baselines, residual biological variation,
+    sample programs (purity, proliferation, sex, clonal immunoglobulin), arm-level
+    copy-number dosage, IgH translocation drivers with secondary programs, and the
+    original latent-module and KRAS demonstration effects. Counts are Poisson
+    draws from each sample's library size. Writes counts.tsv.gz (genes x samples).
+    """
     rng = random.Random(seed + 7223)
+    panel = load_gene_panel()
+    symbols = [row[0] for row in panel]
+    where = {symbol: index for index, symbol in enumerate(symbols)}
+    lengths = [gene_length(symbol) for symbol in symbols]
     kras = {v['case_id'] for v in variants if v['symbol'] == 'KRAS'}
-    expression = {gene: {} for gene in EXPRESSION_GENES}
-    counts = {gene: {} for gene in EXPRESSION_GENES}
-    baselines = {gene: rng.uniform(3, 5) for gene in EXPRESSION_GENES}
-    # Effects are arbitrary demonstration signatures, not inferred gene biology.
+    legacy = len(EXPRESSION_GENES)
+    # Legacy module structure is kept, except for the t(4;14) driver genes.
+    translocation_drivers = {where['NSD2'], where['FGFR3']}
+
+    base, spread = [], []
+    for index, symbol in enumerate(symbols):
+        if symbol in BASELINES:
+            level = BASELINES[symbol] + rng.gauss(0, .3)
+        elif index < legacy:
+            level = rng.uniform(3, 5) * LN_TO_LOG2
+        elif symbol.startswith(('RPL', 'RPS')):
+            level = rng.gauss(10, .7)
+        else:
+            level = rng.gauss(-4, 2) if rng.random() < .3 else rng.gauss(4, 1.8)
+        base.append(level)
+        spread.append(.25 + .3 * rng.random() + (.35 if level < 1 else 0))
+
+    named = set(NAMED_EXPRESSION_GENES) | set(EXPRESSION_GENES)
+    unnamed = [index for index in range(legacy, len(symbols)) if symbols[index] not in named]
+
+    def program(size, up_fraction):
+        """Secondary, mostly modest shifts on randomly chosen unnamed genes."""
+        return [(index, (1 if rng.random() < up_fraction else -1) * (.3 + rng.expovariate(2.5)))
+                for index in rng.sample(unnamed, size)]
+
+    modules = [[], [], [], []]
+    for index in unnamed:
+        if rng.random() < .06:
+            modules[rng.randrange(4)].append((index, rng.choice((1, 1, -1)) * rng.gauss(.9, .3)))
+    proliferation = [(where[g], .7) for g in PROLIFERATION_GENES] + [(i, rng.uniform(.2, .5)) for i in rng.sample(unnamed, 150)]
+    programs = {'t(4;14)': program(350, .65), 't(14;16)': program(200, .55)}
+    programs['t(14;20)'] = [(index, .8 * shift) for index, shift in programs['t(14;16)']]
+    arms = defaultdict(list)
+    for index, (symbol, _, location) in enumerate(panel):
+        if symbol in Y_GENES or symbol == 'XIST':
+            continue
+        sensitivity = rng.uniform(.4, 1.0)
+        if location.startswith('1q'):
+            arms['1q'].append((index, sensitivity))
+        elif location.startswith('17p'):
+            arms['17p'].append((index, sensitivity))
+        elif location.startswith(('1p32', '1p31')):
+            arms['1p32'].append((index, sensitivity))
+    biallelic_targets = [where['CDKN2C'], where['FAF1']]
+
+    counts = []
     for case in cases:
+        markers = present_markers(case)
         module = rng.choices([0, 1, 2, 3], weights=[52, 27, 15, 6])[0]
         latent = [rng.gauss(0, .30) for _ in range(4)]
-        library = rng.lognormvariate(0, .18)
-        for index, gene in enumerate(EXPRESSION_GENES):
+        library = rng.lognormvariate(math.log(3e7), .3)
+        purity = .6 + .38 * rng.betavariate(4, 2)
+        growth = rng.gauss(0, 1)
+        light = rng.choices(list(LIGHT_CHAINS), weights=[63, 37])[0]
+        heavy = rng.choices(['IgG', 'IgA', 'IgM', None], weights=[57, 22, 2, 19])[0]
+        fgfr3 = rng.random() < FGFR3_EXPRESSING_FRACTION
+        nsd2_variation = rng.gauss(0, .35)
+        values = [level + rng.gauss(0, sd) for level, sd in zip(base, spread)]
+
+        for index in range(legacy):
+            if index in translocation_drivers:
+                continue
             kras_effect = (1.45 if index % 2 == 0 else -1.2) if index < 16 and case['case_id'] in kras else 0
-            module_effect = (1.3 if module == index % 4 else -.25) + latent[index % 4]
-            log_value = baselines[gene] + kras_effect + module_effect + rng.gauss(0, .20)
-            value = round(math.exp(log_value), 4)
-            expression[gene][case['sample_id']] = value
-            counts[gene][case['sample_id']] = max(1, round(value * library * 30 * rng.lognormvariate(0, .12)))
-    write_json(out / 'expression.json', expression)
-    write_json(out / 'counts.json', counts)
-    return expression, counts
+            values[index] += (kras_effect + (1.3 if module == index % 4 else -.25) + latent[index % 4]) * LN_TO_LOG2
+        shifts = [*modules[module], *((index, load * growth) for index, load in proliferation)]
+        contamination = math.log2((1 - purity) / .12)
+        shifts += [(where[g], contamination) for g in MICROENVIRONMENT_GENES]
+        if case['gender'] == 'female':
+            shifts += [(where['XIST'], 11.0)] + [(where[g], -10.0) for g in Y_GENES]
+        for chain in LIGHT_CHAINS[light]:
+            shifts.append((where[chain], 6.5 if chain != 'IGLC1' else 4.0))
+        if heavy:
+            chains = HEAVY_CHAINS[heavy]
+            shifts.append((where[rng.choices(chains, weights=[75, 12, 9, 4][:len(chains)])[0]], 6.0))
+        if '1q gain/amplification' in markers:
+            shifts += [(index, .58 * s) for index, s in arms['1q']]
+        if 'del(17p) at qualifying clonal fraction' in markers:
+            shifts += [(index, -s) for index, s in arms['17p']]
+        if markers & {'Monoallelic del(1p32)', 'Biallelic del(1p32)'}:
+            shifts += [(index, -s) for index, s in arms['1p32']]
+        if 'Biallelic del(1p32)' in markers:
+            shifts += [(index, -6.0) for index in biallelic_targets]
+        for translocation, effects in TRANSLOCATION_EFFECTS.items():
+            if translocation in markers:
+                shifts += [(where[g], shift) for g, shift in effects.items()] + programs[translocation]
+        if 't(4;14)' in markers:
+            shifts.append((where['NSD2'], nsd2_variation))
+            if fgfr3:
+                shifts.append((where['FGFR3'], FGFR3_EFFECT))
+        for index, shift in shifts:
+            values[index] += shift
+
+        weights = [2 ** value * length for value, length in zip(values, lengths)]
+        scale = library / sum(weights)
+        counts.append([poisson(rng, weight * scale) for weight in weights])
+
+    with (out / 'counts.tsv.gz').open('wb') as raw, gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=0) as handle:
+        handle.write(('gene\tgene_id\tlength\t' + '\t'.join(c['sample_id'] for c in cases) + '\n').encode())
+        for index, (symbol, gid, _) in enumerate(panel):
+            row = '\t'.join(str(sample[index]) for sample in counts)
+            handle.write(f'{symbol}\t{gid}\t{lengths[index]}\t{row}\n'.encode())
+    return panel, counts
 
 
 def fill_field(record, path, value):
@@ -388,13 +555,12 @@ def generate(out, count=1000, seed=42):
                 variant = mutation_rng.choices(templates, weights=weights, k=1)[0]
                 variants.append({**variant, "case_id": case["case_id"], "sample_id": case["sample_id"], "sample": number})
     apply_demo_outcomes(records, variants, seed)
-    _, expression_counts = make_expression(out, records, variants, seed)
-    gene_ids = {gene[0]: gene[1] for gene in EXPRESSION_MODELS}
-    for case, file in zip(records, files):
+    panel, expression_counts = make_expression(out, records, variants, seed)
+    for case, file, sample_counts in zip(records, files, expression_counts):
         if file['data_format'] == 'TSV':
             payload = ('gene_id\tsample_id\tsynthetic_count\n' + ''.join(
-                f"{gene_ids[gene]}\t{case['sample_id']}\t{expression_counts[gene][case['sample_id']]}\n"
-                for gene in EXPRESSION_GENES)).encode()
+                f"{gid}\t{case['sample_id']}\t{count}\n"
+                for (_, gid, _), count in zip(panel, sample_counts))).encode()
             (out / file['file_name']).write_bytes(payload)
             file['file_size'] = len(payload)
             file['md5sum'] = hashlib.md5(payload, usedforsecurity=False).hexdigest()
@@ -402,10 +568,12 @@ def generate(out, count=1000, seed=42):
     write_json(out / "cases.json", records)
     write_json(out / "files.json", files)
     write_json(out / "variants.json", variants)
-    write_json(out / "provenance.json", {"synthetic": True, "generator_version": 6, "seed": seed,
+    write_json(out / "provenance.json", {"synthetic": True, "generator_version": 7, "seed": seed,
                                          "cases": count, "source": "Seeded synthetic demo scenarios; no patient inputs",
                                          "reference_proteins": {g: p["source"] for g,p in PUBLIC_PROTEINS.items()},
-                                         "survival_effects": "Designed poorer outcomes for high-risk and KRAS-mutated groups; not clinical estimates"})
+                                         "expression_genes": {"count": len(panel), "symbols": "deterministic sample from the HGNC complete set (CC0)"},
+                                         "survival_effects": "Designed poorer outcomes for high-risk and KRAS-mutated groups; not clinical estimates",
+                                         "expression_effects": "Literature-shaped myeloma programs with illustrative magnitudes; not fitted to patient data"})
     make_termdb(out, records, variants)
     make_gene_db(out)
     make_vcf(out, records, variants)
@@ -458,7 +626,8 @@ INSERT INTO buildDate VALUES ('synthetic-v1');
 """)
     kras = {v['case_id'] for v in variants if v['symbol'] == 'KRAS'}
     fields = [("cgs_risk_category", "CGS risk category", "categorical"),
-              ("kras_status", "KRAS mutation status", "categorical"), ("gender", "Gender", "categorical"), ("race", "Race", "categorical"),
+              ("kras_status", "KRAS mutation status", "categorical"),
+              ("t4_14_status", "t(4;14) translocation", "categorical"), ("gender", "Gender", "categorical"), ("race", "Race", "categorical"),
               ("vital_status", "Vital status", "categorical"), ("age_at_index", "Age at diagnosis", "integer"),
               ("therapeutic_agents", "Synthetic treatment", "categorical")]
     def field_value(case, key):
@@ -466,6 +635,8 @@ INSERT INTO buildDate VALUES ('synthetic-v1');
             return case['cgs_risk_key_criteria']['cgs_risk_category']
         if key == 'kras_status':
             return 'Mutated' if case['case_id'] in kras else 'No mutation'
+        if key == 't4_14_status':
+            return 'Present' if 't(4;14)' in present_markers(case) else 'Absent'
         return case[key]
     for order, (key, label, kind) in enumerate(fields):
         term = {"id": key, "name": label, "type": kind, "isleaf": True}
@@ -517,6 +688,12 @@ CREATE TABLE codingGenes (name TEXT COLLATE NOCASE);
         db.execute("INSERT INTO gene2coord VALUES (?,?,?,?)", (symbol, chrom, start, stop))
         db.execute("INSERT INTO gene2canonicalisoform VALUES (?,?)", (symbol, gid))
         db.execute("INSERT INTO codingGenes VALUES (?)", (symbol,))
+    # Expression-only genes have no model; aliases make ProteinPaint accept
+    # them in gene-expression requests and find them by exact symbol or ID.
+    modelled = {symbol for symbol, *_ in EXPRESSION_MODELS}
+    db.executemany("INSERT INTO genealias VALUES (?,?)",
+                   [(alias, symbol) for symbol, gid, _ in load_gene_panel() if symbol not in modelled
+                    for alias in (symbol, gid)])
     db.commit()
     db.close()
 
