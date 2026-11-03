@@ -117,8 +117,9 @@ LIGHT_CHAINS = {'kappa': ('IGKC',), 'lambda': ('IGLC1', 'IGLC2', 'IGLC3')}
 HEAVY_CHAINS = {'IgG': ('IGHG1', 'IGHG2', 'IGHG3', 'IGHG4'), 'IgA': ('IGHA1', 'IGHA2'), 'IgM': ('IGHM',)}
 # Driver genes of the IgH translocations already present as CGS markers.
 # t(4;14) raises NSD2 in every carrier; FGFR3 only where der(14) is retained.
+# MAF is also raised in t(4;14), downstream of FGFR3/MEK signalling.
 TRANSLOCATION_EFFECTS = {
-    't(4;14)': {'NSD2': 2.8, 'CCND2': 1.5, 'CCND1': -2.0},
+    't(4;14)': {'NSD2': 2.8, 'CCND2': 1.5, 'CCND1': -2.0, 'MAF': 2.0},
     't(14;16)': {'MAF': 4.5, 'CCND2': 2.0, 'ITGB7': 2.5, 'CX3CR1': 3.0, 'CCND1': -2.0},
     't(14;20)': {'MAFB': 5.0, 'CCND2': 2.0, 'ITGB7': 2.5, 'CCND1': -2.0},
 }
@@ -364,6 +365,10 @@ def make_expression(out, cases, variants, seed):
         heavy = rng.choices(['IgG', 'IgA', 'IgM', None], weights=[57, 22, 2, 19])[0]
         fgfr3 = rng.random() < FGFR3_EXPRESSING_FRACTION
         nsd2_variation = rng.gauss(0, .35)
+        # Clones differ: driver and secondary effects vary in strength, and
+        # copy-number shifts scale with the clonal fraction.
+        driver, secondary = rng.gauss(1, .2), max(.1, rng.gauss(1, .45))
+        clone = rng.uniform(.5, 1)
         values = [level + rng.gauss(0, sd) for level, sd in zip(base, spread)]
 
         for index in range(legacy):
@@ -382,20 +387,21 @@ def make_expression(out, cases, variants, seed):
             chains = HEAVY_CHAINS[heavy]
             shifts.append((where[rng.choices(chains, weights=[75, 12, 9, 4][:len(chains)])[0]], 6.0))
         if '1q gain/amplification' in markers:
-            shifts += [(index, .58 * s) for index, s in arms['1q']]
+            shifts += [(index, .58 * clone * s) for index, s in arms['1q']]
         if 'del(17p) at qualifying clonal fraction' in markers:
-            shifts += [(index, -s) for index, s in arms['17p']]
+            shifts += [(index, -clone * s) for index, s in arms['17p']]
         if markers & {'Monoallelic del(1p32)', 'Biallelic del(1p32)'}:
-            shifts += [(index, -s) for index, s in arms['1p32']]
+            shifts += [(index, -clone * s) for index, s in arms['1p32']]
         if 'Biallelic del(1p32)' in markers:
-            shifts += [(index, -6.0) for index in biallelic_targets]
+            shifts += [(index, -6.0 * clone) for index in biallelic_targets]
         for translocation, effects in TRANSLOCATION_EFFECTS.items():
             if translocation in markers:
-                shifts += [(where[g], shift) for g, shift in effects.items()] + programs[translocation]
+                shifts += [(where[g], shift if g == 'NSD2' else driver * shift) for g, shift in effects.items()]
+                shifts += [(index, secondary * shift) for index, shift in programs[translocation]]
         if 't(4;14)' in markers:
             shifts.append((where['NSD2'], nsd2_variation))
             if fgfr3:
-                shifts.append((where['FGFR3'], FGFR3_EFFECT))
+                shifts.append((where['FGFR3'], driver * FGFR3_EFFECT))
         for index, shift in shifts:
             values[index] += shift
 
@@ -433,11 +439,13 @@ def cgs_fixture(rng):
     This is a fixture vocabulary, not a classifier for genomic/clinical input.
     Risk labels control the designed survival scenario. The TP53 marker also controls TP53 variant presence.
     """
-    # Arbitrary fixture weights keep High risk a minority, not an estimate of
-    # clinical prevalence. Categories still follow the assigned criteria.
-    del17p, tp53, gain1q = (rng.random() < probability for probability in (.05, .12, .2))
-    igh = rng.choices((None, 't(4;14)', 't(14;16)', 't(14;20)'), weights=(70, 10, 10, 10))[0]
-    del1p = rng.choices(('Absent', 'Monoallelic', 'Biallelic'), weights=(85, 13, 2))[0]
+    # Approximate published newly diagnosed frequencies; see docs/synthetic-data.md.
+    # TP53 mutations cluster with del(17p), and 1q gain with IgH translocations.
+    del17p = rng.random() < .09
+    tp53 = rng.random() < (.5 if del17p else .05)
+    igh = rng.choices((None, 't(4;14)', 't(14;16)', 't(14;20)'), weights=(79.5, 15, 4, 1.5))[0]
+    gain1q = rng.random() < (.3 if igh is None else .6)
+    del1p = rng.choices(('Absent', 'Monoallelic', 'Biallelic'), weights=(89, 9.5, 1.5))[0]
     high_b2m, normal_creatinine = rng.random() < .1, rng.random() < .7
     positive = (
         del17p or tp53,
@@ -568,7 +576,7 @@ def generate(out, count=1000, seed=42):
     write_json(out / "cases.json", records)
     write_json(out / "files.json", files)
     write_json(out / "variants.json", variants)
-    write_json(out / "provenance.json", {"synthetic": True, "generator_version": 7, "seed": seed,
+    write_json(out / "provenance.json", {"synthetic": True, "generator_version": 8, "seed": seed,
                                          "cases": count, "source": "Seeded synthetic demo scenarios; no patient inputs",
                                          "reference_proteins": {g: p["source"] for g,p in PUBLIC_PROTEINS.items()},
                                          "expression_genes": {"count": len(panel), "symbols": "deterministic sample from the HGNC complete set (CC0)"},

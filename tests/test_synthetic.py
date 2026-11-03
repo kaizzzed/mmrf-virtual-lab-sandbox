@@ -101,6 +101,7 @@ class SyntheticIntegrity(unittest.TestCase):
                 fgfr3_high = statistics.mean(cpm['FGFR3'][index[c['case_id']]] > fgfr3_ceiling for c in translocated)
                 self.assertTrue(.55 < fgfr3_high < .9, fgfr3_high)
                 self.assertLess(difference('CCND1', translocated, others), -1)
+                self.assertGreater(difference('MAF', translocated, [c for c in others if 't(14;16)' not in generator.present_markers(c)]), 1)
                 # Other comparisons do not inherit the NSD2 signal.
                 female = [c for c in cases if c['gender'] == 'female']
                 male = [c for c in cases if c['gender'] == 'male']
@@ -221,6 +222,13 @@ class SyntheticIntegrity(unittest.TestCase):
             self.assertEqual({c['cgs_risk_key_criteria']['cgs_risk_category'] for c in cases}, {'High risk', 'Standard risk'})
             risk_counts = Counter(c['cgs_risk_key_criteria']['cgs_risk_category'] for c in cases)
             self.assertLess(risk_counts['High risk'], risk_counts['Standard risk'])
+            self.assertGreaterEqual(risk_counts['High risk'], 250)
+            # Marker frequencies stay near published newly diagnosed rates.
+            present = Counter(o.removesuffix(': Present') for c in cases
+                              for o in c['cgs_risk_key_criteria']['other_criteria'] if o.endswith(': Present'))
+            for marker, low, high in (('t(4;14)', 120, 190), ('t(14;16)', 15, 65), ('t(14;20)', 5, 30),
+                                      ('1q gain/amplification', 280, 420), ('del(17p) at qualifying clonal fraction', 60, 130)):
+                self.assertTrue(low <= present[marker] <= high, (marker, present[marker]))
             self.assertEqual({label for c in cases for label in c['cgs_risk_key_criteria']['cgs_risk_criteria']}, set(generator.CGS_CRITERIA))
             for case in cases:
                 risk = case['cgs_risk_key_criteria']
