@@ -89,6 +89,8 @@ are gone in the AWS console. There is no automatic shutdown.
 ## Operational notes
 
 - Resources incur charges until deleted, including while the browser is closed.
+- ProteinPaint may use 6 GiB: each concurrent edgeR differential expression
+  needs about 0.85 GiB, so about six can run at once. Wilcoxon needs far less.
 - Data is ephemeral and reseeded when Elasticsearch storage is recreated. An
   upgrade that changes the fixtures replaces the search indices; Guppy and
   Analysis restart and wait for that reseed, and the post-deploy check compares
