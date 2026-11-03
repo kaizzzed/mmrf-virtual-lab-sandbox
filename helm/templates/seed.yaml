@@ -18,3 +18,5 @@ spec:
           command: [python, watch_seed.py]
           env:
             - {name: GEN3_ES_ENDPOINT, value: 'http://elasticsearch:9200'}
+            # Recorded with the seed so dependents start only on this fixture version.
+            - {name: SEED_IMAGE, value: {{ .Values.images.seed | quote }}}

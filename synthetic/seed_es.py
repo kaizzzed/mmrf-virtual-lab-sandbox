@@ -15,6 +15,11 @@ if base not in ("http://elasticsearch:9200", "http://127.0.0.1:19200"):
 root = Path(os.environ.get("DATA_DIR", "/data"))
 
 
+def fixture_fingerprint():
+    """Identify the fixture version this image seeds."""
+    return hashlib.sha256(b''.join((root / name).read_bytes() for name in ('cases.json', 'files.json', 'variants.json'))).hexdigest()
+
+
 def request(path, data=None, method="GET", content_type="application/json"):
     raw = data.encode() if isinstance(data, str) else json.dumps(data).encode() if data is not None else None
     req = urllib.request.Request(base + path, data=raw, method=method, headers={"Content-Type": content_type})
@@ -159,7 +164,7 @@ if __name__ == "__main__":
     if any(not c.get("synthetic") or not c["case_id"].startswith("SYNTH-CASE-") for c in cases):
         raise SystemExit("Refusing non-synthetic fixtures")
     # Refuse a stale index rather than silently mixing different generated cohorts.
-    fingerprint = hashlib.sha256(b''.join((root / f).read_bytes() for f in ('cases.json', 'files.json', 'variants.json'))).hexdigest()
+    fingerprint = fixture_fingerprint()
     try:
         previous = request('/sandbox_seed_complete/_doc/ready')['_source']
         if previous.get('fingerprint') != fingerprint:
@@ -275,4 +280,4 @@ if __name__ == "__main__":
         request('/sandbox_seed_complete')
     except urllib.error.HTTPError:
         request('/sandbox_seed_complete', {}, 'PUT')
-    request('/sandbox_seed_complete/_doc/ready?refresh=true', {'synthetic': True, 'fingerprint': fingerprint}, 'PUT')
+    request('/sandbox_seed_complete/_doc/ready?refresh=true', {'synthetic': True, 'fingerprint': fingerprint, 'seed_image': os.environ.get('SEED_IMAGE', '')}, 'PUT')

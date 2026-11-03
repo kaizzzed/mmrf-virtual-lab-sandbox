@@ -60,6 +60,13 @@ assert result['CaseCentric__aggregation']['case_centric']['_totalCount'] == len(
 assert {c['case_id'] for c in result['CaseCentric_case_centric']} == {c['case_id'] for c in female}
 print(f'PASS: real Guppy cohort filtering ({len(cases)} -> {len(female)})')
 
+# Fixture versions share counts; exact membership shows search serves these fixtures.
+high_risk = {c['case_id'] for c in cases if c['cgs_risk_key_criteria']['cgs_risk_category'] == 'High risk'}
+query = 'query($filter:JSON) { Case_case(first:1000,filter:$filter) { case_id } }'
+result = call('/guppy/graphql', {'query': query, 'variables': {'filter': {'in': {'cgs_risk_key_criteria.cgs_risk_category': ['High risk']}}}})['data']
+assert {c['case_id'] for c in result['Case_case']} == high_risk, 'Search serves different fixtures; reseed it'
+print(f'PASS: search High risk membership matches the generated fixtures ({len(high_risk)} cases)')
+
 query = '{ File_file(first:1000) { file_id cases { case_id } } }'
 files = call('/guppy/graphql', {'query': query})['data']['File_file']
 assert len(files) == len(cases)
