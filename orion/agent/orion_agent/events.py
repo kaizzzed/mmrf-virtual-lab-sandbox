@@ -12,11 +12,26 @@ from ag_ui.core import (
     StateSnapshotEvent,
     StepFinishedEvent,
     StepStartedEvent,
+    TextMessageContentEvent,
+    TextMessageEndEvent,
+    TextMessageStartEvent,
+    ToolCallArgsEvent,
+    ToolCallEndEvent,
+    ToolCallStartEvent,
 )
 from ag_ui.encoder import EventEncoder
 from pydantic import JsonValue
 
-from .models import SNAPSHOT_LIMIT_BYTES, Code, ConfirmPending, FinishStatus, RunView
+from .models import (
+    SNAPSHOT_LIMIT_BYTES,
+    Code,
+    ConfirmPending,
+    FinishStatus,
+    RunView,
+    SaveCohortsArgs,
+    save_cohorts_args_chunks,
+    text_message_chunks,
+)
 
 HEARTBEAT_NAME = "orion.heartbeat"
 _ENCODER = EventEncoder()
@@ -57,6 +72,23 @@ def step_started(step_id: str) -> StepStartedEvent:
 
 def step_finished(step_id: str) -> StepFinishedEvent:
     return StepFinishedEvent(step_name=step_id)
+
+
+def save_cohorts_call(args: SaveCohortsArgs) -> list[BaseEvent]:
+    """The confirmation pause's tool call: TOOL_CALL_START, the args JSON in chunks of at most 8,192
+    characters, TOOL_CALL_END; the toolCallId is the pending nonce (contract "save_cohorts tool call")."""
+    frames: list[BaseEvent] = [ToolCallStartEvent(tool_call_id=args.nonce, tool_call_name="save_cohorts")]
+    frames += [ToolCallArgsEvent(tool_call_id=args.nonce, delta=delta) for delta in save_cohorts_args_chunks(args)]
+    frames.append(ToolCallEndEvent(tool_call_id=args.nonce))
+    return frames
+
+
+def text_message(message_id: str, markdown: str) -> list[BaseEvent]:
+    """The verified answer as markdown, in deltas of at most 8,192 characters (messageId `<runId>.v<n>`)."""
+    frames: list[BaseEvent] = [TextMessageStartEvent(message_id=message_id, role="assistant")]
+    frames += [TextMessageContentEvent(message_id=message_id, delta=delta) for delta in text_message_chunks(markdown)]
+    frames.append(TextMessageEndEvent(message_id=message_id))
+    return frames
 
 
 def heartbeat(moment: datetime) -> CustomEvent:

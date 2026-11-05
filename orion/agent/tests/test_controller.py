@@ -1,4 +1,6 @@
-"""Run controller behaviour through the real AGUIApp: detached runs, lease, busy, cancel, ping."""
+"""Run controller behaviour through the real AGUIApp with the Day 1 stubs: detached runs, lease, busy, cancel, ping.
+
+The engine, the resume actions and the journeys are in test_engine_*.py."""
 
 import asyncio
 import contextlib
@@ -124,13 +126,22 @@ class InvocationTests(ControllerCase):
             with self.subTest(orion=orion):
                 await self.assert_rejected(app, action_body(new_id(), new_id(), orion), "INVALID_INPUT")
 
-    async def test_reserved_actions_are_not_implemented_and_leave_their_run_alone(self) -> None:
+    async def test_every_action_is_implemented_and_a_wrong_one_leaves_its_run_alone(self) -> None:
+        """No action is NOT_IMPLEMENTED any more; one a Limited run cannot take is rejected by check 6 or 7."""
         _, app = self.make()
         thread_id, run_id = new_id(), new_id()
         await asgi_call(app, "POST", "/invocations", ask_body(thread_id, run_id))
-        for action in ("clarify_answer", "consent", "confirm", "edit_plan", "retry_step", "viz_report"):
-            with self.subTest(action=action):
-                await self.assert_rejected(app, action_body(thread_id, run_id, {"action": action}), "NOT_IMPLEMENTED")
+        cases: list[tuple[dict[str, JsonValue], str]] = [
+            ({"action": "clarify_answer", "optionId": "x"}, "STALE_ACTION"),
+            ({"action": "consent", "accept": True}, "STALE_ACTION"),
+            ({"action": "confirm", "nonce": new_id(), "decision": "dont_save", "saved": [], "makeActive": None}, "STALE_ACTION"),
+            ({"action": "retry_step", "stepId": "s1"}, "STALE_ACTION"),
+            ({"action": "edit_plan", "field": "method", "value": "edgeR"}, "INVALID_INPUT"),
+            ({"action": "viz_report", "vizId": "v1", "mounted": True, "error": None, "pinnedHashVerified": None}, "INVALID_INPUT"),
+        ]
+        for orion, code in cases:
+            with self.subTest(action=orion["action"]):
+                await self.assert_rejected(app, action_body(thread_id, run_id, orion), code)  # type: ignore[arg-type]
 
     async def test_venn_question_ends_unsupported_naming_set_operations(self) -> None:
         _, app = self.make()
@@ -244,7 +255,7 @@ class DetachedRunTests(ControllerCase):
         await asyncio.wait_for(executor.started.wait(), 5)
         await self.assert_rejected(app, ask_body(thread_id, new_id()), "RUN_BUSY")
         await self.assert_rejected(app, ask_body(thread_id, run_id), "INVALID_INPUT")
-        await self.assert_rejected(app, action_body(thread_id, run_id, {"action": "retry_step", "stepId": "s1"}), "NOT_IMPLEMENTED")
+        await self.assert_rejected(app, action_body(thread_id, run_id, {"action": "retry_step", "stepId": "s1"}), "STALE_ACTION")
         self.assertEqual(controller_module.RUNS[run_id].status, "Executing")
         executor.release.set()
         last = check_stream(self, (await first).text, expect_run_id=run_id)[-1]
@@ -275,7 +286,7 @@ class DetachedRunTests(ControllerCase):
             last = frames[-1]
             assert isinstance(last, RunFinishedFrame)
             self.assertEqual(last.result.status, "Cancelled")
-        self.assertIsNone(self.read_json(controller.store.thread_path(thread_id))["activeRunId"])
+        self.assertIsNone(self.read_json(self.run_dir / "threads" / f"{thread_id}.json")["activeRunId"])
 
     async def test_cancel_of_unknown_or_ended_runs(self) -> None:
         _, app = self.make()

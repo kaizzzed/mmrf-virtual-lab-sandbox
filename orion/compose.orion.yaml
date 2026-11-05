@@ -1,0 +1,88 @@
+# ORION mode L: a Compose override layered on the sandbox's compose.yaml, which it never edits
+# (RFA rev 25, A4 "Deployment"; contract "Where records live"). From the sandbox repo root:
+#
+#   docker compose -f compose.yaml -f orion/compose.orion.yaml config     # check the merge
+#   orion/scripts/orion-local.sh up                                        # build and start
+#
+# Paths below are relative to the project directory (the repo root, where compose.yaml lives),
+# because Compose resolves every file's relative paths against the first file's directory.
+#
+# What it adds:
+# - `orion-agent`: the run controller with in-process tools against http://identity:8080, the
+#   stub planner and stub composer (no model call, so no AWS credential is needed), and the
+#   run-record volume `orion-runs` mounted read-write at /data/runs.
+# - `frontend`: the same volume read-only plus ORION_MODE=L, ORION_AGENT_URL and ORION_RUN_DIR
+#   for the BFF routes (src/pages/api/orion/).
+#
+# Bedrock (real planner or composer) stays off. Every AWS and model variable below is listed
+# without a value, so Compose passes it only when it is set in your shell; nothing is read from
+# ~/.aws. Export short-term credentials and the model settings first (orion-local.sh help).
+#
+# Mode L never tunnels the gateway to the internet: the agent's port is published on 127.0.0.1 only.
+
+services:
+  orion-agent:
+    image: mmrf-sandbox/orion-agent:local
+    build:
+      context: orion/agent
+      # Bake the vocabulary and the golden request bodies into the image, as AgentCore runs it.
+      additional_contexts:
+        golden: orion/golden
+        sandbox-config: config
+    environment:
+      ORION_MODE: L
+      ORION_RUN_DIR: /data/runs
+      ORION_FIELDS_PATH: /config/cohort-fields.json
+      ORION_GOLDEN_DIR: /golden
+      ORION_VLAB_ORIGIN: http://identity:8080
+      # Both names: settings.py reads ORION_TOOLS, tools/config.py ORION_TOOL_TRANSPORT.
+      ORION_TOOLS: inprocess
+      ORION_TOOL_TRANSPORT: in_process
+      # Stub planner and composer by default; override from the shell to try others.
+      ORION_PLANNER: ${ORION_PLANNER:-stub}
+      ORION_COMPOSER: ${ORION_COMPOSER:-stub}
+      ORION_DEFAULT_SCOPE: ${ORION_DEFAULT_SCOPE:-active_cohort}
+      # The keys below have no value: Compose passes each one only when it is set in your shell,
+      # and otherwise leaves it out of the container, so the agent's own default applies.
+      ORION_EXECUTOR:
+      ORION_DE_LAUNCHER:
+      # E11 fault injection, such as de_run:timeout; honoured only in mode L.
+      ORION_FAULTS:
+      # Bedrock, only for ORION_PLANNER=bedrock or ORION_COMPOSER=bedrock: client, model ids
+      # (model/config.py has defaults) and short-term credentials.
+      ORION_BEDROCK_CLIENT:
+      ORION_BEDROCK_REGION:
+      ORION_PLANNER_MODEL:
+      ORION_COMPOSER_MODEL:
+      ORION_FALLBACK_MODEL:
+      AWS_REGION:
+      AWS_ACCESS_KEY_ID:
+      AWS_SECRET_ACCESS_KEY:
+      AWS_SESSION_TOKEN:
+    volumes:
+      - orion-runs:/data/runs
+    ports:
+      - 127.0.0.1:${ORION_AGENT_PORT:-8081}:8080
+    healthcheck:
+      # /ping answers 200 with Healthy or HealthyBusy; both are healthy.
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ping', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      start_period: 20s
+      retries: 30
+    depends_on:
+      identity: {condition: service_healthy}
+  frontend:
+    environment:
+      ORION_MODE: L
+      ORION_AGENT_URL: http://orion-agent:8080
+      ORION_RUN_DIR: /data/runs
+    volumes:
+      - orion-runs:/data/runs:ro
+    # The agent mounts the new volume first, so Docker copies its /data/runs ownership (uid 10001)
+    # into it; a read-only first mount would leave it root-owned and unwritable for the agent.
+    # Only the start is awaited: the sandbox UI never waits for ORION to be healthy.
+    depends_on:
+      orion-agent: {condition: service_started}
+volumes:
+  orion-runs:

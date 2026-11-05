@@ -104,6 +104,37 @@ class IRTests(unittest.TestCase):
             with self.subTest(name), self.assertRaises(ValidationError):
                 ir.parse_planner_output(payload)
 
+    def test_edit_fields_are_optional_and_omitted_when_unset(self) -> None:
+        output = ir.parse_planner_output(J3_IR)
+        assert isinstance(output, ir.Plan)
+        dumped = json.loads(output.model_dump_json(by_alias=True))
+        self.assertNotIn("name", dumped["cohorts"][0])
+        self.assertNotIn("thresholds", dumped["analyses"][0])
+        renamed = output.model_copy(update={"cohorts": [output.cohorts[0].model_copy(update={"name": "Tested (ORION)"}), *output.cohorts[1:]]})
+        stated = ir.Thresholds(p_value_cutoff=0.01, p_value_type="original", fold_change_cutoff=1.0)
+        analysis = output.analyses[0].model_copy(update={"thresholds": stated})
+        edited = renamed.model_copy(update={"analyses": [analysis]})
+        again = ir.parse_planner_output(edited.model_dump_json(by_alias=True))
+        self.assertEqual(again, edited)
+        self.assertEqual(json.loads(edited.model_dump_json(by_alias=True))["analyses"][0]["thresholds"],
+                         {"p_value_cutoff": 0.01, "p_value_type": "original", "fold_change_cutoff": 1.0})
+
+    def test_edit_field_bounds(self) -> None:
+        bad: dict[str, JsonValue] = {
+            "empty name": {"cohorts": [{"ref": "a", "name": "", "def": {"kind": "mutation_tested", "within": "base"}}],
+                           "analyses": [{"kind": "cohort_size", "cohort": "a"}]},
+            "long name": {"cohorts": [{"ref": "a", "name": "x" * 101, "def": {"kind": "mutation_tested", "within": "base"}}],
+                          "analyses": [{"kind": "cohort_size", "cohort": "a"}]},
+            "zero cutoff": {"analyses": [{"kind": "differential_expression", "group1": "base", "group2": "base",
+                                          "thresholds": {"p_value_cutoff": 0, "p_value_type": "adjusted", "fold_change_cutoff": 0.3}}]},
+            "other p type": {"analyses": [{"kind": "differential_expression", "group1": "base", "group2": "base",
+                                           "thresholds": {"p_value_cutoff": 0.05, "p_value_type": "raw", "fold_change_cutoff": 0.3}}]},
+        }
+        for name, fields in bad.items():
+            assert isinstance(fields, dict)
+            with self.subTest(name), self.assertRaises(ValidationError):
+                ir.parse_planner_output(_plan(**fields))
+
     def test_clarify_and_unsupported(self) -> None:
         clarify = ir.parse_planner_output(
             json.dumps({"kind": "clarify", "slot": "split_term", "option_ids": ["cgs_risk_key_criteria.cgs_risk_category", "diagnoses.iss_stage"]})

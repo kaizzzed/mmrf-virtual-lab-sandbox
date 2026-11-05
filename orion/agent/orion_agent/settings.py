@@ -1,4 +1,9 @@
-"""Runtime settings, read once from the environment."""
+"""Runtime settings, read once from the environment (orion/agent/README.md lists every variable).
+
+ORION_MODE picks where records live (L: ORION_RUN_DIR; A and H: S3), ORION_PLANNER and
+ORION_COMPOSER pick the model roles (stub or bedrock), ORION_EXECUTOR the step engine (engine, or
+the Day 1 stub) and ORION_TOOLS how server tools are reached (in-process, or AgentCore Gateway).
+"""
 
 import os
 from pathlib import Path
@@ -10,6 +15,10 @@ from .tools.base import ServerToolName
 
 DefaultScope = Literal["active_cohort", "all_cases"]
 Mode = Literal["L", "A", "H"]
+ModelChoice = Literal["stub", "bedrock"]
+ExecutorChoice = Literal["stub", "engine"]
+ToolsChoice = Literal["inprocess", "gateway"]
+DeLauncher = Literal["deDirect", "deInput"]
 
 # Fault injection for E11 (contract "Fault injection"): ORION_FAULTS="de_run:timeout,planner:refuse".
 # A tool fault replaces that tool's HTTP call; `refuse` makes the model role return a refusal from
@@ -49,17 +58,33 @@ class Settings(BaseModel):
 
     run_dir: Path = Path("/data/runs")
     fields_path: Path = Path("/config/cohort-fields.json")
-    planner: Literal["stub"] = "stub"
-    executor: Literal["stub"] = "stub"
+    planner: ModelChoice = "stub"
+    composer: ModelChoice = "stub"
+    executor: ExecutorChoice = "engine"
+    tools: ToolsChoice = "inprocess"
     default_scope: DefaultScope = "active_cohort"
     vlab_origin: str = "http://identity:8080"
     heartbeat_s: float = Field(default=15.0, gt=0)
     lease_renew_s: float = Field(default=30.0, gt=0)
     lease_ttl_s: float = Field(default=180.0, gt=0)
+    # The executor has this long to abort its in-flight call after Stop before the controller cancels it.
+    stop_grace_s: float = Field(default=5.0, gt=0)
+    # A warmup turn waits at most this long for the model roles to warm their cached prefixes (C-41).
+    warmup_timeout_s: float = Field(default=30.0, gt=0)
+    # The DE card's launcher (TOOLS.md 5.6): the direct mount, or the DEinput fallback (cut 2).
+    de_launcher: DeLauncher = "deDirect"
+    # Modes A and H: where the Runtime writes run records (contract "Where records live").
+    run_bucket: str | None = None
+    run_prefix: str = "orion/"
+    aws_region: str = "us-east-1"
     port: int = 8080
     mode: Mode = "L"
     test_runtime: bool = False
     faults: dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def tool_transport(self) -> Literal["in_process", "gateway"]:
+        return "gateway" if self.tools == "gateway" else "in_process"
 
     @field_validator("faults", mode="before")
     @classmethod
@@ -82,12 +107,20 @@ class Settings(BaseModel):
             "ORION_RUN_DIR": "run_dir",
             "ORION_FIELDS_PATH": "fields_path",
             "ORION_PLANNER": "planner",
+            "ORION_COMPOSER": "composer",
             "ORION_EXECUTOR": "executor",
+            "ORION_TOOLS": "tools",
             "ORION_DEFAULT_SCOPE": "default_scope",
             "ORION_VLAB_ORIGIN": "vlab_origin",
             "ORION_HEARTBEAT_S": "heartbeat_s",
             "ORION_LEASE_RENEW_S": "lease_renew_s",
             "ORION_LEASE_TTL_S": "lease_ttl_s",
+            "ORION_STOP_GRACE_S": "stop_grace_s",
+            "ORION_WARMUP_TIMEOUT_S": "warmup_timeout_s",
+            "ORION_DE_LAUNCHER": "de_launcher",
+            "ORION_RUN_BUCKET": "run_bucket",
+            "ORION_RUN_PREFIX": "run_prefix",
+            "AWS_REGION": "aws_region",
             "ORION_MODE": "mode",
             "ORION_TEST_RUNTIME": "test_runtime",
             "ORION_FAULTS": "faults",

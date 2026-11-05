@@ -1,10 +1,10 @@
-"""Run records and thread indexes on a local volume (mode L; S3 in modes A and H).
+"""Run records and thread indexes: a local volume in mode L, S3 in modes A and H (contract "Where records live").
 
-One JSON record per run, rewritten after every transition with a rising revision. Writes are
-atomic (temp file, then os.replace), and each run has a single writer guarded by an
-asyncio.Lock, so a lease renewal never overwrites a newer status. Only the run's owner writes:
-the RunWriter of the task running it, or, for a run at rest (paused or ended), the invocation
-that accepted an action on it (contract "Who writes a record").
+One JSON record per run, rewritten after every transition with a rising revision. Local writes are
+atomic (temp file, then os.replace); S3 writes are one PUT per transition and lease renewal. Each
+run has a single writer guarded by an asyncio.Lock, so a lease renewal never overwrites a newer
+status. Only the run's owner writes: the RunWriter of the task running it, or, for a run at rest
+(paused or ended), the invocation that accepted an action on it (contract "Who writes a record").
 """
 
 import asyncio
@@ -13,7 +13,7 @@ import secrets
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Final, Literal
+from typing import Any, Final, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -176,7 +176,21 @@ def _read(path: Path) -> str | None:
         return None
 
 
+class RecordStore(Protocol):
+    """Where run records and thread indexes live: RunStore (mode L) or S3RunStore (modes A and H)."""
+
+    async def load_run(self, run_id: str) -> RunRecord | None: ...
+
+    async def save_run(self, record: RunRecord) -> None: ...
+
+    async def load_thread(self, thread_id: str) -> ThreadIndex: ...
+
+    async def save_thread(self, index: ThreadIndex) -> None: ...
+
+
 class RunStore:
+    """Mode L: `${ORION_RUN_DIR}/runs/<runId>.json` and `threads/<threadId>.json`, written by atomic rename."""
+
     def __init__(self, root: Path) -> None:
         self.root = root
 
@@ -201,6 +215,64 @@ class RunStore:
         await asyncio.to_thread(_atomic_write, self.thread_path(index.thread_id), index.model_dump_json(indent=1))
 
 
+class S3Client(Protocol):
+    """The two calls S3RunStore makes, as boto3's S3 client spells them (injected; never created at import)."""
+
+    def get_object(self, **kwargs: Any) -> Any: ...  # Any: boto3's untyped response dict
+
+    def put_object(self, **kwargs: Any) -> Any: ...
+
+
+class S3RunStore:
+    """Modes A and H: `s3://${ORION_RUN_BUCKET}/${ORION_RUN_PREFIX}runs/<runId>.json` (and `threads/`).
+
+    One PUT per transition and lease renewal; the BFF reads `runs/*` with s3:GetObject. The client is
+    injected (boto3's `s3` client in the Runtime), so tests run against a fake and nothing here calls
+    AWS at import time.
+    """
+
+    def __init__(self, client: S3Client, bucket: str, prefix: str = "orion/") -> None:
+        self.client = client
+        self.bucket = bucket
+        self.prefix = prefix
+
+    def run_key(self, run_id: str) -> str:
+        return f"{self.prefix}runs/{run_id}.json"
+
+    def thread_key(self, thread_id: str) -> str:
+        return f"{self.prefix}threads/{thread_id}.json"
+
+    def _get(self, key: str) -> str | None:
+        try:
+            response = self.client.get_object(Bucket=self.bucket, Key=key)
+        except Exception as error:  # botocore's ClientError, without importing botocore here
+            code = getattr(error, "response", {}).get("Error", {}).get("Code")
+            if code in ("NoSuchKey", "404", "NotFound"):
+                return None
+            raise
+        body = response["Body"].read()
+        return body.decode("utf-8") if isinstance(body, bytes) else str(body)
+
+    def _put(self, key: str, text: str) -> None:
+        self.client.put_object(
+            Bucket=self.bucket, Key=key, Body=text.encode("utf-8"), ContentType="application/json", CacheControl="no-store"
+        )
+
+    async def load_run(self, run_id: str) -> RunRecord | None:
+        text = await asyncio.to_thread(self._get, self.run_key(run_id))
+        return None if text is None else RunRecord.model_validate_json(text)
+
+    async def save_run(self, record: RunRecord) -> None:
+        await asyncio.to_thread(self._put, self.run_key(record.run_id), record.model_dump_json(indent=1))
+
+    async def load_thread(self, thread_id: str) -> ThreadIndex:
+        text = await asyncio.to_thread(self._get, self.thread_key(thread_id))
+        return ThreadIndex(thread_id=thread_id) if text is None else ThreadIndex.model_validate_json(text)
+
+    async def save_thread(self, index: ThreadIndex) -> None:
+        await asyncio.to_thread(self._put, self.thread_key(index.thread_id), index.model_dump_json(indent=1))
+
+
 Publish = Callable[[RunView], Awaitable[None]]
 
 
@@ -208,7 +280,7 @@ class RunWriter:
     """The only writer of one run record. Every transition bumps the revision, saves, then publishes."""
 
     def __init__(
-        self, store: RunStore, record: RunRecord, owner: str, lease_ttl_s: float, publish: Publish | None = None
+        self, store: RecordStore, record: RunRecord, owner: str, lease_ttl_s: float, publish: Publish | None = None
     ) -> None:
         self._store = store
         self._record = record
@@ -220,6 +292,10 @@ class RunWriter:
     @property
     def record(self) -> RunRecord:
         return self._record
+
+    def set_publish(self, publish: Publish | None) -> None:
+        """The writer of a run an invocation took over at rest publishes to the task it starts."""
+        self._publish = publish
 
     def _stamp(self, now: datetime, before: RunStatus, at: datetime | None) -> None:
         record = self._record
@@ -254,9 +330,20 @@ class RunWriter:
             return view
 
     async def stage(self, mutate: Callable[[RunRecord], None]) -> None:
-        """Record data the view does not show; the next transition saves it."""
+        """Change the record without a snapshot; the next transition saves it with a new revision.
+
+        Used for data the view does not show (a model call, a staged report) and for a finished step,
+        whose Done row and facts reach the screen with the next transition (the next step's start, a
+        pause or the end), as the fixtures show them.
+        """
         async with self._lock:
             mutate(self._record)
+
+    async def save_quietly(self, mutate: Callable[[RunRecord], None]) -> None:
+        """A write that changes no view field (a viz report, an action-log entry): saved now, revision kept."""
+        async with self._lock:
+            mutate(self._record)
+            await self._store.save_run(self._record)
 
     async def renew_lease(self) -> bool:
         async with self._lock:

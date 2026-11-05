@@ -3,6 +3,8 @@
 Fields and values come from config/cohort-fields.json (read-only, ORION_FIELDS_PATH) plus
 vocab_supplement.json for values the config omits. Values are normalized to the stored
 spelling, because the APIs match case-sensitively and return 0 cases, not an error, on a miss.
+`=` is normalized to a one-value `in`, the form cohort definitions take (contract "Cohort
+definitions and defSha256"). The supplement's `valueNames` name the cohorts ORION proposes.
 """
 
 import json
@@ -25,6 +27,8 @@ CASE_ID_TYPE: Final = "case_id"
 CATEGORICAL_OPS: Final[frozenset[FilterOp]] = frozenset({"in", "=", "!="})
 NUMERIC_OPS: Final[frozenset[FilterOp]] = frozenset({"in", "=", "!=", ">", ">=", "<", "<="})
 ES_ONLY_PREFIXES: Final = ("gene.", "summary.")
+# Gene fields filter by gene, not by a clinical category; C-PANEL checks them.
+GENE_FIELD_IDS: Final = frozenset({"gene.symbol", "gene.gene_id"})
 _SINGLE_VALUE_OPS: Final[frozenset[FilterOp]] = frozenset({"=", "!=", ">", ">=", "<", "<="})
 _BROWSER_VALUE_OPS: Final[dict[str, FilterOp]] = {"=": "=", "!=": "!=", ">": ">", ">=": ">=", "<": "<", "<=": "<="}
 _LEGACY_CASE_KEY: Final = "cases.case_id"
@@ -42,6 +46,23 @@ class FieldSpec:
     value_prefix: str
     split_assumption: str | None
     pp_twin: str | None
+    # How a cohort of one value is named ("High risk" -> "CGS high-risk"), from valueNames.
+    value_names: tuple[tuple[str, str], ...] = ()
+
+    def display(self, value: Value) -> str:
+        """The value as a cohort name: its valueNames entry, else the prefix and the value, capitalized."""
+        named = dict(self.value_names).get(str(value))
+        if named is not None:
+            return named
+        text = str(value)
+        shown = text[:1].upper() + text[1:]
+        return f"{self.value_prefix} {shown}" if self.value_prefix else shown
+
+    def preview(self, limit: int = 5) -> str:
+        """A clarification option's value preview: "High risk, Standard risk" (at most `limit` values)."""
+        values = [str(v) for v in self.values or ()]
+        shown = ", ".join(values[:limit])
+        return shown + (f" and {len(values) - limit} more" if len(values) > limit else "")
 
 
 @dataclass(frozen=True)
@@ -76,6 +97,7 @@ class Vocabulary:
         extra: dict[str, dict[str, JsonValue]] = supplement["fields"]
         labels: dict[str, dict[str, str | None]] = supplement["labels"]
         twins: dict[str, str] = supplement["proteinpaintTwins"]["terms"]
+        names: dict[str, dict[str, str]] = supplement.get("valueNames", {}).get("fields", {})
         fields: dict[str, FieldSpec] = {}
         for field_id in sorted(config.keys() | extra.keys()):
             spec = {**config.get(field_id, {}), **extra.get(field_id, {})}
@@ -98,11 +120,19 @@ class Vocabulary:
                 value_prefix=label.get("valuePrefix") or "",
                 split_assumption=label.get("splitAssumption"),
                 pp_twin=twins.get(field_id),
+                value_names=tuple(sorted(names.get(field_id, {}).items())),
             )
         return cls(fields)
 
     def field(self, field_id: str) -> FieldSpec | None:
         return self._fields.get(field_id)
+
+    def categorical(self, field_id: str) -> FieldSpec | None:
+        """The field when it has a fixed value list a split or a clarification option can name."""
+        spec = self._fields.get(field_id)
+        if spec is None or spec.values is None or spec.type not in ("enum", "multiselect") or spec.id in GENE_FIELD_IDS:
+            return None
+        return spec
 
     def normalize_value(self, spec: FieldSpec, value: Value) -> Value | None:
         """The stored spelling (and JSON type) of `value`, or None when the field has no such value."""
@@ -143,7 +173,9 @@ class Vocabulary:
                 return VocabProblem("UNKNOWN_VALUE", clause.field, f"{value!s} is not a value of {spec.label}.")
             if stored not in normalized:
                 normalized.append(stored)
-        return clause.model_copy(update={"values": normalized})
+        # "=" is a one-value "in": the Gen3 filter and the canonical cohort definition agree on it.
+        op: FilterOp = "in" if clause.op == "=" else clause.op
+        return clause.model_copy(update={"op": op, "values": normalized})
 
 
 def _operand(value: JsonValue) -> Value | None:

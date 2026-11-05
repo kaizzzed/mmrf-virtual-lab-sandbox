@@ -2,6 +2,11 @@
 
 The planner fills only what the question states; the compiler fills every default.
 Structured output allows no recursion, so cohorts refer to each other by `ref` strings.
+
+Two optional fields go beyond the design's IR, because a plan edit is recorded as the IR it
+compiles (`PlanHistoryEntry.ir`, "the patched IR of an edit") and every editable value must be
+expressible in it: `CohortDef.name` (a Rename on the confirmation card, or a name the question
+states) and `DifferentialExpression.thresholds`. Both are omitted from a dump when unset.
 """
 
 from typing import Annotated, Final, Literal
@@ -82,6 +87,9 @@ CohortDefinition = Annotated[
 class CohortDef(IRModel):
     ref: Ref
     definition: CohortDefinition = Field(validation_alias="def", serialization_alias="def")
+    # The name to save the cohort under, as the researcher gave it (a question or a Rename edit);
+    # unset, the compiler names it from a code template. Saved names stay within 100 characters.
+    name: str | None = Field(default=None, min_length=1, max_length=100, exclude_if=lambda value: value is None)
 
     def references(self) -> tuple[str, ...]:
         match self.definition:
@@ -106,13 +114,26 @@ class TopMutatedGenes(IRModel):
     n: int | None = Field(default=None, ge=1, le=50)
 
 
+class Thresholds(IRModel):
+    """DE significance thresholds the question (or a thresholds edit) states."""
+
+    p_value_cutoff: float = Field(gt=0, le=1)
+    p_value_type: Literal["adjusted", "original"]
+    fold_change_cutoff: float = Field(ge=0)
+
+
+DeMethodName = Literal["wilcoxon", "edgeR", "limma"]
+RankByName = Literal["adjusted_p", "p_value", "fold_change"]
+
+
 class DifferentialExpression(IRModel):
     kind: Literal["differential_expression"]
     group1: Ref
     group2: Ref
-    method: Literal["wilcoxon", "edgeR", "limma"] | None = None
-    rank_by: Literal["adjusted_p", "p_value", "fold_change"] | None = None
+    method: DeMethodName | None = None
+    rank_by: RankByName | None = None
     top_n: int | None = Field(default=None, ge=1, le=100)
+    thresholds: Thresholds | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class CohortSize(IRModel):

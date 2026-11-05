@@ -147,6 +147,12 @@
       "group": "case",
       "valuePrefix": "",
       "splitAssumption": null
+    },
+    "demographic.ethnicity": {
+      "label": "Ethnicity",
+      "group": "ethnicity",
+      "valuePrefix": "",
+      "splitAssumption": "SPLIT_ETHNICITY"
     }
   },
   "proteinpaintTwins": {
@@ -156,6 +162,32 @@
       "demographic.gender": "gender",
       "demographic.race": "race",
       "demographic.vital_status": "vital_status"
+    }
+  },
+  "valueNames": {
+    "about": "How a cohort ORION proposes is named from a value (a code template: the planner names no cohort). A value missing here is named by its field's valuePrefix and the stored value with a capital first letter.",
+    "fields": {
+      "cgs_risk_key_criteria.cgs_risk_category": {
+        "High risk": "CGS high-risk",
+        "Standard risk": "CGS standard-risk"
+      },
+      "demographic.race": {
+        "white": "White",
+        "black or african american": "Black or African American",
+        "asian": "Asian"
+      },
+      "demographic.gender": {
+        "female": "Female",
+        "male": "Male"
+      },
+      "demographic.ethnicity": {
+        "hispanic or latino": "Hispanic or Latino",
+        "not hispanic or latino": "Not Hispanic or Latino"
+      },
+      "demographic.vital_status": {
+        "Alive": "Alive",
+        "Dead": "Deceased"
+      }
     }
   }
 }

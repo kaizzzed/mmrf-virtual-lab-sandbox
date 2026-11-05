@@ -1,4 +1,6 @@
-"""Compiler rules C-SCOPE, C-VOCAB, C-PANEL and C-UNTESTED, and the plan signature."""
+"""Compiler rules C-SCOPE, C-VOCAB, C-PANEL and C-UNTESTED, and the plan signature (the Day 1 rules;
+test_compiler_rules.py has the rest, test_compiler_edits.py the edits, test_compiler_tools_md.py the
+step tables and test_compiler_fixtures.py the fixtures)."""
 
 import json
 import os
@@ -72,6 +74,24 @@ class VocabTests(unittest.TestCase):
         checked = vocabulary().check_clause(ir.Clause(field="demographic.race", op="=", values=["Black or African American"]))
         assert isinstance(checked, ir.Clause)
         self.assertEqual(checked.values, ["black or african american"])
+
+    def test_equals_is_a_one_value_in(self) -> None:
+        checked = vocabulary().check_clause(ir.Clause(field="demographic.race", op="=", values=["Asian"]))
+        assert isinstance(checked, ir.Clause)
+        self.assertEqual((checked.op, checked.values), ("in", ["asian"]))
+
+    def test_cohort_names_and_value_previews_come_from_the_vocabulary(self) -> None:
+        vocab = vocabulary()
+        cgs, race, iss = vocab.field(CGS_RISK), vocab.field("demographic.race"), vocab.field("diagnoses.iss_stage")
+        assert cgs is not None and race is not None and iss is not None
+        self.assertEqual((cgs.display("High risk"), race.display("black or african american"), iss.display("Stage III")),
+                         ("CGS high-risk", "Black or African American", "Stage III"))
+        self.assertEqual((cgs.preview(), iss.preview()), ("High risk, Standard risk", "Stage I, Stage II, Stage III"))
+        other = vocab.field("cgs_risk_key_criteria.other_criteria")
+        assert other is not None
+        self.assertTrue(other.preview().endswith(" and 15 more"))
+        self.assertIsNone(vocab.categorical("diagnoses.age_at_diagnosis"))
+        self.assertIsNone(vocab.categorical("gene.symbol"), "gene fields are C-PANEL's, never a split")
 
     def test_values_keep_the_stored_json_type(self) -> None:
         ecog = vocabulary().check_clause(ir.Clause(field="follow_ups.ecog_performance_status", op="in", values=[0]))
@@ -169,18 +189,20 @@ class J1CompileTests(unittest.TestCase):
         self.assertEqual([s.input_summary for s in plan.steps if s.tool == "cohort_count"], ["ISS stage = Stage I", "ISS stage = Stage II", "ISS stage = Stage III"])
         self.assertEqual(plan.rows[0].label, "Count the 3 ISS stage groups")
 
-    def test_analyses_that_compile_from_day_1_pm_stop_naming_their_app(self) -> None:
-        cohorts: list[JsonValue] = [{"ref": "m", "def": {"kind": "gene_mutated", "gene": "KRAS", "within": "base"}}]
+    def test_every_analysis_kind_compiles(self) -> None:
+        cohorts: list[JsonValue] = [{"ref": "m", "def": {"kind": "gene_mutated", "gene": "KRAS", "within": "base"}},
+                                    {"ref": "f", "def": {"kind": "filter", "clauses": [{"field": CGS_RISK, "op": "in", "values": ["High risk"]}]}}]
         cases: dict[str, JsonValue] = {
-            "OncoMatrix": {"kind": "top_mutated_genes", "cohort": "base"},
-            "DE": {"kind": "differential_expression", "group1": "base", "group2": "m"},
-            "Correlation": {"kind": "survival_compare", "groups": ["base", "m"]},
+            "top_mutated_genes": {"kind": "top_mutated_genes", "cohort": "base"},
+            "de_run": {"kind": "differential_expression", "group1": "f", "group2": "m"},
+            "survival_compare": {"kind": "survival_compare", "groups": ["f", "m"]},
+            "cohort_count": {"kind": "cohort_size", "cohort": "f"},
         }
-        for app_id, analysis in cases.items():
-            with self.subTest(app_id=app_id):
-                stop = stopped(compile_plan(plan_with(cohorts=cohorts, analyses=[analysis])))
-                self.assertEqual(stop.code, "NOT_IMPLEMENTED")
-                self.assertEqual([[app.app_id for app in lim.nearest_apps] for lim in stop.limitations], [[app_id]])
+        for tool, analysis in cases.items():
+            with self.subTest(tool=tool):
+                plan = compiled(compile_plan(plan_with(cohorts=cohorts, analyses=[analysis])))
+                self.assertIn(tool, [s.tool for s in plan.steps])
+                self.assertEqual(plan.steps[0].tool, "fixture_fingerprint")
 
     def test_split_on_a_numeric_or_unknown_field_stops(self) -> None:
         numeric = stopped(compile_plan(ir.Plan(kind="plan", analyses=[ir.SurvivalCompare(kind="survival_compare", split_term="diagnoses.age_at_diagnosis")])))
@@ -279,8 +301,11 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(queries[0].args["filter"], {"and": [{"in": {"demographic.race": ["black or african american"]}}]})
         self.assertEqual(result.rows[0].label, "Find cases in Black patients")
         self.assertEqual(result.assumptions[0].text, "No cohort named: using the active cohort, Black patients")
+        # C-23: the browser filter is read once; every later filter names the scope's case IDs.
         counts = [s for s in result.steps if s.tool == "cohort_count"]
-        self.assertEqual(counts[0].args["filter"], {"and": [{"in": {"demographic.race": ["black or african american"]}}, {"in": {CGS_RISK: ["High risk"]}}]})
+        scope = {"in": {"case_id": {"ref": queries[0].id, "pointer": "/observed/caseIds"}}}
+        self.assertEqual(counts[0].args["filter"], {"and": [scope, {"in": {CGS_RISK: ["High risk"]}}]})
+        self.assertEqual(counts[0].depends_on, [queries[0].id])
 
     def test_default_scope_all_cases_setting(self) -> None:
         result = compiled(compile_plan(j1_plan(), context(RACE_FILTER), default_scope="all_cases"))
@@ -350,17 +375,19 @@ class UntestedTests(unittest.TestCase):
         cohorts, tested = apply_untested_rule(plan.cohorts)
         self.assertEqual((cohorts, tested), (plan.cohorts, ["tested"]))
 
-    def test_rewrite_plans_an_excluded_count_even_though_this_sandbox_excludes_none(self) -> None:
+    def test_rewrite_adds_no_step_and_states_the_excluded_cases_from_two_counts(self) -> None:
         plan = plan_with(cohorts=self.without_kras, analyses=[{"kind": "cohort_size", "cohort": "kras_wt"}])
         result = compiled(compile_plan(plan))
         self.assertIn("EXCLUDE_UNTESTED", [a.code for a in result.assumptions])
         tested = next(s for s in result.steps if s.tool == "cases_query")
         self.assertEqual(tested.args["filter"], {"and": [{"in": {"available_variation_data": ["ssm"]}}]})
-        excluded = [s for s in result.steps if s.args.get("output") == "count"]
-        self.assertEqual(len(excluded), 1)
-        self.assertEqual(excluded[0].args, {"op": "difference", "a": "scope", "b": tested.id, "output": "count"})
-        subtract = next(s for s in result.steps if s.args.get("op") == "difference" and "output" not in s.args)
-        self.assertEqual(subtract.args["a"], tested.id)
+        # TOOLS.md choice 5: no extra step; de.untested cites the scope count and the tested count.
+        self.assertEqual([s.tool for s in result.steps],
+                         ["fixture_fingerprint", "gene_cases", "cases_query", "check_subset", "set_operation", "set_operation"])
+        subtract = next(s for s in result.steps if s.args.get("op") == "difference")
+        self.assertEqual((subtract.args["a"], subtract.args["b"]), (tested.id, "s2"))
+        self.assertEqual(result.cohorts[0].count_fact_id, "f.s1.cases")
+        self.assertEqual(result.cohort("base_tested").count_fact_id, f"f.{tested.id}.count")
 
     def test_difference_without_a_gene_cohort_is_left_alone(self) -> None:
         cohorts = plan_with(cohorts=[

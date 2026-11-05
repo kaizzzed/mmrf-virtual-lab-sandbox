@@ -1,0 +1,293 @@
+[
+  {
+    "name": "fixture_fingerprint",
+    "description": "Records the data and service versions (s1, folded). fixture_fingerprint@1, read-only.",
+    "inputSchema": {
+      "type": "object",
+      "description": "No input: s1 always reads the same four sources.",
+      "properties": {}
+    }
+  },
+  {
+    "name": "cohort_count",
+    "description": "Counts the cases a Gen3 filter matches. cohort_count@1, read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "type": "object",
+          "description": "The Gen3 filter to count, `and`-wrapped; a filtered scope arrives as its case-ID clause (C-23)."
+        }
+      },
+      "required": [
+        "filter"
+      ]
+    }
+  },
+  {
+    "name": "cases_query",
+    "description": "Lists the case IDs a Gen3 filter matches, in pages of 1,000. cases_query@1, read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "type": "object",
+          "description": "The Gen3 filter whose case IDs to list, `and`-wrapped."
+        },
+        "pageSize": {
+          "type": "integer",
+          "description": "Sent as `size`; pages are read at offsets 0, page_size, ... while offset + size <= max_ids."
+        },
+        "maxIds": {
+          "type": "integer",
+          "description": "The most case IDs the step may return (C-GUARD); more is TOO_MANY_IDS."
+        }
+      },
+      "required": [
+        "filter"
+      ]
+    }
+  },
+  {
+    "name": "gene_cases",
+    "description": "Lists the cases with a mutation in one panel gene. gene_cases@1, read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "gene": {
+          "type": "string",
+          "description": "The panel gene; its Ensembl id goes in gene_filter (PANEL_GENE_IDS). One of: \"KRAS\", \"NRAS\", \"TP53\", \"BRAF\", \"DIS3\", \"MYC\"."
+        },
+        "cohortFilter": {
+          "type": "object",
+          "description": "Sent as cohort_filter: the scope's filter, `{\"and\": []}` for all cases."
+        }
+      },
+      "required": [
+        "gene",
+        "cohortFilter"
+      ]
+    }
+  },
+  {
+    "name": "top_mutated_genes",
+    "description": "Ranks a cohort's genes by mutated cases, as OncoMatrix does. top_mutated_genes@1, read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter0": {
+          "type": "object",
+          "description": "The cohort as Gen3 filter0 (a case-ID list, C-CASEIDS); null for all cases. Pinned as the card's filter0."
+        },
+        "geneCount": {
+          "type": "integer",
+          "description": "How many genes the card shows: top N (sent as maxGenes = geneCount + 1, the extra row only detects a tie)."
+        }
+      },
+      "required": [
+        "geneCount"
+      ]
+    }
+  },
+  {
+    "name": "survival_compare",
+    "description": "Kaplan–Meier curves per group and the log-rank p. survival_compare@1, read-only.",
+    "inputSchema": {
+      "type": "object",
+      "description": "Exactly what derive_request_pinned(\"survival\") reads: scope, term and split {field, overlay}.",
+      "properties": {
+        "scope": {
+          "type": "object",
+          "description": "The scope as Gen3 filter (the scope step's case-ID clause); null for all cases. The card's filter0."
+        },
+        "term": {
+          "type": "string",
+          "description": "The survival term; Gen3 Analysis' default survivalType \"overall\" (the body sends none). Always \"overall_survival\"."
+        },
+        "split": {
+          "type": "object",
+          "description": "The split field and its twin; null when the groups are cohorts with no twin (no survival card).",
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "The vocabulary field the groups split (C-SPLIT), such as cgs_risk_key_criteria.cgs_risk_category."
+            },
+            "overlay": {
+              "type": "string",
+              "description": "That field's ProteinPaint twin term id (vocab proteinpaintTwins), the chart's overlay term."
+            }
+          },
+          "required": [
+            "field",
+            "overlay"
+          ]
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "The group's display label: the split value, or the cohort's label."
+              },
+              "filter": {
+                "type": "object",
+                "description": "The group's complete Gen3 filter, the scope included; sent alone, then with the others."
+              }
+            },
+            "required": [
+              "label",
+              "filter"
+            ]
+          }
+        }
+      },
+      "required": [
+        "term",
+        "groups"
+      ]
+    }
+  },
+  {
+    "name": "sample_lists",
+    "description": "Maps both DE groups' case IDs to ProteinPaint samples. sample_lists@1, read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "description": "control (DE group 1) or case (DE group 2). One of: \"control\", \"case\"."
+              },
+              "caseIds": {
+                "type": "array",
+                "description": "The group's case IDs, sent as filter0 = case_id_filter(caseIds).",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "key",
+              "caseIds"
+            ]
+          }
+        }
+      },
+      "required": [
+        "groups"
+      ]
+    }
+  },
+  {
+    "name": "de_preanalysis",
+    "description": "Counts RNA-seq-eligible samples per group, before any save. de_preanalysis@1, read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "description": "Also the samplelst group name sent, so pre-analysis never depends on a cohort's name. One of: \"control\", \"case\"."
+              },
+              "sampleIds": {
+                "type": "array",
+                "description": "The group's ProteinPaint sample ids (sample_lists), sent as samplelst values [{sampleId}].",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            },
+            "required": [
+              "key",
+              "sampleIds"
+            ]
+          }
+        }
+      },
+      "required": [
+        "groups"
+      ]
+    }
+  },
+  {
+    "name": "de_run",
+    "description": "Runs differential expression with the viewer's own request body. de_run@1, read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "groups": {
+          "type": "array",
+          "description": "Control first, then case (C-DEFAULTS).",
+          "items": {
+            "type": "object",
+            "description": "One DE group, as derive_request_pinned reads it: name and sampleIds, plus cohortId and filter0 once saved.",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The read-back saved name after Create, else the proposed name (C-24): part of ProteinPaint's DE cache key."
+              },
+              "sampleIds": {
+                "type": "array",
+                "description": "The group's sample ids in sample_lists' order (ascending), sent as samplelst values.",
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "cohortId": {
+                "type": "string",
+                "description": "The read-back cohort id, present only once the cohort is saved or reused (deInput)."
+              },
+              "filter0": {
+                "type": "object",
+                "description": "The saved cohort's case-ID filter (case_id_filter), present with cohortId (deInput)."
+              }
+            },
+            "required": [
+              "name",
+              "sampleIds"
+            ]
+          }
+        },
+        "method": {
+          "type": "string",
+          "description": "Sent as method. One of: \"wilcoxon\", \"edgeR\", \"limma\"."
+        },
+        "thresholds": {
+          "type": "object",
+          "description": "Sent as volcanoRender.significanceThresholds (pValueCutoff as -log10); absent keeps the viewer's.",
+          "properties": {
+            "pValueCutoff": {
+              "type": "number"
+            },
+            "pValueType": {
+              "type": "string",
+              "description": "One of: \"adjusted\", \"original\"."
+            },
+            "foldChangeCutoff": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "pValueCutoff",
+            "pValueType",
+            "foldChangeCutoff"
+          ]
+        }
+      },
+      "required": [
+        "groups",
+        "method"
+      ]
+    }
+  }
+]
