@@ -386,7 +386,7 @@ def _open_links(app_ids: Sequence[str]) -> list[NearestApp]:
     """Open <app> links: catalog apps ORION opens on a cohort; driven and out-of-scope apps are left out."""
     links: list[NearestApp] = []
     for app_id in app_ids:
-        app = APPS.get(app_id)  # type: ignore[call-overload]
+        app = next((a for key, a in APPS.items() if key == app_id), None)
         if app is not None and app.role == "opens" and all(link.app_id != app.app_id for link in links):
             links.append(NearestApp.of(app.app_id))
     return links
@@ -602,19 +602,20 @@ def _de(o: _Observed) -> None:
         if pre is not None and names is not None and f"f.{pre.id}.eligible.control" in o.facts:
             segments = _render("de.groups", o.facts, steps={"pre": pre.id}, values={"control": names[0], "case": names[1]})
             o.comp("J3 group sizes", o.cited(f"f.{pre.id}.eligible.control"), segments)
-        rank_by = ranking.args.get("rankBy")
+        rank_arg = ranking.args.get("rankBy")
+        rank_by = next((r for r in schemas.RANK_LABELS if r == rank_arg), None)
         method = de.args.get("method")
-        if names is not None and isinstance(rank_by, str) and rank_by in schemas.RANK_LABELS and isinstance(method, str):
+        if names is not None and rank_by is not None and isinstance(method, str):
             values = {
                 "method": schemas.DE_METHOD_LABELS.get(method, method),
-                "rank": schemas.RANK_LABELS[rank_by],  # type: ignore[index]
+                "rank": schemas.RANK_LABELS[rank_by],
                 "control": names[0],
                 "case": names[1],
             }
             present = any(_text_of(s).startswith("Method: ") for s in [*o.observed.observed, *o.sentences])
             o.comp("J3 method, ranking rule and direction", present, _render("de.method", o.facts, values=values))
             shown = _positions(o.facts, ranking.id)
-            item = schemas.DE_TOP_ITEM.get(rank_by)  # type: ignore[call-overload]
+            item = schemas.DE_TOP_ITEM.get(rank_by)
             if shown and item:
                 items = [(item, {"pos": str(pos)}) for pos in range(1, shown + 1)]
                 segments = _render("de.top", o.facts, steps={"ranking": ranking.id}, values={"rank": values["rank"]}, items=items)

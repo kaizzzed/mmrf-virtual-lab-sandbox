@@ -62,6 +62,21 @@ class Prompts(unittest.TestCase):
         self.assertEqual(len(missing), len(all_prompts(PROMPTS)) - 2)
 
 
+def agent_prompts_file() -> Path | None:
+    root = os.environ.get("ORION_AGENT_SRC")
+    path = Path(root, "orion_agent/model/eval_prompts.py") if root else None
+    return path if path is not None and path.is_file() else None
+
+
+class AgentExclusion(unittest.TestCase):
+    @unittest.skipIf(agent_prompts_file() is None, "the agent source is not mounted (ORION_AGENT_SRC)")
+    def test_the_agent_excludes_every_eval_prompt_from_its_examples(self) -> None:
+        """C-31: the planner's exclusion list (orion_agent/model/eval_prompts.py) holds every prompt the evals ask."""
+        path = agent_prompts_file()
+        assert path is not None
+        self.assertEqual(missing_from_agent(PROMPTS, path), [])
+
+
 class Registry(unittest.TestCase):
     def test_every_eval_quotes_its_row_and_its_frs(self) -> None:
         self.assertEqual([s.id for s in EVALS], [f"E{i}" for i in range(1, 25)])

@@ -16,7 +16,6 @@ entries for a run live here go through its writer (staged); for a run leased els
 
 import asyncio
 import contextlib
-import importlib
 import logging
 import threading
 from collections import defaultdict
@@ -25,8 +24,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
-from types import ModuleType
-from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
+from typing import Final, Literal, Protocol, cast
 
 from ag_ui.core import BaseEvent, RunAgentInput, RunErrorEvent, RunFinishedEvent, StepFinishedEvent, StepStartedEvent
 from pydantic import BaseModel, JsonValue, ValidationError
@@ -53,7 +51,6 @@ from .ids import is_valid_id
 # Re-exported: the run controller's collaborators are defined in interfaces.py.
 from .interfaces import Clarification
 from .interfaces import Composer as Composer
-from .interfaces import ComposerResult
 from .interfaces import ExecutionResult as ExecutionResult
 from .interfaces import Executor as Executor
 from .interfaces import ObservedRenderer, ObservedResult
@@ -63,8 +60,10 @@ from .interfaces import ResumeState as ResumeState
 from .interfaces import SessionLedgerStore
 from .interfaces import StepSession as StepSession
 from .interfaces import Verifier as Verifier
-from .interfaces import VerifierResult
 from .lease import is_expired, keep_renewed, owner_id
+from .model.answer import AnswerOutcome, write_answer
+from .model.calls import ModelCallScope, model_call_scope
+from .model.warmup import warm_up_roles
 from .models import (
     ACTION_STATUSES,
     CODES,
@@ -112,7 +111,6 @@ from .models import (
     RunStatus,
     RunView,
     SaveCohortsArgs,
-    Sentence,
     StepOrigin,
     StepStatus,
     StepView,
@@ -140,8 +138,6 @@ LIMITED_WITHHELD: Final = "a limitation stopped the run"
 RUN_FAILED_WITHHELD: Final = "the run failed"
 NOT_CONFIGURED_WITHHELD: Final = "the interpretation model is not configured in this deployment"
 CHECKS_WITHHELD: Final = "no interpretation sentence passed the checks"
-UNCHECKED_WITHHELD: Final = "the interpretation could not be checked"
-DECLINED_WITHHELD: Final = "the model declined to interpret these results"
 ENDED_EARLY_SUMMARY: Final = "Not run: the run stopped early"
 INTERNAL_MESSAGE: Final = "ORION hit an internal error; the run record keeps every finished step."
 FAILURE_MESSAGES: Final[dict[str, str]] = {
@@ -161,35 +157,22 @@ SCOPE_LABELS: Final[dict[str, str]] = {
 READY: Final[frozenset[RunStatus]] = frozenset({"Answering", "Complete"})
 
 
-def _optional_module(name: str) -> ModuleType | None:
-    """A module another builder ships (orion_agent.model.*), or None when this image does not have it."""
-    try:
-        return importlib.import_module(name)
-    except ImportError:
-        return None
-
-
 class _ModelScope:
-    """Where a model role call records its ModelCallRecords: orion_agent.model.calls' scope when installed."""
+    """The run's model call scope (orion_agent.model.calls) around one planner or composer call."""
 
     def __init__(self, record: RunRecord) -> None:
-        module = _optional_module("orion_agent.model.calls")
-        factory = getattr(module, "model_call_scope", None) if module is not None else None
-        self._manager: contextlib.AbstractContextManager[Any] = (  # Any: the model builder's scope object
-            factory(record.run_id, existing=list(record.model_calls)) if callable(factory) else contextlib.nullcontext(None)
-        )
-        self.scope: Any = None
+        self._manager = model_call_scope(record.run_id, existing=list(record.model_calls))
+        self.scope: ModelCallScope | None = None
 
     def __enter__(self) -> "_ModelScope":
         self.scope = self._manager.__enter__()
         return self
 
     def __exit__(self, *exc: object) -> None:
-        self._manager.__exit__(*exc)  # type: ignore[arg-type]
+        self._manager.__exit__(None, None, None)
 
     def records(self) -> list[ModelCallRecord]:
-        found = getattr(self.scope, "records", None)
-        return [r for r in found if isinstance(r, ModelCallRecord)] if isinstance(found, list) else []
+        return list(self.scope.records) if self.scope is not None else []
 
 
 class _Reject(Exception):
@@ -203,13 +186,6 @@ class _Reject(Exception):
 
 # The Day 1 name; kept for callers.
 _InputError = _Reject
-
-
-@runtime_checkable
-class Warmable(Protocol):
-    """A model role that can warm its cached prompt prefix at its own effort (C-41)."""
-
-    async def warm(self) -> None: ...
 
 
 class PlanCompiler(Protocol):
@@ -354,6 +330,17 @@ def _merge_limitations(*groups: Sequence[Limitation]) -> list[Limitation]:
     return out
 
 
+def _open_links(plan: CompiledPlan, verified: Sequence[NearestApp]) -> list[NearestApp]:
+    """The answer's Open <app> links: the compiler's C-FIT hand-offs (`CompiledPlan.open_apps`, such as
+    Cohort Comparison for a survival split ProteinPaint cannot draw) first, then the verified composer's,
+    each app once."""
+    out: list[NearestApp] = []
+    for link in [*plan.open_apps, *verified]:
+        if all(o.app_id != link.app_id for o in out):
+            out.append(link)
+    return out
+
+
 def _viz_ids(record: RunRecord) -> set[str]:
     answers = [record.answer, *(s.answer for s in record.superseded)]
     return {spec.viz_id for answer in answers for spec in answer.viz_specs}
@@ -490,12 +477,14 @@ class _Session:
 
         await self._writer.stage(finish)
 
-    async def skip_step(self, step_id: str, code: Code | None, reason: str, *, calls: Sequence[CallRecord] = ()) -> None:
+    async def skip_step(
+        self, step_id: str, code: Code | None, reason: str, *, calls: Sequence[CallRecord] = (), duration_ms: int | None = None
+    ) -> None:
         """An aborted running step is its own transition (Stop shows it at once); a queued one joins the next."""
         started = step_id in self._handle.open_steps
 
         def skip(r: RunRecord) -> None:
-            _set_step(r, step_id, status="Skipped", output_summary=reason, code=code)
+            _set_step(r, step_id, status="Skipped", output_summary=reason, code=code, duration_ms=duration_ms)
             r.calls.extend(calls)
 
         if started:
@@ -658,41 +647,17 @@ class Controller:
     async def _warmup(self, thread_id: str, run_id: str, action: WarmupAction) -> AsyncGenerator[BaseEvent, None]:
         """Starts the session and warms each model role's cached prefix at its own effort (C-41); creates no run."""
         await self._ride_along(thread_id, action.viz_reports, None)
-        module = _optional_module("orion_agent.model.warmup")
-        warm_up_roles = getattr(module, "warm_up_roles", None) if module is not None else None
-        roles: list[Warmable] = []
-        for role in (self.planner, self.composer):
-            if isinstance(role, Warmable):
-                roles.append(role)
 
         async def warm_roles() -> None:
-            assert callable(warm_up_roles)
             try:
                 results = await asyncio.wait_for(warm_up_roles(self.planner, self.composer), self.settings.warmup_timeout_s)
-                log.info("warmup: %s", [(getattr(r, "role", "?"), getattr(r, "outcome", "?")) for r in results or []])
+                log.info("warmup: %s", [(r.role, r.outcome) for r in results])
             except Exception:
                 log.warning("warmup failed", exc_info=True)
 
-        if callable(warm_up_roles):
-            async with aclosing(self._beating(warm_roles())) as beats:
-                async for beat in beats:
-                    yield beat
-            yield events.run_finished(thread_id, run_id, "Warmed", None)
-            return
-
-        async def warm_all() -> None:
-            async def one(role: Warmable) -> None:
-                try:
-                    await asyncio.wait_for(role.warm(), self.settings.warmup_timeout_s)
-                except Exception:
-                    log.warning("warmup of %s failed", type(role).__name__, exc_info=True)
-
-            await asyncio.gather(*(one(role) for role in roles))
-
-        if roles:
-            async with aclosing(self._beating(warm_all())) as beats:
-                async for beat in beats:
-                    yield beat
+        async with aclosing(self._beating(warm_roles())) as beats:
+            async for beat in beats:
+                yield beat
         yield events.run_finished(thread_id, run_id, "Warmed", None)
 
     # -- ask --------------------------------------------------------------------
@@ -825,6 +790,7 @@ class Controller:
             environment=Environment(
                 mode=self.settings.mode,
                 planner=self.settings.planner,
+                composer=self.settings.composer,
                 executor=self.settings.executor,
                 agent_version=AGENT_VERSION,
                 tool_transport=self._tool_transport(),
@@ -1098,12 +1064,12 @@ class Controller:
 
     # -- execution ------------------------------------------------------------------
 
-    def _run_context(self, record: RunRecord, plan: CompiledPlan) -> RunContext:
+    def _run_context(self, record: RunRecord, plan: CompiledPlan, ledger: SessionLedger | None = None) -> RunContext:
         context = _scope_context(record)
         planned = plan_cohorts(plan, context, self.vocab)
         return RunContext(
             run_id=record.run_id, cohort_context=context, cohorts=list(record.cohorts), cohort_steps=planned.steps,
-            cohort_ids=planned.ids, cohort_definitions=planned.definitions,
+            cohort_ids=planned.ids, cohort_definitions=planned.definitions, ledger=ledger,
         )
 
     def _resume_state(self, record: RunRecord, **extra: object) -> ResumeState:
@@ -1115,7 +1081,8 @@ class Controller:
     async def _run_executor(self, handle: RunHandle, plan: CompiledPlan, resume: ResumeState | None) -> ExecutionResult:
         """Run the executor; after an abort it has STOP_GRACE_S to return before the controller cancels it."""
         assert handle.writer is not None
-        session = _Session(handle, resume, self._run_context(handle.writer.record, plan))
+        ledger = await self._ledger(handle) if plan.write_step() is not None else None
+        session = _Session(handle, resume, self._run_context(handle.writer.record, plan, ledger))
         task = asyncio.ensure_future(self.executor.execute(plan, session))
         abort = asyncio.ensure_future(handle.abort.wait())
         try:
@@ -1240,66 +1207,13 @@ class Controller:
 
         await writer.transition(answering)
         if self.composer is None or self.verifier is None or self.vocab is None:
-            await self._end_answer(handle, None, NOT_CONFIGURED_WITHHELD)
+            await self._end_answer(handle, NOT_CONFIGURED_WITHHELD)
             return "done"
-        module = _optional_module("orion_agent.model.answer")
-        write_answer = getattr(module, "write_answer", None) if module is not None else None
-        if callable(write_answer):
-            return await self._answer_with(handle, plan, rendered, write_answer)
-        ledger = await self._ledger(handle)
-        allow = self.verifier.allow_list(self.vocab, ledger, plan)
-        verdict: VerifierResult | None = None
-        for attempt in (1, 2):
-            loop = asyncio.get_running_loop()
-            started, started_at = loop.time(), iso_utc(utc_now())
-            feedback = verdict.findings if verdict is not None else ()
-            aborted, value = await self._abortable(
-                handle,
-                self.composer.compose(record.question, record.facts, plan, rendered, allow_list=allow, ledger=ledger, feedback=feedback),
-            )
-            if aborted:
-                call = self._cancelled_call(record, "composer", plan.version, started_at, started)
-                await writer.stage(partial(_keep_model_calls, calls=[call]))
-                if handle.edit is not None and not handle.stop.is_set():
-                    return "edit"
-                await self._end_stopped(handle)
-                return "done"
-            composed = cast(ComposerResult, value)
-            calls = self._renumber_model_calls(record, composed.model_calls, "composer", plan.version)
-            await writer.stage(partial(_keep_model_calls, calls=calls))
-            if composed.output is None:
-                if verdict is not None:
-                    break  # the re-compose declined: keep the first attempt's verdict
-                declined = Limitation(
-                    code="MODEL_DECLINED",
-                    text=f"The interpretation model ({composed.serving_model or PLANNER_MODEL}) declined to write an interpretation, so only the observed results are shown.",
-                    unblock=None,
-                )
-                await self._end_answer(handle, None, composed.decline_reason or DECLINED_WITHHELD, [declined])
-                return "done"
-            try:
-                verdict = self.verifier.verify(
-                    composed.output, record.facts, ledger, self.vocab, plan=plan, observed=rendered, attempt=attempt, allow_list=allow
-                )
-            except Exception:
-                log.exception("run %s: the verifier failed", handle.run_id)
-                await self._end_answer(handle, None, UNCHECKED_WITHHELD)
-                return "done"
-            if not verdict.retry:
-                break
-        if handle.edit is not None and not handle.stop.is_set():
-            return "edit"
-        if handle.stop.is_set():
-            await self._end_stopped(handle)
-            return "done"
-        await self._end_answer(handle, verdict, CHECKS_WITHHELD)
-        return "done"
+        return await self._answer_with(handle, plan, rendered)
 
-    async def _answer_with(
-        self, handle: RunHandle, plan: CompiledPlan, rendered: ObservedResult, write_answer: Callable[..., Awaitable[Any]]
-    ) -> Literal["done", "edit"]:
-        """The model builder's compose-verify-recompose (orion_agent.model.answer.write_answer) inside the run's model
-        call scope; aborted at once by a Stop or an edit (the cancelled call is recorded)."""
+    async def _answer_with(self, handle: RunHandle, plan: CompiledPlan, rendered: ObservedResult) -> Literal["done", "edit"]:
+        """Compose, verify and re-compose once (orion_agent.model.answer.write_answer) inside the run's model call
+        scope; aborted at once by a Stop or an edit (the cancelled call is recorded)."""
         assert handle.writer is not None and self.composer is not None and self.verifier is not None and self.vocab is not None
         writer = handle.writer
         record = writer.record
@@ -1324,65 +1238,45 @@ class Controller:
                 return "edit"
             await self._end_stopped(handle)
             return "done"
-        outcome = value
-        given = [c for c in getattr(outcome, "model_calls", []) if isinstance(c, ModelCallRecord)]
-        calls = recorded or self._renumber_model_calls(record, given, "composer", plan.version)
+        outcome = cast(AnswerOutcome, value)
+        calls = recorded or self._renumber_model_calls(record, outcome.model_calls, "composer", plan.version)
         await writer.stage(partial(_keep_model_calls, calls=calls))
         if handle.edit is not None and not handle.stop.is_set():
             return "edit"
         if handle.stop.is_set():
             await self._end_stopped(handle)
             return "done"
-        complete = getattr(outcome, "status", None) == "Complete" and bool(
-            [s for s in getattr(outcome, "interpretation", None) or [] if isinstance(s, Sentence) and s.dropped is None]
-        )
-        code = getattr(outcome, "code", None)
-        inserted_observed = [s for s in getattr(outcome, "inserted_observed", []) if isinstance(s, Sentence)]
-        inserted_limits = [x for x in getattr(outcome, "inserted_limitations", []) if isinstance(x, Limitation)]
-        withheld = getattr(outcome, "withheld_reason", None) or CHECKS_WITHHELD
+        complete = outcome.status == "Complete" and any(s.dropped is None for s in outcome.interpretation or [])
+        withheld = outcome.withheld_reason or CHECKS_WITHHELD
 
         def end(r: RunRecord) -> None:
-            r.answer.observed = [*r.answer.observed, *inserted_observed]
-            r.answer.limitations = _merge_limitations(r.answer.limitations, inserted_limits)
+            r.answer.observed = [*r.answer.observed, *outcome.inserted_observed]
+            r.answer.limitations = _merge_limitations(r.answer.limitations, outcome.inserted_limitations)
             if complete:
-                r.answer.interpretation = list(getattr(outcome, "interpretation", None) or [])
-                r.answer.hypotheses = list(getattr(outcome, "hypotheses", None) or [])
-                r.answer.follow_ups = list(getattr(outcome, "follow_ups", []))
-                r.answer.open_links = list(getattr(outcome, "open_links", []))
-                r.answer.withheld_reason = None
-            else:
-                r.answer.interpretation = r.answer.hypotheses = None
-                r.answer.follow_ups, r.answer.open_links = [], []
-                r.answer.withheld_reason = str(withheld) if r.answer.observed else None
-
-        run_code = None if complete else _code(code)
-        await self._finish(handle, "Complete" if complete else "ObservedOnly", run_code, mutate=end, message=True)
-        return "done"
-
-    async def _end_answer(
-        self, handle: RunHandle, verdict: VerifierResult | None, withheld: str, extra: Sequence[Limitation] = ()
-    ) -> None:
-        assert handle.writer is not None
-        kept = [s for s in (verdict.interpretation if verdict is not None else []) if s.dropped is None]
-        complete = verdict is not None and not verdict.observed_only and bool(kept)
-
-        def end(r: RunRecord) -> None:
-            if verdict is not None:
-                r.answer.observed = [*r.answer.observed, *verdict.inserted_observed]
-                r.answer.limitations = _merge_limitations(r.answer.limitations, verdict.inserted_limitations)
-            r.answer.limitations = _merge_limitations(r.answer.limitations, extra)
-            if complete and verdict is not None:
-                r.answer.interpretation = list(verdict.interpretation)
-                r.answer.hypotheses = list(verdict.hypotheses)
-                r.answer.follow_ups = list(verdict.follow_ups)
-                r.answer.open_links = list(verdict.open_links)
+                r.answer.interpretation = list(outcome.interpretation or [])
+                r.answer.hypotheses = list(outcome.hypotheses or [])
+                r.answer.follow_ups = list(outcome.follow_ups)
+                r.answer.open_links = _open_links(plan, outcome.open_links)
                 r.answer.withheld_reason = None
             else:
                 r.answer.interpretation = r.answer.hypotheses = None
                 r.answer.follow_ups, r.answer.open_links = [], []
                 r.answer.withheld_reason = withheld if r.answer.observed else None
 
-        await self._finish(handle, "Complete" if complete else "ObservedOnly", None, mutate=end, message=True)
+        run_code = None if complete else outcome.code
+        await self._finish(handle, "Complete" if complete else "ObservedOnly", run_code, mutate=end, message=True)
+        return "done"
+
+    async def _end_answer(self, handle: RunHandle, withheld: str) -> None:
+        """ObservedOnly without model text: no composer, verifier or vocabulary is configured."""
+        assert handle.writer is not None
+
+        def end(r: RunRecord) -> None:
+            r.answer.interpretation = r.answer.hypotheses = None
+            r.answer.follow_ups, r.answer.open_links = [], []
+            r.answer.withheld_reason = withheld if r.answer.observed else None
+
+        await self._finish(handle, "ObservedOnly", None, mutate=end, message=True)
 
     # -- ending -------------------------------------------------------------------------
 
@@ -1584,10 +1478,13 @@ class Controller:
         self, handle: RunHandle | None, record: RunRecord
     ) -> tuple[tuple[RunHandle, asyncio.Queue[BaseEvent]] | None, list[BaseEvent]]:
         if handle is not None and handle.status not in END_STATUSES:
-            already = handle.status == "Stopping"
-            queue = handle.subscribe(current=already)  # a joining invocation first sends the run's current snapshot
-            if not already:
+            if handle.status != "Stopping":
                 await self._request_stop(handle)
+            # Subscribe once Stopping is applied, with no await in between: the turn's first snapshot is the run
+            # with the cancel applied (contract "What the agent emits on a resume"), never a snapshot the run's
+            # task published while the stop waited for the record writer. A run already Stopping, or one that
+            # ended meanwhile, sends its current snapshot first (and its terminal event, if it has one).
+            queue = handle.subscribe(current=True)
             return (handle, queue), []
         if record.status in END_STATUSES:
             return None, [events.state_snapshot(record.view()), terminal_for(record)]
@@ -2169,7 +2066,6 @@ __all__ = [
     "RunHandle",
     "RUNS",
     "StepSession",
-    "Warmable",
     "is_busy",
     "reset_registry",
     "terminal_for",

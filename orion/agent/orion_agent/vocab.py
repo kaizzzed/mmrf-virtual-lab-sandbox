@@ -127,6 +127,10 @@ class Vocabulary:
     def field(self, field_id: str) -> FieldSpec | None:
         return self._fields.get(field_id)
 
+    def fields(self) -> list[FieldSpec]:
+        """Every field of the vocabulary, sorted by id (the prompts and the verifier list them all)."""
+        return sorted(self._fields.values(), key=lambda spec: spec.id)
+
     def categorical(self, field_id: str) -> FieldSpec | None:
         """The field when it has a fixed value list a split or a clarification option can name."""
         spec = self._fields.get(field_id)

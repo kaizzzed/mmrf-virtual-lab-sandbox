@@ -53,7 +53,42 @@
       }
     },
     {
-      "name": "ask, the follow-up chip after J1, carrying the J1 card's viz report",
+      "name": "ask, J2: top mutated genes in a planned cohort, saved after one confirmation",
+      "body": {
+        "threadId": "ea980fb6d7119fb24fc2c6b3b86f6b0a",
+        "runId": "fe9593270ead6f22f108c4a714b60aa7",
+        "state": {},
+        "messages": [
+          {
+            "id": "5e8930d602e163e219e44b39ee8788c8",
+            "role": "user",
+            "content": "Top 3 most frequently mutated genes in CGS high-risk patients"
+          }
+        ],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "ask",
+            "question": "Top 3 most frequently mutated genes in CGS high-risk patients",
+            "cohortContext": {
+              "active": {
+                "id": null,
+                "name": "All cases",
+                "filters": {
+                  "mode": "and",
+                  "root": {}
+                },
+                "caseCount": 1000
+              },
+              "saved": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "ask, the follow-up chip after J1 with CGS high-risk already saved (reused, no save), carrying the J1 card's viz report",
       "body": {
         "threadId": "eb3893e3ec4b61d471d1cba4abfd912a",
         "runId": "501ccb84c0f09b97e054211a7d5e886b",
@@ -81,7 +116,25 @@
                 },
                 "caseCount": 1000
               },
-              "saved": []
+              "saved": [
+                {
+                  "id": "3c7a1e9b-5d2f-4b8a-9e6c-1f0d2a4b6c88",
+                  "name": "CGS high-risk (ORION)",
+                  "filters": {
+                    "mode": "and",
+                    "root": {
+                      "cgs_risk_key_criteria.cgs_risk_category": {
+                        "operator": "includes",
+                        "field": "cgs_risk_key_criteria.cgs_risk_category",
+                        "operands": [
+                          "High risk"
+                        ]
+                      }
+                    }
+                  },
+                  "caseCount": 339
+                }
+              ]
             },
             "vizReports": [
               {
@@ -230,6 +283,34 @@
               }
             ],
             "makeActive": "kras_mut"
+          }
+        }
+      }
+    },
+    {
+      "name": "confirm, Create of J2's one cohort",
+      "body": {
+        "threadId": "ea980fb6d7119fb24fc2c6b3b86f6b0a",
+        "runId": "fe9593270ead6f22f108c4a714b60aa7",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "confirm",
+            "nonce": "19258d9bb7eba3f12cd080bfd95d433b",
+            "decision": "create",
+            "makeActive": null,
+            "saved": [
+              {
+                "ref": "high",
+                "cohortId": "3c7a1e9b-5d2f-4b8a-9e6c-1f0d2a4b6c88",
+                "name": "CGS high-risk (ORION)",
+                "defSha256": "983a8d0214513dad4ad1a628dcbfa59d6cae1075b5d984b431782188c37007f0",
+                "reused": false
+              }
+            ]
           }
         }
       }

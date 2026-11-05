@@ -65,6 +65,9 @@ class StoreModel(BaseModel):
 class Environment(StoreModel):
     mode: Literal["L", "A", "H"]
     planner: str
+    # v1.2: the composer role (`stub` or `bedrock`), so a run that never composed still names it;
+    # null only in a record written before this field existed.
+    composer: str | None = None
     executor: str
     agent_version: str
     # v1.2: how tools were reached and the fixture fingerprint s1 recorded (null until it ran).

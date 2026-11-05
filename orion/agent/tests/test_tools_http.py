@@ -33,7 +33,7 @@ from orion_agent.tools.http import (
     HttpTimeout,
     Target,
 )
-from orion_agent.tools.vlab import ALLOWED_REQUESTS, OriginError, VlabClient, VlabRequestError, validate_origin
+from orion_agent.tools.vlab import ALLOWED_REQUESTS, OriginError, VlabClient, VlabRequestError, validate_origin, wire_json
 
 T = TypeVar("T")
 PASSWORD = "p" * 30  # a synthetic test value; the generated team password has at least 24 characters
@@ -193,6 +193,21 @@ class VlabClientTests(unittest.TestCase):
         get = run(client.send("GET", "/sandbox/status", None, timeout_s=1)).provenance
         self.assertEqual(get.request_sha256, sha256_hex("null"))
         self.assertIsNone(transport.sent[1].body)
+
+    def test_the_body_keeps_the_payload_key_order_and_the_hash_stays_canonical(self) -> None:
+        # ProteinPaint keys its DE result cache (data.cacheId) on the body as sent, key order
+        # included (seen live: the same DE body with sorted keys got another cacheId), so the body
+        # is the payload's own order, as the viewer's JSON.stringify writes it.
+        transport = FakeTransport({"/guppy/graphql": fixed(200, {})})
+        client = VlabClient(ORIGIN, transport)
+        payload: dict[str, Any] = {"query": "q", "variables": {"z": 1, "a": [{"y": "é", "b": None, "x": 1.5e-7}]}}
+        prov = run(client.send("POST", "/guppy/graphql", payload, timeout_s=1)).provenance
+        self.assertEqual(transport.sent[0].body, '{"query":"q","variables":{"z":1,"a":[{"y":"é","b":null,"x":1.5e-07}]}}'.encode())
+        self.assertEqual(wire_json(payload), (transport.sent[0].body or b"").decode())
+        self.assertEqual(prov.request_sha256, sha256_hex(canonical_json(payload, portable=False)))
+        self.assertNotEqual(transport.sent[0].body, canonical_json(payload, portable=False).encode())
+        with self.assertRaises(ValueError):
+            wire_json({"p": float("nan")})
 
     def test_a_request_without_a_response_still_yields_provenance(self) -> None:
         client = VlabClient(ORIGIN, FakeTransport({"/guppy/graphql": raises(HttpTimeout("slow"))}))

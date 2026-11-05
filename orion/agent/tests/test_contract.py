@@ -1,5 +1,6 @@
 """The shared wire contract v1.2: every fixture and the real AGUIApp's stream obey the same models."""
 
+import asyncio
 import importlib.util
 import json
 import re
@@ -24,7 +25,7 @@ from support import (
     snapshots,
 )
 
-from orion_agent import events
+from orion_agent import events, ir
 from orion_agent.catalog import AnalysisKind
 from orion_agent.events import iso_utc, utc_now
 from orion_agent.ids import new_id
@@ -75,6 +76,7 @@ from orion_agent.models import (
     RunView,
     SampleGroup,
     SaveCohortsArgs,
+    ScopeChoice,
     Segment,
     Sentence,
     StateSnapshotFrame,
@@ -106,9 +108,18 @@ from orion_agent.models import (
     pinned_hash,
     sha256_hex,
 )
+from orion_agent import compiler as compiler_module
+from orion_agent import executor as executor_module
+from orion_agent import interfaces, models
+from orion_agent.model.config import DEFAULT_MODELS
 from orion_agent.run_store import Environment, RunRecord, RunStore, ThreadIndex
 from orion_agent.settings import Settings, parse_faults
-from orion_agent.stubs import STUB_SKIP_REASON
+from orion_agent.stubs import STUB_SKIP_REASON, plan_question
+from orion_agent.tools import schemas as catalog
+from orion_agent.tools.base import STEP_TIMEOUT_S, KmCurve, RetryHook, ServerToolName, ToolCallOutcome, ToolErrorCode
+from orion_agent.tools.functions import derive_km_median
+from test_engine_fakes import FakeTools, compile_plan, fixture_frames, shape
+from test_engine_streams import EngineCase
 
 FIXTURES = CONTRACTS / "fixtures"
 STREAMS: dict[str, tuple[str, str | None]] = {
@@ -118,6 +129,9 @@ STREAMS: dict[str, tuple[str, str | None]] = {
     "j1-partial": ("Partial", "TOOL_FAILED"),
     "j1-retry": ("Complete", None),
     "j1-stop": ("Cancelled", None),
+    "j2-save-pause": ("AwaitingConfirmation", None),
+    "j2-after-confirm": ("Complete", None),
+    "j2-dont-save": ("Complete", None),
     "j3-save-pause": ("AwaitingConfirmation", None),
     "j3-after-confirm": ("Complete", None),
     "j3-edit-at-pause": ("AwaitingConfirmation", None),
@@ -130,7 +144,7 @@ STREAMS: dict[str, tuple[str, str | None]] = {
     "cancel-waiting": ("Clarifying", None),
 }
 # Resume streams: the action's snapshot follows RUN_STARTED directly.
-RESUMES = ("j1-retry", "j1-stop", "j3-after-confirm", "j3-edit-at-pause", "j3-dont-save", "j3-deinput")
+RESUMES = ("j1-retry", "j1-stop", "j2-after-confirm", "j2-dont-save", "j3-after-confirm", "j3-edit-at-pause", "j3-dont-save", "j3-deinput")
 RECORDS = ("run-record.j1-complete.json", "run-record.j1-retry.json")
 # Words with digits that code-written text may carry outside fact segments: app and term names,
 # the panel genes the PANEL_COVERAGE line names, and the viewer's rounded "p = 0" footnote.
@@ -1076,7 +1090,9 @@ class LiveAppStreamTests(ControllerCase):
         plan = views_[1].plan
         assert plan is not None
         fixture_plan = self._fixture_plan()
+        # The whole plan but its signature, the scope edit included: every plan offers it (TOOLS.md 6.4).
         self.assertEqual(plan.model_dump(exclude={"signature"}), fixture_plan.model_dump(exclude={"signature"}))
+        self.assertEqual([e.field for e in plan.editable], ["scope"])
         self.assertEqual(
             [s.model_dump(include={"id", "row", "tool", "kind", "folded", "input_summary"}) for s in views_[1].steps],
             [s.model_dump(include={"id", "row", "tool", "kind", "folded", "input_summary"}) for s in self._fixture_steps()],
@@ -1095,6 +1111,8 @@ class LiveAppStreamTests(ControllerCase):
         record = self.read_json(self.run_dir / "runs" / f"{run_id}.json")
         self.assertEqual(record["schema"], "orion.run-record/v1")
         self.assertEqual((record["status"], record["revision"], record["lease"]), ("Limited", final.revision, None))
+        # v1.2: the record names both model roles, so a run that never composed still says which composer it had.
+        self.assertEqual((record["environment"]["planner"], record["environment"]["composer"]), ("stub", "stub"))
         self.assertEqual(record["question"], J1_QUESTION)
         # The record keeps the view the BFF view route serves, as of the last transition.
         self.assertEqual(RunView.model_validate(record["runView"]), final)
@@ -1127,6 +1145,262 @@ class LiveAppStreamTests(ControllerCase):
 
     def _fixture_steps(self) -> list[StepView]:
         return self._fixture_frames()[1].snapshot.steps
+
+
+ONCO_QUESTION = "Top 3 most frequently mutated genes in CGS high-risk patients"
+CGS = "cgs_risk_key_criteria.cgs_risk_category"
+HIGH_SAVED: list[dict[str, JsonValue]] = [{
+    "id": "c-high", "name": "CGS high-risk (ORION)", "caseCount": 339,
+    "filters": {"mode": "and", "root": {CGS: {"operator": "includes", "field": CGS, "operands": ["High risk"]}}},
+}]
+
+
+class EveryPlanTests(unittest.TestCase):
+    """Rules every fixture's plan keeps, so the fixtures are what the compiler sends."""
+
+    def setUp(self) -> None:
+        if not FIXTURES.exists():
+            self.skipTest(f"{FIXTURES} is not mounted")
+
+    def test_every_plan_offers_the_scope_edit_first(self) -> None:
+        # TOOLS.md 6.4: scope on every plan. The card offers an edit only while the status accepts edit_plan.
+        for name in STREAMS:
+            _, frames = read_stream(name)
+            for view in views(frames):
+                if view.plan is None:
+                    continue
+                with self.subTest(name, revision=view.revision):
+                    self.assertEqual(view.plan.editable[0].field, "scope")
+                    self.assertEqual(view.plan.editable[0].value, ScopeChoice(source=view.plan.scope.source))
+
+    def test_a_plan_writes_exactly_when_it_has_a_save_step(self) -> None:
+        for name in STREAMS:
+            _, frames = read_stream(name)
+            for view in views(frames):
+                if view.plan is None:
+                    continue
+                with self.subTest(name, revision=view.revision):
+                    saves = [s.id for s in view.steps if s.tool == "save_cohorts"]
+                    self.assertEqual(view.plan.writes, bool(saves))
+                    # C-SAVE: a planned cohort is saved, reused at compile time, or the plan has no planned cohort to keep.
+                    proposed = [c.ref for c in view.cohorts if c.role == "planned" and c.save in ("proposed", "saved", "skipped")]
+                    if not saves:
+                        self.assertEqual(proposed, [])
+
+
+class J2FixtureTests(unittest.TestCase):
+    """J2 saves its planned cohort once, last (C-SAVE, TOOLS.md 5.2), or reuses an identical saved one (choice 15)."""
+
+    def setUp(self) -> None:
+        if not FIXTURES.exists():
+            self.skipTest(f"{FIXTURES} is not mounted")
+
+    def test_the_pause_offers_one_cohort_without_an_eligible_count(self) -> None:
+        _, frames = read_stream("j2-save-pause")
+        pause = views(frames)[-1]
+        pending = pause.pending
+        assert isinstance(pending, ConfirmPending) and pause.plan is not None
+        self.assertEqual((pending.step_id, pause.plan.rows[-1].label, pause.plan.writes), ("s5", "Save 1 cohort", True))
+        [cohort] = pending.cohorts
+        self.assertEqual((cohort.ref, cohort.name, cohort.eligible_count, cohort.eligible_count_fact_id), ("high", "CGS high-risk (ORION)", None, None))
+        assert cohort.definition is not None
+        self.assertEqual(cohort.definition.kind, "filter", "a planned filter cohort is saved as its filter definition")
+        self.assertEqual((pause.observed, pause.viz_specs), ([], []), "Observed renders after the confirm turn")
+        self.assertEqual([e.field for e in pause.plan.editable], ["scope", "topN", "cohortName"])
+
+    def test_create_saves_the_cohort_and_pins_the_card_to_it(self) -> None:
+        _, pause_frames = read_stream("j2-save-pause")
+        _, frames = read_stream("j2-after-confirm")
+        self.assertEqual(views(frames)[0].revision, views(pause_frames)[-1].revision + 1)
+        final = views(frames)[-1]
+        high = next(c for c in final.cohorts if c.ref == "high")
+        self.assertEqual((high.save, high.saved_name), ("saved", "CGS high-risk (ORION)"))
+        self.assertIsNotNone(high.cohort_id)
+        self.assertEqual([s.output_summary for s in final.steps if s.id == "s5"], ["1 cohort saved and read back"])
+        self.assertEqual([spec.cohort_refs for spec in final.viz_specs], [["high"]])
+
+    def test_dont_save_skips_the_write_and_turns_hand_off_off(self) -> None:
+        _, frames = read_stream("j2-dont-save")
+        first, final = views(frames)[0], views(frames)[-1]
+        self.assertEqual([(s.status, s.code) for s in first.steps if s.id == "s5"], [("Skipped", "WRITE_SKIPPED")])
+        self.assertEqual([c.save for c in final.cohorts if c.ref == "high"], ["skipped"])
+        skipped = [lim for lim in final.limitations if lim.code == "WRITE_SKIPPED"]
+        self.assertEqual([lim.text for lim in skipped], [catalog.TEMPLATES["save.skipped_one"].pattern])
+
+    def test_the_follow_up_reuses_an_identical_saved_cohort_and_plans_no_save(self) -> None:
+        _, frames = read_stream("oncomatrix")
+        final = views(frames)[-1]
+        assert final.plan is not None
+        self.assertEqual((final.plan.writes, [s.tool for s in final.steps][-1]), (False, "rank_top_n"))
+        high = next(c for c in final.cohorts if c.ref == "high")
+        self.assertEqual((high.save, high.cohort_id, high.saved_name), ("reused", "3c7a1e9b-5d2f-4b8a-9e6c-1f0d2a4b6c88", "CGS high-risk (ORION)"))
+        examples: list[dict[str, Any]] = json.loads((FIXTURES / "request-examples.json").read_text(encoding="utf-8"))["examples"]
+        ask = next(e["body"] for e in examples if e["body"]["runId"] == final.run_id)
+        saved = ask["forwardedProps"]["orion"]["cohortContext"]["saved"]
+        read = definition_from_filter_set(FilterSet.model_validate(saved[0]["filters"]))
+        assert read is not None
+        self.assertEqual((saved[0]["id"], def_sha256(read)), (high.cohort_id, high.def_sha256), "the ask's saved cohort is the one reused")
+
+
+class EngineFixtureShapeTests(EngineCase):
+    """The production wiring (real compiler, engine and renderer, fake tools) sends the J2 fixtures' shapes."""
+
+    def j2(self) -> ir.Plan:
+        output = plan_question(ONCO_QUESTION, context())
+        assert isinstance(output, ir.Plan)
+        return output
+
+    async def test_j2_pause_create_and_dont_save_have_the_fixture_shapes(self) -> None:
+        _, app = self.build([self.j2(), self.j2()])
+        for decision, fixture in (("create", "j2-after-confirm"), ("dont_save", "j2-dont-save")):
+            with self.subTest(decision):
+                thread_id, run_id = new_id(), new_id()
+                frames = await self.turn(app, ask_body(thread_id, run_id, question=ONCO_QUESTION), run_id)
+                self.assertEqual(shape(frames), shape(fixture_frames("j2-save-pause")))
+                args = SaveCohortsArgs.model_validate_json("".join(f["delta"] for f in frames if f["type"] == "TOOL_CALL_ARGS"))
+                expected = SaveCohortsArgs.model_validate_json("".join(
+                    f["delta"] for f in fixture_frames("j2-save-pause") if f["type"] == "TOOL_CALL_ARGS"))
+                self.assertEqual([c.model_dump(exclude={"case_count"}) for c in args.cohorts],
+                                 [c.model_dump(exclude={"case_count"}) for c in expected.cohorts])
+                pending = ConfirmPending.model_validate(args.model_dump(mode="json"))
+                confirm = self.create(pending) if decision == "create" else {
+                    "action": "confirm", "nonce": pending.nonce, "decision": "dont_save", "saved": [], "makeActive": None}
+                frames = await self.turn(app, action_body(thread_id, run_id, confirm), run_id)
+                self.assertEqual(shape(frames), shape(fixture_frames(fixture)))
+                final, wanted = self.last_view(frames), views([parse_frame(json.dumps(f)) for f in fixture_frames(fixture)])[-1]
+                self.assertEqual(final.limitations, wanted.limitations)
+                self.assertEqual([(v.title, v.caption, v.cohort_refs) for v in final.viz_specs],
+                                 [(v.title, v.caption, v.cohort_refs) for v in wanted.viz_specs])
+
+    async def test_the_follow_up_with_the_cohort_saved_has_the_oncomatrix_shape(self) -> None:
+        _, app = self.build([self.j2()])
+        thread_id, run_id = new_id(), new_id()
+        frames = await self.turn(app, ask_body(thread_id, run_id, question=ONCO_QUESTION, cohort_context=context(saved=HIGH_SAVED)), run_id)
+        self.assertEqual(shape(frames), shape(fixture_frames("oncomatrix")))
+        final = self.last_view(frames)
+        wanted = views([parse_frame(json.dumps(f)) for f in fixture_frames("oncomatrix")])[-1]
+        assert final.plan is not None and wanted.plan is not None
+        self.assertEqual(final.plan.model_dump(exclude={"signature"}), wanted.plan.model_dump(exclude={"signature"}))
+
+    async def test_a_stopped_step_keeps_how_long_it_ran(self) -> None:
+        # StepSession.skip_step(duration_ms=): the j1-stop fixture shows the aborted step's durationMs.
+        tools = FakeTools({"survival_compare": "block"})
+        _, app = self.build(tools=tools)
+        thread_id, run_id = new_id(), new_id()
+        ask = asyncio.create_task(asgi_call(app, "POST", "/invocations", ask_body(thread_id, run_id)))
+        await asyncio.wait_for(tools.started.wait(), 5)
+        frames = await self.turn(app, action_body(thread_id, run_id, {"action": "cancel"}), run_id)
+        await ask
+        stopped = [s for s in self.last_view(frames).steps if s.output_summary == "Not run: stopped"]
+        self.assertEqual([s.id for s in stopped], ["s4", "s5"])
+        self.assertIsInstance(stopped[0].duration_ms, int, "the aborted running step ran for a measured time")
+        self.assertIsNone(stopped[1].duration_ms, "a step that never started has no duration")
+        fixture = views([parse_frame(json.dumps(f)) for f in fixture_frames("j1-stop")])[-1]
+        self.assertEqual([s.duration_ms is None for s in fixture.steps[3:]], [False, True])
+
+    async def test_the_engine_gives_each_attempt_the_step_timeout(self) -> None:
+        # tools/base.py ToolClient: timeout_s is one attempt's budget, STEP_TIMEOUT_S; the client caps HTTP at 55 s.
+        timeouts: list[float] = []
+
+        class Recording(FakeTools):
+            async def call(
+                self, name: ServerToolName, input: JsonValue, *, timeout_s: float, run_id: str, plan_version: int, step_id: str,
+                first_call: int, on_retry: RetryHook | None = None,
+            ) -> ToolCallOutcome:
+                timeouts.append(timeout_s)
+                return await super().call(name, input, timeout_s=timeout_s, run_id=run_id, plan_version=plan_version,
+                                          step_id=step_id, first_call=first_call, on_retry=on_retry)
+
+        _, app = self.build(tools=Recording())
+        thread_id, run_id = new_id(), new_id()
+        await self.turn(app, ask_body(thread_id, run_id), run_id)
+        self.assertTrue(timeouts)
+        self.assertEqual(set(timeouts), {STEP_TIMEOUT_S})
+
+
+class InputHashTests(unittest.TestCase):
+    """TOOLS.md 1 "Input hash and Reused": the hash covers dependsOn, in both implementations."""
+
+    def test_a_scope_edit_changes_the_save_step_although_its_args_do_not(self) -> None:
+        output = plan_question(ONCO_QUESTION, context())
+        assert isinstance(output, ir.Plan)
+        filtered = context({"demographic.race": {"operator": "in", "field": "demographic.race", "operands": ["white"]}}, name="White patients", case_count=600)
+        before, after = compile_plan(output), compile_plan(output, filtered)
+        old_save, new_save = before.write_step(), after.write_step()
+        assert old_save is not None and new_save is not None
+        self.assertEqual(old_save.args, new_save.args, "the save's own args name only the ref and the name")
+        self.assertNotEqual(old_save.depends_on, new_save.depends_on)
+        for hashes in (compiler_module.step_input_hashes, executor_module.input_hashes):
+            with self.subTest(hashes.__module__):
+                old, new = hashes(before), hashes(after)
+                self.assertNotEqual(old[old_save.id], new[new_save.id], "a save whose cohort changed is never Reused")
+                self.assertEqual(old["s1"], new["s1"], "the fingerprint step is unchanged by a scope edit")
+
+
+class ContractV12Tests(unittest.TestCase):
+    """Contract details settled after the Day 2 builds (contract README, models.py, interfaces.py, base.py)."""
+
+    def test_unauthenticated_is_a_bff_code_the_browser_treats_as_a_rejected_turn(self) -> None:
+        codes = set(get_args(models.BffErrorCode))
+        self.assertEqual(set(models.BFF_ERROR_HANDLING), codes)
+        self.assertEqual(set(models.BFF_ERROR_STATUS), codes)
+        self.assertEqual((models.BFF_ERROR_STATUS["UNAUTHENTICATED"], models.BFF_ERROR_HANDLING["UNAUTHENTICATED"]), (401, "reject"))
+        models.BffError.model_validate({"error": {"code": "UNAUTHENTICATED", "message": "Sign in again."}})
+
+    def test_an_unreadable_read_back_is_null_and_fails_the_write(self) -> None:
+        if not FIXTURES.exists():
+            self.skipTest(f"{FIXTURES} is not mounted")
+        _, frames = read_stream("j3-save-pause")
+        pending = views(frames)[-1].pending
+        assert isinstance(pending, ConfirmPending)
+        saved: list[JsonValue] = [
+            {"ref": c.ref, "cohortId": f"c-{c.ref}", "name": c.name, "defSha256": None if c.ref == "kras_wt" else c.def_sha256, "reused": False}
+            for c in pending.cohorts
+        ]
+        confirm = ORION_ACTION.validate_python({"action": "confirm", "nonce": pending.nonce, "decision": "create", "saved": saved, "makeActive": None})
+        assert isinstance(confirm, ConfirmAction)
+        self.assertEqual(executor_module.verify_read_back(pending, confirm), ["KRAS not detected (ORION) was saved with a different definition"])
+        bad: dict[str, JsonValue] = {"ref": "kras_wt", "cohortId": "c-kras_wt", "name": "x", "defSha256": "x", "reused": False}
+        with self.assertRaises(ValidationError):
+            ORION_ACTION.validate_python({**confirm.model_dump(mode="json"), "saved": [bad]})
+
+    def test_the_default_model_names_are_the_runtime_clients_defaults(self) -> None:
+        self.assertEqual((interfaces.PLANNER_MODEL, interfaces.REFUSAL_FALLBACK_MODEL), DEFAULT_MODELS["runtime"])
+
+    def test_no_action_is_reserved_any_more(self) -> None:
+        self.assertFalse(hasattr(models, "RESERVED_ACTIONS"))
+
+    def test_an_executor_function_that_raised_has_its_own_tool_error_code(self) -> None:
+        # TOOLS.md 1 "Error mapping": its CallRecord's error starts INTERNAL_ERROR.
+        self.assertIn("INTERNAL_ERROR", get_args(ToolErrorCode))
+
+    def test_the_record_names_its_composer_and_reads_older_records_without_one(self) -> None:
+        self.assertIsNone(Environment(mode="L", planner="stub", executor="stub", agent_version="test").composer)
+        dumped = Environment(mode="L", planner="stub", composer="stub", executor="engine", agent_version="test").model_dump(mode="json")
+        self.assertEqual(list(dumped)[:3], ["mode", "planner", "composer"])
+
+    def test_the_j1_record_follows_the_catalog(self) -> None:
+        path = FIXTURES / "run-record.j1-complete.json"
+        if not path.exists():
+            self.skipTest(f"{path} is not mounted")
+        record = RunRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        self.assertEqual(record.environment.composer, "bedrock")
+        for fact in record.facts:
+            with self.subTest(fact=fact.id):
+                # FactRecord.engine is the tool's engine (TOOLS.md 1 "Engines"), null for ORION's functions.
+                self.assertEqual(fact.engine, catalog.tool_spec(fact.tool).engine)
+        for call in record.calls:
+            with self.subTest(call=call.call_id):
+                spec = catalog.tool_spec(call.tool)
+                self.assertEqual(spec.input_model.model_validate(call.request).model_dump(mode="json"), call.request)
+                if call.observed is not None and spec.observed_model is not None:
+                    self.assertEqual(spec.observed_model.model_validate(call.observed).model_dump(mode="json"), call.observed,
+                                     "Observed is what the catalog's model writes, so responseSha256 is reproducible")
+        survival = next(c for c in record.calls if c.tool == "survival_compare" and c.status == "ok")
+        medians = next(c for c in record.calls if c.tool == "derive_km_median")
+        assert isinstance(survival.observed, dict) and isinstance(survival.observed["groups"], list)
+        curves = [KmCurve.model_validate({"label": g["label"], "points": g["curve"]}) for g in survival.observed["groups"] if isinstance(g, dict)]
+        self.assertEqual(derive_km_median(curves, unit="days").model_dump(mode="json"), medians.observed, "the median is the documented rule's")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,12 @@
 """Builds the model roles from the runtime settings and the environment (model/config.py).
 
-    planner = make_planner(settings)      # ORION_PLANNER: stub (orion_agent.stubs.StubPlanner) or bedrock
-    composer = make_composer(settings)    # ORION_COMPOSER: stub (StubComposer) or bedrock
+    planner = make_planner(settings)      # settings.planner (ORION_PLANNER): stub (orion_agent.stubs.StubPlanner) or bedrock
+    composer = make_composer(settings)    # settings.composer (ORION_COMPOSER): stub (StubComposer) or bedrock
     verifier = make_verifier(settings)    # always code (CodeVerifier)
+
+The role kinds come from `settings` (what app.py logs and the run record's environment names);
+the Bedrock details (client, region, model ids, efforts, timeouts) from ModelConfig.from_env().
+A `config` passed explicitly is used as it is, roles included (the tests build their own).
 
 Fault injection (contract "Fault injection", E11): `planner:refuse` or `composer:refuse` in
 ORION_FAULTS (settings.faults, honoured only in mode L or a test Runtime) makes that role answer
@@ -61,14 +65,17 @@ class RefusingComposer:
         return ComposerResult(output=None, model_calls=[], serving_model=None, declined=True, decline_reason=FAULT_COMPOSER_REASON)
 
 
-def _config(config: ModelConfig | None) -> ModelConfig:
-    return config if config is not None else ModelConfig.from_env()
+def _config(settings: Settings, config: ModelConfig | None) -> ModelConfig:
+    """`config` as given, or the environment's with the role kinds `settings` chose."""
+    if config is not None:
+        return config
+    return ModelConfig.from_env().model_copy(update={"planner": settings.planner, "composer": settings.composer})
 
 
 def make_planner(settings: Settings, *, config: ModelConfig | None = None, vocab: Vocabulary | None = None) -> Planner:
     if settings.faults.get("planner") == "refuse":
         return RefusingPlanner()
-    resolved = _config(config)
+    resolved = _config(settings, config)
     if resolved.planner == "stub":
         from ..stubs import StubPlanner  # the compiler builder's stub, imported lazily
 
@@ -82,7 +89,7 @@ def make_planner(settings: Settings, *, config: ModelConfig | None = None, vocab
 def make_composer(settings: Settings, *, config: ModelConfig | None = None) -> Composer:
     if settings.faults.get("composer") == "refuse":
         return RefusingComposer()
-    resolved = _config(config)
+    resolved = _config(settings, config)
     if resolved.composer == "stub":
         return StubComposer(effort=resolved.composer_effort)
     from .client import shared_client

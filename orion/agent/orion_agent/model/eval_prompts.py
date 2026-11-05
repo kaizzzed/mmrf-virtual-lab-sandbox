@@ -2,9 +2,10 @@
 
 A4: "No eval prompt appears among them, including the held-out paraphrases and out-of-kind
 questions." `tests/test_model_prompts.py` checks that no planner or composer example equals or
-nearly equals any text here. The held-out paraphrases (E22) and out-of-kind questions (E23) are
-held out by design and have no text in the RFA; when the eval harness writes them, add them here
-and the test covers them too.
+nearly equals any text here. The held-out paraphrases (E22), the edge questions and the
+out-of-kind questions (E23) have no text in the RFA; their texts are the eval harness's
+(orion/evals/prompts.json), copied here so the exclusion covers them; `python -m orion_evals prompts
+--check-agent` lists any the harness adds later.
 """
 
 import re
@@ -64,6 +65,34 @@ EVAL_PROMPTS: Final[tuple[EvalPrompt, ...]] = (
         "Compare survival between the KRAS mutated (ORION) and KRAS not detected (ORION) cohorts",
         "fixture j3-after-confirm follow-up",
     ),
+    # The eval harness's held-out paraphrases (E22), three per journey (orion/evals/prompts.json "heldOut")
+    EvalPrompt("How does overall survival differ between CGS high-risk and CGS standard-risk cases?", "evals heldOut J1; E22"),
+    EvalPrompt("Plot Kaplan–Meier curves for CGS high-risk versus CGS standard-risk patients", "evals heldOut J1; E22"),
+    EvalPrompt(
+        "Is survival shorter for patients in the CGS high-risk category than for those in the CGS standard-risk category?",
+        "evals heldOut J1; E22",
+    ),
+    EvalPrompt("Which three genes are mutated most often among Black or African American patients?", "evals heldOut J2; E22"),
+    EvalPrompt("Rank the three most frequently mutated genes for patients whose race is Black or African American", "evals heldOut J2; E22"),
+    EvalPrompt("Show the top three mutated genes in Black or African American cases", "evals heldOut J2; E22"),
+    EvalPrompt("Compare gene expression between KRAS-mutated and KRAS wild-type patients and list the top ten genes", "evals heldOut J3; E22"),
+    EvalPrompt(
+        "Which ten genes are most differentially expressed between patients with a KRAS mutation and patients without one?",
+        "evals heldOut J3; E22",
+    ),
+    EvalPrompt(
+        "Run differential expression of KRAS mutant versus non-mutant patients and show the ten top-ranked genes", "evals heldOut J3; E22"
+    ),
+    # The eval harness's edge questions ("edge")
+    EvalPrompt("Differential expression between patients with and without an IDH1 mutation, top 10 genes", "evals edge; E8"),
+    EvalPrompt(
+        "Differential expression between white patients at ISS stage III with and without a TP53 mutation, top 10 genes", "evals edge; E9"
+    ),
+    EvalPrompt("How many cases are in my cohort?", "evals edge; E12"),
+    # The eval harness's out-of-kind questions (E23, "outOfKind")
+    EvalPrompt("Cluster the samples by their gene expression and show a heatmap", "evals outOfKind; E23"),
+    EvalPrompt("Show where the KRAS mutations fall on the protein's domains", "evals outOfKind; E23"),
+    EvalPrompt("Plot a UMAP of the bulk RNA-seq samples coloured by ISS stage", "evals outOfKind; E23"),
 )
 
 # Genes and names the evals use that an example must not mention at all.

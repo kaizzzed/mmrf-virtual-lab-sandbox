@@ -61,6 +61,9 @@ def _records(kind: str, run_dir: str | None, bff_origin: str | None) -> RecordSo
             return DirRecordSource(Path(run_dir))
         if bff_origin:
             return BffRecordSource(bff_origin)
+        # A fresh run volume has no runs/ until the first run writes it: without a BFF it is the only source.
+        if run_dir and Path(run_dir).is_dir():
+            return DirRecordSource(Path(run_dir))
     return NoRecordSource()
 
 

@@ -1239,8 +1239,10 @@ class SavedReadBack(WireModel):
     ref: CohortRefId
     cohort_id: PlatformCohortId
     name: CohortName
-    # defSha256 the browser computed from the saved cohort's stored filters, as read back.
-    def_sha256: Sha256Hex
+    # defSha256 the browser computed from the saved cohort's stored filters, as read back; null when
+    # those filters cannot be read ("Reading a saved cohort's FilterSet"). Null never equals the
+    # pending cohort's hash, so the write step fails WRITE_VERIFY_FAILED (contract "confirm create").
+    def_sha256: Sha256Hex | None
     # True when an identical saved cohort was reused instead of created.
     reused: bool
 
@@ -1333,10 +1335,6 @@ OrionAction = Annotated[
     Field(discriminator="action"),
 ]
 ORION_ACTION: Final[TypeAdapter[OrionAction]] = TypeAdapter(OrionAction)
-# Actions the Day 1 AM controller answers with RUN_ERROR NOT_IMPLEMENTED before validating them.
-RESERVED_ACTIONS: Final = frozenset(
-    {"clarify_answer", "consent", "confirm", "edit_plan", "retry_step", "viz_report"}
-)
 
 
 class RunAgentInputModel(WireModel):
@@ -1406,7 +1404,7 @@ class CallRecord(WireModel):
 class ModelCallRecord(WireModel):
     call_id: ModelCallId
     role: ModelRole
-    # The model that served, such as anthropic.claude-opus-5-5, or its refusal fallback.
+    # The model that served, such as us.anthropic.claude-opus-5-5, or its refusal fallback.
     model: str
     fallback: bool
     effort: Literal["low", "medium", "high"]
@@ -1539,8 +1537,36 @@ class LedgerUse(WireModel):
 # --- BFF route error body ------------------------------------------------------------------
 
 BffErrorCode = Literal[
-    "INVALID_INPUT", "RUN_NOT_FOUND", "SESSION_BUSY", "UPSTREAM_ERROR", "UPSTREAM_UNAVAILABLE", "UPSTREAM_TIMEOUT"
+    "INVALID_INPUT",
+    "UNAUTHENTICATED",
+    "RUN_NOT_FOUND",
+    "SESSION_BUSY",
+    "UPSTREAM_ERROR",
+    "UPSTREAM_UNAVAILABLE",
+    "UPSTREAM_TIMEOUT",
 ]
+# What the browser does with each BFF error (contract "Client handling of BFF errors"); the fork's
+# agui/types.ts BFF_ERROR_HANDLING holds the same map.
+BffErrorHandling = Literal["reject", "pollView", "checkView", "notStored"]
+BFF_ERROR_HANDLING: Final[dict[BffErrorCode, BffErrorHandling]] = {
+    "INVALID_INPUT": "reject",
+    "UNAUTHENTICATED": "reject",
+    "SESSION_BUSY": "pollView",
+    "UPSTREAM_ERROR": "checkView",
+    "UPSTREAM_TIMEOUT": "checkView",
+    "UPSTREAM_UNAVAILABLE": "reject",
+    "RUN_NOT_FOUND": "notStored",
+}
+# The HTTP status each BFF error answers with (contract "BFF routes", Errors).
+BFF_ERROR_STATUS: Final[dict[BffErrorCode, int]] = {
+    "INVALID_INPUT": 400,
+    "UNAUTHENTICATED": 401,
+    "RUN_NOT_FOUND": 404,
+    "SESSION_BUSY": 409,
+    "UPSTREAM_ERROR": 502,
+    "UPSTREAM_UNAVAILABLE": 503,
+    "UPSTREAM_TIMEOUT": 504,
+}
 
 
 class BffErrorDetail(WireModel):

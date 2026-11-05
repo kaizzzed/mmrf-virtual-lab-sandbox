@@ -6,7 +6,7 @@ hands the evidence to the check functions (evalchecks), which are pure and fixtu
 """
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -107,19 +107,42 @@ def _journey(journey: str, phrasing: str, twin: str) -> RunFn:
 
 
 def _j2_reuse(ctx: EvalContext, first: RunEvidence) -> list[Check]:
-    """FR-08's second half: with the race cohort already saved, the plan proposes reuse and Create adds nothing."""
+    """FR-08's second half: with the race cohort already saved, the plan reuses it and nothing is created.
+
+    TOOLS.md choice 15 (contract v1.2, the `oncomatrix` fixture): a planned cohort whose definition hashes like
+    a saved cohort in the cohortContext is `reused` at compile time, with that cohort's id, and the plan has no
+    save step, so the run never pauses. A pending card that offers the reuse (the store changed after the
+    plan compiled) is also accepted."""
     assert first.store is not None
     store = ctx.store()
     for cohort in first.store.cohorts:
         store.seed(cohort.name, cohort.filters, cohort.case_count)
+    seeded = {c.id for c in store.cohorts}
     question = sc.reference_prompt(ctx, "J2", "open-ended")
     ev = sc.run_journey(ctx, "J2", question, "J2 open-ended, race cohort already saved", store)
-    pending = [c for p in ev.pauses() for c in p["pending"].get("cohorts", [])]
+    ok, detail = reuse_of_saved(ev.view or {}, ev.pauses(), seeded)
     created = [w for w in store.writes if w.get("write") == "createNewCohort"]
     return [
-        expect("an identical saved cohort is proposed for reuse", bool(pending) and all(c.get("reuse") for c in pending), f"pending reuse {[c.get('reuse') for c in pending]}", gate=False, run=ev.run_id),
+        expect("an identical saved cohort is reused (at compile time, or offered on the card)", ok, detail, gate=False, run=ev.run_id),
         expect("an identical existing cohort is reused, not duplicated", not created and not store.duplicates(), f"simulated browser created {len(created)}", source="simulated browser", gate=False, run=ev.run_id),
     ]
+
+
+def reuse_of_saved(view: Mapping[str, Any], pauses: Sequence[Mapping[str, Any]], seeded: set[str]) -> tuple[bool, str]:
+    """Whether a run reused the saved cohorts `seeded` holds: at compile time (every planned cohort `reused`
+    with a seeded id, no save step, no pause; TOOLS.md choice 15), or offered as `reuse` on every pending cohort."""
+    pending = [c for p in pauses for c in (p.get("pending") or {}).get("cohorts", [])]
+    planned = [c for c in view.get("cohorts") or [] if c.get("role") == "planned"]
+    steps = [s.get("tool") for s in view.get("steps") or []]
+    at_compile = not pending and "save_cohorts" not in steps and bool(planned) and all(
+        c.get("save") == "reused" and c.get("cohortId") in seeded for c in planned
+    )
+    offered = bool(pending) and all(c.get("reuse") for c in pending)
+    detail = (
+        f"planned cohorts {[(c.get('ref'), c.get('save'), c.get('cohortId')) for c in planned]}, save step {'save_cohorts' in steps}, "
+        f"pending reuse {[c.get('reuse') for c in pending]}"
+    )
+    return at_compile or offered, detail
 
 
 # --- edge cases ------------------------------------------------------------------------------------

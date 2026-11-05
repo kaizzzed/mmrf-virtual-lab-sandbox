@@ -508,8 +508,10 @@ def signature(scope: ResolvedScope, steps: list[StepSpec], assumptions: list[Ass
 
 def step_input_hashes(plan: CompiledPlan) -> dict[str, str]:
     """Each step's input hash (TOOLS.md 1, "Input hash and Reused"): sha256 of the canonical JSON of
-    {"tool", "version", "args"} with every StepRef and every bare step id an executor Input names
-    replaced by the referenced step's own input hash. Equal hashes across plan versions mean Reused."""
+    {"tool", "version", "args", "dependsOn"} with every StepRef and every bare step id an executor
+    Input names replaced by the referenced step's own input hash, and dependsOn listing the input
+    hashes of the steps it names (so a save whose cohorts' defining steps changed changes too).
+    Equal hashes across plan versions mean Reused."""
     hashes: dict[str, str] = {}
 
     def swap(value: JsonValue) -> JsonValue:
@@ -530,7 +532,8 @@ def step_input_hashes(plan: CompiledPlan) -> dict[str, str]:
         for name in _BARE_STEP_FIELDS.get(step.tool, ()):
             if isinstance(args.get(name), str):
                 args[name] = hashes[str(args[name])]
-        document: dict[str, JsonValue] = {"tool": step.tool, "version": tool_spec(step.tool).version, "args": args}
+        depends: list[JsonValue] = [hashes[d] for d in step.depends_on]
+        document: dict[str, JsonValue] = {"tool": step.tool, "version": tool_spec(step.tool).version, "args": args, "dependsOn": depends}
         hashes[step.id] = sha256_hex(canonical_json(document, portable=False))
     return hashes
 

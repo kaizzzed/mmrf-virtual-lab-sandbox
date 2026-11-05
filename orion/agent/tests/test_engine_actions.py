@@ -428,18 +428,17 @@ class StopDuringDeTests(EngineCase):
         self.assertEqual(tools.cancelled, ["s9"])
 
 
-class BuiltinAnswerTests(EngineCase):
-    async def test_the_built_in_answer_loop_without_the_model_package(self) -> None:
-        """Without orion_agent.model the controller composes, verifies and re-composes itself, numbering model calls."""
-        from unittest import mock
-
+class RecomposeTests(EngineCase):
+    async def test_one_recompose_after_a_failed_verdict_numbers_the_model_calls(self) -> None:
+        """The answer loop (orion_agent.model.answer.write_answer) re-composes once after a model-text failure; the
+        controller numbers the composer's calls in the run. (It replaces the test of the controller's own copy of the
+        loop, which ran only when orion_agent.model was missing and was removed at integration.)"""
         from test_engine_fakes import FakeVerifier
 
         verifier = FakeVerifier(retry_first=True)
         _, app = self.build(verifier=verifier)
         run_id = new_id()
-        with mock.patch.object(controller_module, "_optional_module", lambda name: None):
-            frames = await self.turn(app, ask_body(new_id(), run_id), run_id)
+        frames = await self.turn(app, ask_body(new_id(), run_id), run_id)
         self.assertEqual(self.last_view(frames).status, "Complete")
         self.assertEqual(verifier.attempts, [1, 2])
         self.assertEqual([c["callId"] for c in self.record(run_id)["modelCalls"]],

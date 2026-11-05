@@ -3,7 +3,8 @@
 Goldens are request bodies captured once from the native viewers, so a tool and its chart send the
 same request. A tool reads them from `ORION_GOLDEN_DIR` when that directory exists (the agent
 image bakes them at /golden), else from `golden_snapshot.json` beside this module: the same
-requests, copied verbatim with their `payloadSha256`, so the Gateway Lambda and an image built
+requests, copied verbatim with their `payloadSha256` (each payload in the viewer's own key order,
+which the body sent keeps), so the Gateway Lambda and an image built
 without the golden context still have them. Loading checks every payload against its recorded
 `payloadSha256` (canonical JSON, keys sorted, no whitespace), so neither source can drift silently.
 
@@ -157,7 +158,12 @@ def snapshot_text(store: GoldenStore) -> str:
     document = store.snapshot()
     listed = document["requests"]
     assert isinstance(listed, list)
-    lines = ",\n".join(json.dumps(r, sort_keys=True, separators=(",", ":"), ensure_ascii=False) for r in listed)
+    # Each entry's own keys sorted; the payload inside keeps the viewer's key order, which the
+    # request body keeps on the wire (vlab.wire_json: ProteinPaint's DE cache key depends on it).
+    lines = ",\n".join(
+        json.dumps(dict(sorted(r.items())) if isinstance(r, dict) else r, separators=(",", ":"), ensure_ascii=False)
+        for r in listed
+    )
     head = {k: v for k, v in document.items() if k != "requests"}
     rest = json.dumps(head, sort_keys=True, separators=(",", ":"), ensure_ascii=False)[1:]
     return '{"requests":[\n' + lines + "\n]," + rest + "\n"

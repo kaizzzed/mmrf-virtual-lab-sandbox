@@ -35,15 +35,13 @@ class ToolCallCancelled(asyncio.CancelledError):
 
 
 def error_text(tool: str, error: ToolError | None) -> str | None:
-    """The CallRecord's `error`: CANCELLED for an aborted attempt, INTERNAL_ERROR for an executor
-    function that failed, else the ToolError code; then the message."""
+    """The CallRecord's `error`: the ToolError code, then the message. An aborted attempt's starts
+    CANCELLED; an executor function that raised (code INTERNAL_ERROR) starts INTERNAL_ERROR, whatever
+    code an older client gave it."""
     if error is None:
         return None
-    if error.code == "CANCELLED":
-        return f"CANCELLED: {error.message}"
-    if tool in EXEC_FUNCTIONS:
-        return f"INTERNAL_ERROR: {error.message}"
-    return f"{error.code}: {error.message}"
+    code = "INTERNAL_ERROR" if tool in EXEC_FUNCTIONS and error.code != "CANCELLED" else error.code
+    return f"{code}: {error.message}"
 
 
 def call_records(outcome: ToolCallOutcome, *, plan_version: int, step_id: str) -> list[CallRecord]:

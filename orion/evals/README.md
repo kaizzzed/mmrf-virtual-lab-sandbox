@@ -46,8 +46,14 @@ docker run --rm --network mmrf-synthetic_default -v $PWD/orion/evals:/evals -w /
   python -m orion_evals oracle
 ```
 
-**The evals, mode L** (the integrator, once the engine lands; mode L is up with
-`orion/scripts/orion-local.sh up`). The agent's run volume is mounted read-only so record-based
+**The evals, mode L, in one command:** `orion/scripts/evals-mode-l.sh agent` runs E1–E24 against
+the Compose `orion-agent`, starting the four E11 fault agents itself and removing them afterwards;
+`evals-mode-l.sh bff` sends the same turns through the fork's BFF behind the identity gateway and
+reads records from its routes; `evals-mode-l.sh e20-lease` runs E20 with its live lease expiry (the
+harness and its own agent share one container, so `--restart-cmd` can kill the controller). Extra
+arguments go to `run`. The results and their meaning are in `orion/notes/mode-l-status.md`.
+
+**The evals, mode L, by hand** (mode L is up with `orion/scripts/orion-local.sh up`). The agent's run volume is mounted read-only so record-based
 checks can run:
 
 ```sh
@@ -58,6 +64,25 @@ docker run --rm --network mmrf-synthetic_default \
     --agent-url http://orion-agent:8080/invocations --run-dir /data/runs \
     --frontend-root /fork --agent-tests-root /agent-tests
 ```
+
+Without the Compose service (or to test the working tree), start a throwaway agent from the current
+code on the stack's network and point the harness at it; a bind-mounted run directory doubles as the
+record source (the harness reads it even before the first run writes `runs/`):
+
+```sh
+mkdir -p /tmp/orion-runs/main && chmod 777 /tmp/orion-runs/main
+docker run -d --name orion-agent-evals --network mmrf-synthetic_default \
+  -v $PWD/orion/agent:/app:ro -v $PWD/config:/config:ro -v $PWD/orion/golden:/golden:ro \
+  -v /tmp/orion-runs/main:/data/runs -e ORION_MODE=L -e ORION_VLAB_ORIGIN=http://identity:8080 orion-agent:dev
+docker run --rm --network mmrf-synthetic_default -v $PWD/orion/evals:/evals:ro -v /tmp/orion-runs:/runs:ro \
+  -v $PWD/.sources/frontend:/fork:ro -v $PWD/orion/agent/tests:/agent-tests:ro -w /evals orion-agent:dev \
+  python -m orion_evals run --agent-url http://orion-agent-evals:8080/invocations --run-dir /runs/main \
+    --frontend-root /fork --agent-tests-root /agent-tests
+docker rm -f orion-agent-evals
+```
+
+For E11, start one more agent per fault the same way (`-e ORION_FAULTS=de_run:timeout`, its own run
+directory) and pass `--fault-agent de_run:timeout=http://<name>:8080/invocations@/runs/<dir>`.
 
 - `--evals E1,E7` runs a subset (default: all 24). `--repeats` (default 5, E16) repeats each
   reference prompt. E20 waits `--pause-wait-s` (default 300) at the save pause.

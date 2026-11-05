@@ -164,6 +164,9 @@ def environment(ctx: EvalContext, evidence: Sequence[RunEvidence], fingerprint: 
         env = record.get("environment") or {}
         if env:
             break
+    # The record names its composer role (contract v1.2 environment.composer, stub or bedrock); the models that
+    # served it come from modelCalls. Older records without the field fall back to the served models.
+    roles = sorted({str(r["environment"]["composer"]) for r in records if (r.get("environment") or {}).get("composer")})
     composers = sorted({str(m.get("model")) for r in records for m in r.get("modelCalls", []) if m.get("role") == "composer"})
     planners = sorted({str(m.get("model")) for r in records for m in r.get("modelCalls", []) if m.get("role") == "planner"})
     agent_fps = sorted({str((ev.view or {}).get("environment", {}).get("fingerprintSha256")) for ev in evidence if ev.view and (ev.view.get("environment") or {}).get("fingerprintSha256")})
@@ -175,7 +178,8 @@ def environment(ctx: EvalContext, evidence: Sequence[RunEvidence], fingerprint: 
         "faultAgents": sorted(ctx.fault_agents),
         "planner": ctx.planner or env.get("planner"),
         "plannerModels": planners,
-        "composer": composers[0] if len(composers) == 1 else (composers or "none recorded"),
+        "composer": roles[0] if len(roles) == 1 else (roles or (composers[0] if len(composers) == 1 else (composers or "none recorded"))),
+        "composerModels": composers,
         "executor": env.get("executor"),
         "agentVersion": env.get("agentVersion"),
         "toolTransport": env.get("toolTransport"),

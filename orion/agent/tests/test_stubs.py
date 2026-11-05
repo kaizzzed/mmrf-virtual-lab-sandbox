@@ -263,7 +263,9 @@ class _Session:
                           limitations: Sequence[Limitation] = ()) -> None:
         raise AssertionError("the stub executor finishes no step")
 
-    async def skip_step(self, step_id: str, code: Code | None, reason: str, *, calls: Sequence[CallRecord] = ()) -> None:
+    async def skip_step(
+        self, step_id: str, code: Code | None, reason: str, *, calls: Sequence[CallRecord] = (), duration_ms: int | None = None
+    ) -> None:
         self.skipped.append((step_id, code, reason))
 
     async def reuse_step(self, step_id: str, *, origin: StepOrigin) -> None:

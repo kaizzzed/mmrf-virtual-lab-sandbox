@@ -6,7 +6,7 @@ through the executor's reader (`schemas.StepValueReader`, which raises LookupErr
 that does not resolve), applies the step's post-guards and returns the ToolResult envelope, with no
 provenance and no retry. `call_function` wraps that as the ToolCallOutcome the executor records
 (transport `in_process`, httpStatus null). A function that raises fails its step: status `error`,
-and the CallRecord's error starts INTERNAL_ERROR (records.call_records).
+error code INTERNAL_ERROR, so the CallRecord's error starts INTERNAL_ERROR (records.call_records).
 """
 
 import math
@@ -141,6 +141,17 @@ def rank_top_n(
     )
 
 
+def passes_thresholds(row: Mapping[str, JsonValue], thresholds: Mapping[str, JsonValue]) -> bool:
+    """A DE row passes when its p (adjusted or original, by `pValueType`) is below `pValueCutoff` and its
+    |fold_change| above `foldChangeCutoff` (the thresholds' JSON form). A row without the numbers raises."""
+    p_field = "adjusted_p_value" if thresholds.get("pValueType") == "adjusted" else "original_p_value"
+    cutoff, fold_cutoff = thresholds.get("pValueCutoff"), thresholds.get("foldChangeCutoff")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (cutoff, fold_cutoff)):
+        raise FunctionError("the thresholds need a numeric pValueCutoff and foldChangeCutoff")
+    assert isinstance(cutoff, (int, float)) and isinstance(fold_cutoff, (int, float))
+    return _rank_value(row, p_field) < cutoff and _rank_value(row, "abs(fold_change)") > fold_cutoff
+
+
 def derive_km_median(curves: Sequence[KmCurve], *, unit: str) -> KmMedianResult:
     """Per curve, the first time whose survival is at most 0.5; null (not reached) when none is."""
     groups: list[KmMedian] = []
@@ -191,12 +202,8 @@ def _rows(read: StepValueReader, inp: RankTopNInput) -> list[Mapping[str, JsonVa
         if isinstance(extra, dict):
             out.append(extra)
     if inp.thresholds is not None:
-        p_field = "adjusted_p_value" if inp.thresholds.p_value_type == "adjusted" else "original_p_value"
-        out = [
-            row for row in out
-            if _rank_value(row, p_field) < inp.thresholds.p_value_cutoff
-            and _rank_value(row, "abs(fold_change)") > inp.thresholds.fold_change_cutoff
-        ]
+        limits: dict[str, JsonValue] = inp.thresholds.model_dump(mode="json", by_alias=True)
+        out = [row for row in out if passes_thresholds(row, limits)]
     return out
 
 
@@ -255,14 +262,14 @@ RUNNERS: Final[dict[ExecutorFunctionName, Callable[[JsonValue, StepValueReader],
 
 def run_function(name: ExecutorFunctionName, input: JsonValue, read: StepValueReader) -> ToolResult:
     """Run one executor function as a step. Never raises for a bad input or a failed computation:
-    the result is `error` with the reason (the record's error starts INTERNAL_ERROR)."""
+    the result is `error` with the reason and code INTERNAL_ERROR (TOOLS.md: an executor function that raised)."""
     try:
         return RUNNERS[name](input, read)
     except (FunctionError, ValidationError, LookupError, KeyError, TypeError, ValueError) as error:
         message = f"{name}: {error}"[:500]
         return ToolResult(
             status="error", observed=None, limitation="TOOL_FAILED",
-            error=ToolError(code="INVALID_INPUT", message=message, retryable=False),
+            error=ToolError(code="INTERNAL_ERROR", message=message, retryable=False),
         )
 
 

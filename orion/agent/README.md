@@ -16,7 +16,7 @@ step; the model names numbers only through fact placeholders.
 | --- | --- |
 | `orion_agent/app.py` | Settings to a wired controller (`build_controller`), the `AGUIApp` entrypoint and a synchronous ping |
 | `orion_agent/controller.py` | Every action and the contract's checks 1 to 8; the detached run task; planning, the save, clarify and consent pauses; edits as new plan versions; Answering; the run registry, heartbeats and leases |
-| `orion_agent/executor.py` | The step engine (`Engine`, `interfaces.Executor`): StepRef resolution, pre- and post-guards, the call budget, Stop, the save pause and its read-back check; the four pure functions; input hashes and step reuse; the plan's run cohorts |
+| `orion_agent/executor.py` | The step engine (`Engine`, `interfaces.Executor`): StepRef resolution, pre- and post-guards (`tools/guards.py`), the call budget, Stop, the save pause and its read-back check; the executor functions (`tools/functions.py`) and every attempt's CallRecord (`tools/records.py`); step reuse by the compiler's input hashes; the plan's run cohorts |
 | `orion_agent/extractor.py` | One call's output to facts with JSON pointers, callIds, hashes and engines (catalog fact specs) |
 | `orion_agent/observed.py` | The Observed renderer (`TemplateRenderer`): Observed sentences, limitation lines and viz specs from the catalog's templates; the TEXT_MESSAGE markdown |
 | `orion_agent/ledger.py` | The session ledger (`StoreLedger`), built from the thread's run records |
@@ -27,9 +27,9 @@ step; the model names numbers only through fact placeholders.
 | `orion_agent/models.py`, `interfaces.py` | The wire contract as Pydantic models; the internal interfaces between controller, engine and model roles |
 | `orion_agent/ir.py`, `compiler.py`, `vocab.py`, `catalog.py` | The planner IR; the compiler (IR to signed plan, its edits, the clarify and Unsupported cards) |
 | `orion_agent/tools/` | The tool contract (`base.py`), the catalog (`schemas.py`) and the server tools and their ToolClient (`client.py`: `make_tool_client`) |
-| `orion_agent/model/` | The planner, composer and verifier (`factory.py`: `make_planner`, `make_composer`, `make_verifier`), the model call scope, the answer writer and warm-up |
+| `orion_agent/model/` | The planner, composer and verifier (`factory.py`: `make_planner`, `make_composer`, `make_verifier`, by `Settings.planner` and `Settings.composer`), the one Bedrock client (`client.py`: AsyncAnthropicBedrock on bedrock-runtime with the `us.anthropic.*` inference profiles by default, refusal fallback and per-attempt records), the model call scope, the answer writer and warm-up |
 | `orion_agent/stubs.py` | The Day 1 stub planner and executor (`ORION_PLANNER=stub` through the model factory; `ORION_EXECUTOR=stub`) |
-| `tests/` | `unittest` suites. `test_engine_*.py` drive the controller and engine through the real AGUIApp with fakes at the edges (`test_engine_fakes.py`) |
+| `tests/` | `unittest` suites. `test_engine_*.py` drive the controller and engine through the real AGUIApp with fakes at the edges (`test_engine_fakes.py`); `test_e2e_live.py` drives the mode L app (`build_controller`) against the live stack; `test_integration.py` holds the integration regressions |
 
 ## Build
 
@@ -42,13 +42,24 @@ export PATH=$HOME/.docker/bin:$PATH
 docker build -t orion-agent:dev orion/agent
 ```
 
+The Dockerfile is multi-stage and the image runs as uid 10001 (`orion`); the dependency pins are
+`requirements.txt` (the Bedrock SDK included, though mode L makes no model call). A plain build
+carries the golden request bodies as `orion_agent/tools/golden_snapshot.json`, which the tools read
+when `ORION_GOLDEN_DIR` (`/golden`) is absent; the Compose override and the AgentCore build bake
+`/golden` and `/config/cohort-fields.json` from the named build contexts `golden` and
+`sandbox-config` (see the Dockerfile). `python -m orion_agent.tools.goldens check /golden` exits 1
+when the snapshot and `orion/golden` differ.
+
 ## Test
 
-From the sandbox repo root, with the local stack up (the live vocabulary tests skip without it):
+From the sandbox repo root, with the local stack up (the live vocabulary and tool tests skip
+without it). The tests run in the runtime image as its non-root user; the golden mount lets the
+five golden-file tests run (they skip without it):
 
 ```sh
 docker run --rm --network mmrf-synthetic_default \
   -v $PWD/orion/agent:/app -v $PWD/config:/config:ro -v $PWD/orion/contracts:/contracts:ro \
+  -v $PWD/orion/golden:/golden:ro \
   -v $PWD/.sources/frontend/config/gen3/analysisTools.json:/analysisTools.json:ro \
   -e ORION_VLAB_ORIGIN=http://identity:8080 -w /app orion-agent:dev \
   python -m unittest discover -s tests -v
@@ -57,8 +68,31 @@ docker run --rm --network mmrf-synthetic_default \
 The engine suites compare each journey's stream with its fixture's shape (`test_engine_fakes.shape`:
 events in order, statuses, step rows, fact ids, Limitations codes, pauses, cohorts): J1 to Complete,
 J1 Partial then `retry_step`, J1 Stop, J3 to the save pause, Create, Don't save, Rename at the
-pause and the DE fallback. Type checking is not part of the image; run
-`pip install mypy==1.18.2 && MYPYPATH=tests mypy --strict orion_agent tests` in a throwaway container.
+pause and the DE fallback; `test_contract.py` also checks the J2 fixtures' shapes against the same
+wiring.
+
+`test_e2e_live.py` is mode L end to end: `app.build_controller` from Settings (stub planner, step
+engine over the InProcessToolClient, stub composer, code verifier) driven through
+`POST /invocations` against the live stack. J1 (both phrasings), J2 and J3 run to Complete (J2 and
+J3 through their save pause and a simulated browser's Create, J3's DE on the read-back names), plus
+Don't save, Stop during a step, an edit at the save pause, a resent confirm, `retry_step`, clarify,
+consent and Unsupported. Each stream passes `support.check_stream` and keeps its fixture's shape,
+the facts equal the stack's own answers (raw HTTP in the test, apart from the tool code), and the
+run record is read back from disk. It skips when `ORION_VLAB_ORIGIN` does not answer. Alone:
+
+```sh
+docker run --rm --network mmrf-synthetic_default -v $PWD/orion/agent:/app -v $PWD/config:/config:ro \
+  -v $PWD/orion/contracts:/contracts:ro -e PYTHONPATH=/app/tests:/app -e ORION_VLAB_ORIGIN=http://identity:8080 \
+  -w /app/tests orion-agent:dev python -m unittest test_e2e_live -v
+```
+
+Type checking is not part of the image. The image's virtualenv belongs to root, so install
+mypy in a throwaway container as root:
+
+```sh
+docker run --rm -u 0 -v $PWD/orion/agent:/app -w /app -e MYPYPATH=tests orion-agent:dev \
+  sh -c 'pip install -q mypy==1.18.2 && mypy --strict --cache-dir=/tmp/mypy orion_agent tests'
+```
 
 ## Run in mode L
 
@@ -92,7 +126,13 @@ stops startup with a message naming the setting that needs it.
 | `ORION_FAULTS`, `ORION_TEST_RUNTIME` | none, `0` | Fault injection (E11), honoured only in mode L or a test Runtime (contract "Fault injection") |
 
 The tools and model packages read their own variables as well (`ORION_GOLDEN_DIR`, the Gateway
-URL, model ids); see their modules.
+URL; `ORION_BEDROCK_CLIENT`, `ORION_BEDROCK_REGION`, `ORION_PLANNER_MODEL`, `ORION_COMPOSER_MODEL`,
+`ORION_FALLBACK_MODEL` and the effort, timeout and token settings in `model/config.py`); see their
+modules. The role kinds come from `ORION_PLANNER` and `ORION_COMPOSER` through Settings. The Bedrock
+defaults are the bedrock-runtime inference profiles `us.anthropic.claude-opus-5-5` (planner and
+composer) and `us.anthropic.claude-opus-5` (refusal fallback) in `us-east-1`; the base ids fail on
+demand there. `ORION_TOOLS` is the only tool-transport switch: `ORION_TOOL_TRANSPORT` is read by
+nothing (the Compose override no longer sets it; Terraform still does, harmlessly).
 
 ## How a run executes
 
@@ -119,12 +159,14 @@ URL, model ids); see their modules.
   mismatch ends Failed `WRITE_VERIFY_FAILED`. Don't save skips it `WRITE_SKIPPED` and DE runs on
   the proposed names. A resent confirm replays the recorded outcome (E19).
 - **Answering.** Observed, Limitations and viz specs are rendered from templates and sent at once
-  (status Answering); then the composer and the verifier run (`orion_agent.model.answer` when
-  installed: one re-compose after a first failure, failing sentences dropped). Complete carries all
-  four parts; ObservedOnly carries `withheldReason`. The TEXT_MESSAGE follows the last snapshot.
+  (status Answering); then the composer and the verifier run (`orion_agent.model.answer`: one
+  re-compose after a first failure, failing sentences dropped). Complete carries all four parts,
+  its Open links the compiler's hand-offs (`CompiledPlan.open_apps`) and then the composer's;
+  ObservedOnly carries `withheldReason`. The TEXT_MESSAGE follows the last snapshot.
 - **Stop.** Stopping at once; the in-flight planner, tool or composer call is aborted and recorded
-  (outcome `cancelled`, or a CallRecord whose error starts `CANCELLED`); open and queued steps are
-  Skipped "Not run: stopped"; Cancelled with Observed for the finished steps.
+  (outcome `cancelled`, or a CallRecord whose error starts `CANCELLED` and whose provenance keeps
+  the request it had in flight); open and queued steps are Skipped "Not run: stopped"; Cancelled
+  with Observed for the finished steps.
 - **Edits.** Version n+1 is compiled with no model call (the compiler's `edit`). On a live run the
   edit waits for the running step at its boundary (heartbeats only) or aborts it when its input
   changes; the edit stream starts with the applied snapshot (Executing, version n+1, `superseded`,

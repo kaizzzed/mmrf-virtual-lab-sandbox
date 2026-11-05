@@ -106,8 +106,9 @@ class ConsentFixtureTests(FixtureCase):
         assert isinstance(output, ir.Plan)
         plan = compiled(self.compiler.compile(output, context()))
         assert fixture.plan is not None
-        # The consent fixture offers no edits (AwaitingConsent takes none); everything else is the plan.
-        self.assertEqual({**plan_dump(plan.view()), "editable": []}, plan_dump(fixture.plan))
+        # The whole plan, the scope edit included (TOOLS.md 6.4: every plan offers it; the card offers
+        # edits only while the status accepts edit_plan, which AwaitingConsent does not).
+        self.assertEqual(plan_dump(plan.view()), plan_dump(fixture.plan))
         self.assertIsInstance(fixture.pending, ConsentPending)
         self.assertEqual(plan.consent, fixture.pending)
         self.assertEqual(plan.limitations, fixture.limitations)

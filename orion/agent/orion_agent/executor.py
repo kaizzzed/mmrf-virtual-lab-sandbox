@@ -20,7 +20,6 @@ for the boundary) ends execution; the controller skips what is left.
 import asyncio
 import contextlib
 import logging
-import math
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -30,7 +29,7 @@ from pydantic import BaseModel, JsonValue, ValidationError
 
 from . import compiler as compiler_module
 from . import ir
-from .compiler import CompiledPlan, StepSpec
+from .compiler import CompiledPlan, SessionLedger, StepSpec
 from .events import iso_utc, utc_now
 from .extractor import ExtractionError, FactExtractor
 from .ids import new_id
@@ -43,14 +42,12 @@ from .models import (
     Code,
     CohortContext,
     CohortRef,
-    CohortReuse,
     ConfirmAction,
     ConfirmPending,
     FactRecord,
     FilterClause,
     FilterDefinition,
     Limitation,
-    PendingCohort,
     SaveCohortsArgs,
     StepOrigin,
     StepStatus,
@@ -58,35 +55,27 @@ from .models import (
     call_id,
     canonical_json,
     def_sha256,
-    definition_from_filter_set,
     format_fact,
     normalize_definition,
     sha256_hex,
 )
-from .observed import bridge_unsafe, call_budget, step_refs, write_verify_failed
+from .observed import bridge_unsafe, call_budget, step_refs, survival_count_steps, write_verify_failed
 from .tools import schemas as catalog
+from .tools import functions as tool_functions
+from .tools import guards
 from .tools.base import (
-    MAX_DE_SAMPLES,
     MAX_TOOL_CALLS_PER_RUN,
     MIN_DE_ELIGIBLE,
-    MIN_SURVIVAL_GROUP,
     STEP_CAP_S,
-    TOOL_HTTP_TIMEOUT_S,
-    KmCurve,
-    KmMedian,
-    KmMedianResult,
-    KmPoint,
-    RankedRow,
-    RankResult,
+    STEP_TIMEOUT_S,
+    ExecutorFunctionName,
     ServerToolName,
-    SetOp,
-    SetOperationResult,
-    SubsetResult,
     RetryHook,
     ToolCallOutcome,
     ToolClient,
-    ToolStatus,
 )
+from .tools.functions import check_subset, derive_km_median, passes_thresholds, rank_top_n, set_operation
+from .tools.records import ToolCallCancelled, call_records
 from .vocab import Vocabulary
 
 log = logging.getLogger("orion.executor")
@@ -127,45 +116,10 @@ DeLauncher = Literal["deDirect", "deInput"]
 
 
 def input_hashes(plan: CompiledPlan) -> dict[str, str]:
-    """Each step's input hash (TOOLS.md "Input hash and Reused").
-
-    sha256 of the canonical JSON of {"tool", "version", "args", "dependsOn"} in which every StepRef
-    and every bare step id an executor Input names is replaced by the referenced step's own input
-    hash. `dependsOn` is hashed too, so a write step whose cohorts' defining steps changed (a scope
-    edit) and every step after a write step change with it.
-    """
-    hashes: dict[str, str] = {}
-    ids = {s.id for s in plan.steps}
-
-    def swap(value: JsonValue, bare: bool) -> JsonValue:
-        if isinstance(value, dict):
-            if catalog.is_step_ref(value):
-                ref = catalog.StepRef.model_validate(value)
-                out: dict[str, JsonValue] = {"stepRef": hashes.get(ref.ref, ref.ref), "pointer": ref.pointer}
-                if ref.intersect is not None:
-                    out["intersect"] = hashes.get(ref.intersect, ref.intersect)
-                return out
-            return {key: swap(item, False) for key, item in value.items()}
-        if isinstance(value, list):
-            return [swap(item, False) for item in value]
-        if bare and isinstance(value, str) and value in ids:
-            return {"step": hashes.get(value, value)}
-        return value
-
-    for step in plan.steps:
-        try:
-            version = catalog.tool_spec(step.tool).version
-        except KeyError:
-            version = f"{step.tool}@1"
-        args = {key: swap(item, step.kind == "exec") for key, item in step.args.items()}
-        document: JsonValue = {
-            "tool": step.tool,
-            "version": version,
-            "args": args,
-            "dependsOn": [hashes.get(d, d) for d in step.depends_on],
-        }
-        hashes[step.id] = sha256_hex(canonical_json(document, portable=False))
-    return hashes
+    """Each step's input hash (TOOLS.md "Input hash and Reused"): the compiler's `step_input_hashes`,
+    the one implementation (StepRefs, bare step ids and dependsOn replaced by the referenced steps'
+    own hashes, so a write whose cohorts' defining steps changed is never Reused)."""
+    return compiler_module.step_input_hashes(plan)
 
 
 def reuse_map(new: CompiledPlan, old: CompiledPlan, old_steps: Sequence[StepView]) -> dict[str, StepOrigin]:
@@ -257,12 +211,6 @@ def base_cohort(plan: CompiledPlan, context: CohortContext, vocab: Vocabulary | 
         saved_name=None,
         definition=definition,
     )
-
-
-def compiler_helper(name: str) -> Callable[..., Any] | None:  # Any: the compiler builder's helper, checked at the call
-    """A helper the compiler module offers (build_confirm_pending, fact_context), when it has one."""
-    helper = getattr(compiler_module, name, None)
-    return helper if callable(helper) else None
 
 
 def _dicts(value: JsonValue) -> list[dict[str, JsonValue]]:
@@ -433,80 +381,8 @@ def plan_cohorts(plan: CompiledPlan, context: CohortContext, vocab: Vocabulary |
     return PlanCohorts(cohorts=[base, *planned], steps=steps, ids=ids, definitions=definitions)
 
 
-# --- The pure functions (A2: set_operation, check_subset, rank_top_n, derive_km_median) -------------
-
-
-def set_operation(op: SetOp, a: Sequence[str], b: Sequence[str] = ()) -> SetOperationResult:
-    left, right = set(a), set(b)
-    if op == "difference":
-        ids = left - right
-    elif op == "intersection":
-        ids = left & right
-    elif op == "union":
-        ids = left | right
-    else:
-        return SetOperationResult(version="set_operation@1", op=op, a_count=len(left), b_count=None, count=len(left), case_ids=[])
-    return SetOperationResult(version="set_operation@1", op=op, a_count=len(left), b_count=len(right), count=len(ids), case_ids=sorted(ids))
-
-
-def check_subset(inner: Sequence[str], outer: Sequence[str]) -> SubsetResult:
-    inside, container = set(inner), set(outer)
-    outside = sorted(inside - container)
-    return SubsetResult(
-        version="check_subset@1", inner_count=len(inside), outer_count=len(container), is_subset=not outside,
-        outside_count=len(outside), outside_sample=outside[:10],
-    )
-
-
-def _rank_value(row: Mapping[str, JsonValue], rank_by: str) -> float:
-    absolute = rank_by.startswith("abs(") and rank_by.endswith(")")
-    name = rank_by[4:-1] if absolute else rank_by
-    value = row.get(name)
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise ValueError(f"row {row!r} has no number {name!r}")
-    return abs(float(value)) if absolute else float(value)
-
-
-def rank_top_n(
-    rows: Sequence[Mapping[str, JsonValue]], *, key: str, rank_by: str, n: int, ascending: bool, tie_break: str
-) -> RankResult:
-    """Deterministic: sort by value (ascending or not), then tie_break in code point order; keep the top n
-    plus every row whose value equals the n-th's; ties share a rank (competition ranking)."""
-    scored = [(_rank_value(row, rank_by), str(row.get(tie_break, "")), row) for row in rows]
-    scored.sort(key=lambda t: (t[0] if ascending else -t[0], t[1]))
-    kept = scored[:n]
-    if len(scored) > n and kept:
-        cutoff = kept[-1][0]
-        kept += [t for t in scored[n:] if t[0] == cutoff]
-    ranked: list[RankedRow] = []
-    for i, (value, _, row) in enumerate(kept):
-        rank = ranked[-1].rank if ranked and ranked[-1].value == value else i + 1
-        ranked.append(RankedRow(rank=rank, key=str(row.get(key, "")), value=value, row=dict(row)))
-    ties = [r.key for r in ranked[n:]]
-    return RankResult(
-        version="rank_top_n@1", rank_by=rank_by, ascending=ascending, n_requested=n, rows=ranked, count=len(ranked),
-        ties_at_cutoff=ties, total_rows=len(scored),
-    )
-
-
-def passes_thresholds(row: Mapping[str, JsonValue], thresholds: Mapping[str, JsonValue]) -> bool:
-    """A DE row passes when its p (adjusted or original) is below the cutoff and |fold_change| above its cutoff."""
-    p_name = "adjusted_p_value" if thresholds.get("pValueType") == "adjusted" else "original_p_value"
-    p, fold = row.get(p_name), row.get("fold_change")
-    cutoff, fold_cutoff = thresholds.get("pValueCutoff"), thresholds.get("foldChangeCutoff")
-    numbers = (p, fold, cutoff, fold_cutoff)
-    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in numbers):
-        return False
-    return float(p) < float(cutoff) and abs(float(fold)) > float(fold_cutoff)  # type: ignore[arg-type]
-
-
-def derive_km_median(curves: Sequence[KmCurve], *, unit: str) -> KmMedianResult:
-    """The median is the first curve time whose survival is at most 0.5; null when never reached."""
-    groups: list[KmMedian] = []
-    for curve in curves:
-        hit = next((p.time for p in sorted(curve.points, key=lambda p: p.time) if p.survival <= 0.5), None)
-        groups.append(KmMedian(label=curve.label, median=hit, reached=hit is not None))
-    return KmMedianResult(version="derive_km_median@1", unit=unit, groups=groups)
+# --- The pure functions (A2) are tools/functions.py's: set_operation, check_subset, rank_top_n,
+# derive_km_median and passes_thresholds, imported above and re-exported for the controller and tests.
 
 
 # --- The session the controller gives the executor ------------------------------------------------------
@@ -532,6 +408,8 @@ class RunContext:
     cohort_steps: Mapping[str, str]
     cohort_ids: Mapping[str, catalog.StepRef] = field(default_factory=dict)
     cohort_definitions: Mapping[str, CanonicalDefinition] = field(default_factory=dict)
+    # The thread's earlier runs: the save pause offers a ledger cohort with the same definition for reuse.
+    ledger: SessionLedger | None = None
 
 
 @runtime_checkable
@@ -581,7 +459,9 @@ class Engine:
         extractor: FactExtractor | None = None,
         call_budget: int = MAX_TOOL_CALLS_PER_RUN,
         step_cap_s: float = STEP_CAP_S,
-        http_timeout_s: float = TOOL_HTTP_TIMEOUT_S,
+        # One attempt's budget, ToolClient.call's timeout_s (tools/base.py): the client gives the
+        # tool's HTTP requests at most TOOL_HTTP_TIMEOUT_S of it (A4).
+        step_timeout_s: float = STEP_TIMEOUT_S,
         clock: Clock = time.monotonic,
     ) -> None:
         self.tools = tools
@@ -589,7 +469,7 @@ class Engine:
         self.extractor = extractor or FactExtractor()
         self.call_budget = call_budget
         self.step_cap_s = step_cap_s
-        self.http_timeout_s = http_timeout_s
+        self.step_timeout_s = step_timeout_s
         self.clock = clock
 
     # -- entry ------------------------------------------------------------------------------------
@@ -730,52 +610,30 @@ class Engine:
         return request
 
     def _pre_guard(self, state: _State, step: StepSpec, request: Mapping[str, JsonValue]) -> tuple[Code, str, Limitation | None] | None:
-        """The pre-guards the executor checks (TOOLS.md GuardSpec checked_by executor, plus the cheap DE size check)."""
+        """The pre-guards the executor checks (TOOLS.md GuardSpec checked_by executor: tools.guards.executor_pre_guard,
+        with the vocabulary for the ProteinPaint bridge), plus the cheap DE sample-size check before any call."""
+        group_counts: dict[str, int] | None = None
         if step.tool == "survival_compare":
+            group_counts = {}
             for dep in self._count_deps(state, step):
                 fact = next((f for f in state.facts if f.id == f"f.{dep}.count"), None)
-                if fact is not None and isinstance(fact.value, (int, float)) and fact.value < MIN_SURVIVAL_GROUP:
-                    return "INELIGIBLE_GROUP", "Not run: a group has fewer than 10 cases", None
-        if step.tool in ("top_mutated_genes", "sample_lists") and self.vocab is not None:
-            unsafe = self._unsafe_field(dict(request))
-            if unsafe is not None:
-                spec = self.vocab.field(unsafe)
-                label = spec.label if spec is not None else unsafe
-                return "UNSUPPORTED_FIELD", f"Not run: {label} cannot filter ProteinPaint", bridge_unsafe(label)
+                if fact is not None and isinstance(fact.value, (int, float)) and not isinstance(fact.value, bool):
+                    group_counts[dep] = int(fact.value)
+        violation = guards.executor_pre_guard(step.tool, dict(request), fields=self.vocab, group_counts=group_counts)
+        if violation is not None and violation.code == "INELIGIBLE_GROUP":
+            return "INELIGIBLE_GROUP", "Not run: a group has fewer than 10 cases", None
+        if violation is not None:
+            spec = self.vocab.field(violation.field) if self.vocab is not None and violation.field else None
+            label = spec.label if spec is not None else violation.field or "A filter field"
+            return violation.code, f"Not run: {label} cannot filter ProteinPaint", bridge_unsafe(label)
         if step.tool in ("de_preanalysis", "de_run"):
-            total = 0
-            for group in _dicts(request.get("groups")):
-                ids = group.get("sampleIds")
-                total += len(ids) if isinstance(ids, list) else 0
-            if total > MAX_DE_SAMPLES:
+            sizes = [len(ids) if isinstance(ids := group.get("sampleIds"), list) else 0 for group in _dicts(request.get("groups"))]
+            if guards.de_samples_within_limit(sizes) is not None:
                 return "REQUEST_TOO_LARGE", "Not run: more than 4,000 samples", None
         return None
 
     def _count_deps(self, state: _State, step: StepSpec) -> list[str]:
-        specs = {s.id: s for s in state.plan.steps}
-        return [d for d in step.depends_on if d in specs and specs[d].tool in ("cohort_count", "cases_query", "gene_cases", "set_operation")]
-
-    def _unsafe_field(self, value: JsonValue) -> str | None:
-        """The first Gen3 filter field the ProteinPaint bridge cannot read (vocabulary es_only), if any."""
-        assert self.vocab is not None
-        if isinstance(value, dict):
-            if catalog.is_step_ref(value):
-                return None
-            for key, item in value.items():
-                if key in ("in", "=", "!=", ">", ">=", "<", "<=") and isinstance(item, dict):
-                    for field_id in item:
-                        spec = self.vocab.field(field_id)
-                        if field_id not in ("case_id", "cases.case_id") and spec is not None and spec.es_only:
-                            return field_id
-                found = self._unsafe_field(item)
-                if found is not None:
-                    return found
-        elif isinstance(value, list):
-            for item in value:
-                found = self._unsafe_field(item)
-                if found is not None:
-                    return found
-        return None
+        return survival_count_steps(state.plan, step)
 
     async def _server_step(self, state: _State, step: StepSpec, session: StepSession) -> bool:
         """Run one server tool step. Returns True when a stop aborted it."""
@@ -806,12 +664,19 @@ class Engine:
         retry_hook: RetryHook = _RetryHook(on_retry)
 
         at = iso_utc(utc_now())
-        call = asyncio.ensure_future(
-            self.tools.call(
-                cast(ServerToolName, step.tool), request, timeout_s=self.http_timeout_s, run_id=state.ctx.run_id,
-                plan_version=state.plan.version, step_id=step.id, first_call=first, on_retry=retry_hook,
-            )
-        )
+
+        async def guarded() -> ToolCallOutcome | ToolCallCancelled:
+            # A cancelled ToolClient raises ToolCallCancelled carrying every attempt so far (the aborted one
+            # with its in-flight request in provenance); keep it as the call's value for the record.
+            try:
+                return await self.tools.call(
+                    cast(ServerToolName, step.tool), request, timeout_s=self.step_timeout_s, run_id=state.ctx.run_id,
+                    plan_version=state.plan.version, step_id=step.id, first_call=first, on_retry=retry_hook,
+                )
+            except ToolCallCancelled as cancelled:
+                return cancelled
+
+        call = asyncio.ensure_future(guarded())
         stop = asyncio.ensure_future(session.wait_stop())
         try:
             done, _ = await asyncio.wait({call, stop}, timeout=self.step_cap_s, return_when=asyncio.FIRST_COMPLETED)
@@ -819,22 +684,24 @@ class Engine:
             stop.cancel()
         if call not in done:
             call.cancel()
+            aborted: ToolCallOutcome | ToolCallCancelled | None = None
             with contextlib.suppress(asyncio.CancelledError, Exception):
-                await call
+                aborted = await call
             stopped = stop in done
-            n = first + attempt[0] - 1
-            record = self._aborted(state, step, request, n, attempt[0], at, started, "CANCELLED: stopped" if stopped else
-                                   f"TIMEOUT: the step cap of {self.step_cap_s:g} s passed")
-            state.new_calls[step.id] = state.new_calls.get(step.id, 0) + attempt[0]
+            reason = "CANCELLED: stopped" if stopped else f"TIMEOUT: the step cap of {self.step_cap_s:g} s passed"
+            records = self._aborted_records(state, step, request, first, attempt[0], at, started, reason, aborted)
+            state.new_calls[step.id] = state.new_calls.get(step.id, 0) + len(records)
             state.calls_made += 1
             if stopped:
-                await session.skip_step(step.id, None, STOPPED_SUMMARY, calls=[record])
+                await session.skip_step(step.id, None, STOPPED_SUMMARY, calls=records, duration_ms=self._elapsed(started))
                 state.status[step.id] = "Skipped"
                 return True
-            await self._finish_failed(state, step, session, "Timed out on both attempts" if attempt[0] > 1 else "Timed out", started, [record])
+            await self._finish_failed(state, step, session, "Timed out on both attempts" if len(records) > 1 else "Timed out", started, records)
             return False
         try:
             outcome = call.result()
+            if isinstance(outcome, ToolCallCancelled):  # cancelled from inside the client, not by this step
+                raise RuntimeError("the tool call was cancelled without a Stop")
         except Exception as error:  # a ToolClient bug; tool failures come back as results
             log.exception("tool client raised for %s %s", state.ctx.run_id, step.id)
             n = first + attempt[0] - 1
@@ -858,26 +725,23 @@ class Engine:
             elapsed_ms=self._elapsed(started), status="error", observed=None, warnings=[], limitation=None, error=error, provenance=[],
         )
 
+    def _aborted_records(
+        self, state: _State, step: StepSpec, request: JsonValue, first: int, attempts: int, at: str, started: float, reason: str,
+        aborted: ToolCallOutcome | ToolCallCancelled | None,
+    ) -> list[CallRecord]:
+        """The records of a call this step aborted (Stop, or the step cap): every attempt the client reported,
+        its aborted one carrying the in-flight request in its provenance and `reason` as its error; or one
+        synthesized record when the client reported nothing."""
+        outcome = aborted.outcome if isinstance(aborted, ToolCallCancelled) else None
+        if outcome is None or not outcome.attempts:
+            return [self._aborted(state, step, request, first + attempts - 1, attempts, at, started, reason)]
+        records = call_records(outcome, plan_version=state.plan.version, step_id=step.id)
+        last = records[-1]
+        records[-1] = last.model_copy(update={"error": reason, "elapsed_ms": max(last.elapsed_ms, 0)})
+        return records
+
     def _elapsed(self, started: float) -> int:
         return max(int((self.clock() - started) * 1000), 0)
-
-    def _records(self, state: _State, step: StepSpec, outcome: ToolCallOutcome) -> list[CallRecord]:
-        out: list[CallRecord] = []
-        for i, a in enumerate(outcome.attempts):
-            last = i == len(outcome.attempts) - 1
-            result = outcome.result
-            out.append(
-                CallRecord(
-                    call_id=a.call_id, plan_version=state.plan.version, step_id=step.id, tool=outcome.tool, transport=outcome.transport,
-                    attempt=a.attempt, started_at=a.started_at, request=outcome.request, request_sha256=outcome.request_sha256,
-                    http_status=a.http_status, response_sha256=outcome.response_sha256 if last and result.observed is not None else None,
-                    elapsed_ms=a.elapsed_ms, status=a.status, observed=result.observed if last else None,
-                    warnings=list(result.warnings) if last else [], limitation=result.limitation if last else None,
-                    error=None if a.error is None else f"{a.error.code}: {a.error.message}",
-                    provenance=list(result.provenance) if last else [],
-                )
-            )
-        return out
 
     def _stops(self, tool: str, code: str, status: StepStatus) -> bool:
         """Whether a finished step's code is a stop guard (its dependents do not run)."""
@@ -888,7 +752,7 @@ class Engine:
         return any(g.guard.on_fail == code and g.effect == "stop" for g in guards)
 
     async def _settle(self, state: _State, step: StepSpec, session: StepSession, outcome: ToolCallOutcome, started: float) -> None:
-        records = self._records(state, step, outcome)
+        records = call_records(outcome, plan_version=state.plan.version, step_id=step.id)
         result = outcome.result
         duration = outcome.elapsed_ms or self._elapsed(started)
         if result.status in ("error", "unavailable"):
@@ -976,89 +840,36 @@ class Engine:
     # -- executor functions ------------------------------------------------------------------------------
 
     async def _exec_step(self, state: _State, step: StepSpec, session: StepSession) -> None:
+        """One executor function (tools/functions.py): in-process, one attempt, its post-guard as the step's code."""
         await session.start_step(step.id)
         started = self.clock()
-        at = iso_utc(utc_now())
-        n = self._first_call(state, step.id)
-        request: JsonValue = cast(JsonValue, dict(step.args))
-        status: ToolStatus
-        try:
-            result, status = self._run_function(state, step)
-            observed: JsonValue = result.model_dump(mode="json")
-            error: str | None = None
-        except (StepFailure, ValidationError, ValueError, KeyError) as failure:
-            log.warning("run %s %s %s failed: %s", state.ctx.run_id, step.id, step.tool, failure)
-            observed, status, error = None, "error", f"INTERNAL_ERROR: {failure}"
-        record = CallRecord(
-            call_id=call_id(state.ctx.run_id, state.plan.version, step.id, n), plan_version=state.plan.version, step_id=step.id,
-            tool=step.tool, transport="in_process", attempt=1, started_at=at, request=request,
-            request_sha256=sha256_hex(canonical_json(request, portable=False)), http_status=None,
-            response_sha256=None if observed is None else sha256_hex(canonical_json(observed, portable=False)),
-            elapsed_ms=self._elapsed(started), status=status, observed=observed, warnings=[], limitation=None, error=error, provenance=[],
+        outcome = tool_functions.call_function(
+            cast(ExecutorFunctionName, step.tool), cast(JsonValue, dict(step.args)), self._function_reader(state),
+            run_id=state.ctx.run_id, plan_version=state.plan.version, step_id=step.id, call_n=self._first_call(state, step.id),
+            monotonic=self.clock,
         )
+        records = call_records(outcome, plan_version=state.plan.version, step_id=step.id)
         state.new_calls[step.id] = state.new_calls.get(step.id, 0) + 1
         state.calls_made += 1
-        if status == "error":
-            await self._finish_failed(state, step, session, "Failed", started, [record])
+        result = outcome.result
+        if result.status not in ("ok", "empty"):
+            log.warning("run %s %s %s failed: %s", state.ctx.run_id, step.id, step.tool, result.error.message if result.error else "")
+            await self._finish_failed(state, step, session, "Failed", started, records)
             return
-        code: Code | None = None
-        if step.tool == "check_subset" and isinstance(observed, dict) and observed.get("isSubset") is False:
-            code = "NOT_SUBSET"
-        elif step.tool == "rank_top_n" and isinstance(observed, dict):
-            count, n_req = observed.get("count"), observed.get("nRequested")
-            if isinstance(count, int) and isinstance(n_req, int) and count < n_req:
-                code = "FEWER_THAN_N"
-            elif observed.get("tiesAtCutoff"):
-                code = "TIES_AT_CUTOFF"
-        elif status == "empty" and step.tool == "set_operation":
-            code = "EMPTY_COHORT"
-        record = record.model_copy(update={"limitation": code})
-        step_status: StepStatus = "Empty" if status == "empty" else "Done"
-        await self._finish_ok(state, step, session, record, [record], step_status, code, record.elapsed_ms)
+        status: StepStatus = "Empty" if result.status == "empty" else "Done"
+        await self._finish_ok(state, step, session, records[-1], records, status, result.limitation, records[-1].elapsed_ms)
 
-    def _run_function(self, state: _State, step: StepSpec) -> tuple[BaseModel, Literal["ok", "empty"]]:
-        tool = step.tool
-        if tool == "set_operation":
-            args = catalog.SetOperationInput.model_validate(step.args)
-            a = self._case_ids(state, args.a)
-            b = self._case_ids(state, args.b) if args.b is not None else []
-            result = set_operation(args.op, a, b)
-            return result, "empty" if result.count == 0 else "ok"
-        if tool == "check_subset":
-            subset = catalog.CheckSubsetInput.model_validate(step.args)
-            return check_subset(self._case_ids(state, subset.inner), self._case_ids(state, subset.outer)), "ok"
-        if tool == "rank_top_n":
-            rank = catalog.RankTopNInput.model_validate(step.args)
-            source = next((s for s in state.plan.steps if s.id == rank.rows), None)
-            if source is None or source.tool not in catalog.RANK_SOURCES:
-                raise StepFailure(f"{rank.rows} cannot be ranked")
-            where = catalog.RANK_SOURCES[cast(catalog.RankSourceTool, source.tool)]
-            read = self._read(state)
-            rows = read(rank.rows, where.pointer)
-            if not isinstance(rows, list):
-                raise StepFailure(f"{rank.rows}{where.pointer} is not a list")
-            items = [r for r in rows if isinstance(r, dict)]
-            if where.extra_pointer is not None:
-                with contextlib.suppress(StepFailure):
-                    extra = read(rank.rows, where.extra_pointer)
-                    if isinstance(extra, dict):
-                        items.append(extra)
-            if rank.thresholds is not None:
-                limits = rank.thresholds.model_dump(mode="json")
-                items = [r for r in items if passes_thresholds(r, limits)]
-            ranked = rank_top_n(items, key=rank.key, rank_by=rank.rank_by, n=rank.n, ascending=rank.ascending, tie_break=rank.tie_break)
-            return ranked, "empty" if ranked.count == 0 else "ok"
-        if tool == "derive_km_median":
-            km = catalog.DeriveKmMedianInput.model_validate(step.args)
-            groups = self._read(state)(km.curves, "/observed/groups")
-            if not isinstance(groups, list):
-                raise StepFailure(f"{km.curves} has no curves")
-            curves = [
-                KmCurve(label=str(g.get("label")), points=[KmPoint.model_validate(p) for p in g.get("curve") or []])  # type: ignore[union-attr]
-                for g in groups if isinstance(g, dict)
-            ]
-            return derive_km_median(curves, unit="days"), "ok"
-        raise StepFailure(f"{tool} is not an executor function")
+    def _function_reader(self, state: _State) -> catalog.StepValueReader:
+        """The step reader for executor functions, which expect LookupError for a value that does not resolve."""
+        read = self._read(state)
+
+        def function_read(step_id: str, pointer: str) -> JsonValue:
+            try:
+                return read(step_id, pointer)
+            except StepFailure as error:
+                raise LookupError(str(error)) from error
+
+        return function_read
 
     # -- the client write --------------------------------------------------------------------------------
 
@@ -1111,120 +922,19 @@ class Engine:
         return None
 
     def _pending(self, state: _State, step: StepSpec) -> ConfirmPending:
-        """The save pause's payload: the compiler's `build_confirm_pending` when the plan names its cohorts, else
-        built here from the save step's args and the steps that defined each cohort (TOOLS.md 4)."""
-        build = compiler_helper("build_confirm_pending")
-        if build is not None and getattr(state.plan, "cohorts", None):
-            try:
-                built = build(state.plan, nonce=new_id(), read=self._read(state), context=state.ctx.cohort_context)
-                if isinstance(built, ConfirmPending):
-                    return ConfirmPending.model_validate(built.model_dump(mode="json"))
-            except Exception:
-                log.warning("run %s: the compiler's pending payload failed; building it here", state.ctx.run_id, exc_info=True)
-        args = catalog.SaveCohortsStepArgs.model_validate(step.args)
-        read = self._read(state)
-        cohorts: list[PendingCohort] = []
-        saved_defs = [(s, definition_from_filter_set(s.filters)) for s in state.ctx.cohort_context.saved]
-        for item in args.cohorts:
-            current = state.cohorts.get(item.ref)
-            defining = state.ctx.cohort_steps.get(item.ref)
-            definition = current.definition if current is not None else None
-            if definition is None and defining is not None:
-                definition = CaseIdsDefinition(kind="case_ids", case_ids=self._case_ids(state, defining))
-            if definition is None:
-                raise StepFailure(f"{item.ref} has no definition to save")
-            definition = normalize_definition(definition)
-            sha = def_sha256(definition)
-            count_fact = (current.case_count_fact_id if current is not None else None) or (
-                f"f.{defining}.count" if defining is not None and any(f.id == f"f.{defining}.count" for f in state.facts) else None
-            )
-            count_value = next((f.value for f in state.facts if f.id == count_fact), None) if count_fact else None
-            case_count = (
-                current.case_count if current is not None and current.case_count is not None
-                else int(count_value) if isinstance(count_value, (int, float)) and not isinstance(count_value, bool)
-                else len(definition.case_ids) if isinstance(definition, CaseIdsDefinition) else 0
-            )
-            eligible_count: int | None = None
-            eligible_fact: str | None = None
-            if item.eligible is not None:
-                value = read(item.eligible.ref, item.eligible.pointer)
-                eligible_count = int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-                eligible_fact = next(
-                    (f.id for f in state.facts if f.step_id == item.eligible.ref and f.json_pointer == item.eligible.pointer), None
-                )
-                if eligible_count is None:
-                    eligible_fact = None
-            reuse = next(
-                (CohortReuse(cohort_id=s.id, name=s.name) for s, d in saved_defs if d is not None and def_sha256(d) == sha), None
-            )
-            cohorts.append(
-                PendingCohort(
-                    ref=item.ref, name=item.name, definition_text=current.definition_text if current is not None else item.name,
-                    definition=definition, def_sha256=sha, case_count=case_count, eligible_count=eligible_count, reuse=reuse,
-                    case_count_fact_id=count_fact, eligible_count_fact_id=eligible_fact,
-                )
-            )
-        return ConfirmPending(
-            kind="confirm", nonce=new_id(), plan_signature=state.plan.signature, plan_version=state.plan.version, step_id=step.id,
-            cohorts=cohorts,
+        """The save pause's payload (TOOLS.md 4): the compiler's `build_confirm_pending` over the finished reads,
+        with reuse found in the cohort context or the session ledger."""
+        built = compiler_module.build_confirm_pending(
+            state.plan, nonce=new_id(), read=self._read(state), context=state.ctx.cohort_context, ledger=state.ctx.ledger
         )
+        return ConfirmPending.model_validate(built.model_dump(mode="json"))
 
     # -- facts and cohorts ---------------------------------------------------------------------------------
 
     def _fact_context(self, state: _State, step: StepSpec) -> catalog.FactContext:
-        cap = max(VIEW_RANK_CAP - state.rank_shown, 0)
-        helper = compiler_helper("fact_context")
-        if helper is not None and getattr(state.plan, "cohorts", None):
-            with contextlib.suppress(Exception):
-                given = helper(state.plan, step.id)
-                if isinstance(given, catalog.FactContext):
-                    return replace(given, rank_cap=cap)
-        tool = step.tool
-        if tool in ("cohort_count", "cases_query", "set_operation"):
-            return catalog.FactContext(cohort=self._counted_name(state, step))
-        if tool == "check_subset":
-            inner = step.args.get("inner")
-            label = next((f.label for f in state.facts if f.id == f"f.{inner}.count"), None)
-            return catalog.FactContext(inner=label or "Inner cases")
-        if tool in ("sample_lists", "de_preanalysis"):
-            return catalog.FactContext(group_labels=self._de_labels(state, step))
-        if tool == "rank_top_n":
-            source = next((s for s in state.plan.steps if s.id == step.args.get("rows")), None)
-            rank_by = step.args.get("rankBy")
-            if source is None or source.tool not in catalog.RANK_SOURCES or not isinstance(rank_by, str):
-                return catalog.FactContext()
-            return catalog.FactContext(
-                rank_source=cast(catalog.RankSourceTool, source.tool), rank_by=cast(catalog.RankBy, rank_by),
-                rank_cap=max(VIEW_RANK_CAP - state.rank_shown, 0),
-            )
-        return catalog.FactContext()
-
-    def _counted_name(self, state: _State, step: StepSpec) -> str:
-        for ref, defining in state.ctx.cohort_steps.items():
-            if defining == step.id and ref in state.cohorts:
-                return state.cohorts[ref].name
-        for survival in (s for s in state.plan.steps if s.tool == "survival_compare"):
-            groups = survival.args.get("groups")
-            counts = self._count_deps(state, survival)
-            if isinstance(groups, list) and step.id in counts:
-                index = counts.index(step.id)
-                if index < len(groups) and isinstance(groups[index], dict):
-                    return str(groups[index].get("label"))  # type: ignore[union-attr]
-        row = next((r for r in state.plan.rows if step.id in r.step_ids), None)
-        if row is not None and row.label.startswith("Count ") and not row.label.startswith("Count both"):
-            return row.label.removeprefix("Count ")
-        return step.input_summary or "Cases"
-
-    def _de_labels(self, state: _State, step: StepSpec) -> tuple[str, ...]:
-        lists = step.id if step.tool == "sample_lists" else _ref_step(step.args.get("groups"))
-        for de in (s for s in state.plan.steps if s.tool == "de_run"):
-            groups = de.args.get("groups")
-            if not isinstance(groups, list):
-                continue
-            refs = [_ref_step(g.get("sampleIds")) for g in groups if isinstance(g, dict)]
-            if lists in refs:
-                return tuple(catalog.cohort_label(str(g.get("name"))) for g in groups if isinstance(g, dict))
-        return ("Control", "Case")
+        """The compiler's labels for a step's facts (`compiler.fact_context`), with the rank cap the earlier
+        rankings of this view leave (VIEW_RANK_CAP rows in all)."""
+        return replace(compiler_module.fact_context(state.plan, step.id), rank_cap=max(VIEW_RANK_CAP - state.rank_shown, 0))
 
     def _sized(self, state: _State, step: StepSpec, record: CallRecord, facts: Sequence[FactRecord]) -> list[CohortRef]:
         """The run cohorts this step defines or sizes (contract "cohorts"): caseCount and its fact when the sizing
@@ -1363,6 +1073,7 @@ __all__ = [
     "gen3_filter",
     "input_hashes",
     "output_summary",
+    "passes_thresholds",
     "plan_cohorts",
     "rank_top_n",
     "reuse_map",

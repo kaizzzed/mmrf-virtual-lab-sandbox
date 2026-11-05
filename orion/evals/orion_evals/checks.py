@@ -137,6 +137,15 @@ def allowed_tokens(view: Mapping[str, Any], question: str | None = None) -> set[
     return allowed
 
 
+def _explained(token: str, allowed: set[str]) -> bool:
+    """A token is explained when it is allowed whole, or is a hyphenated compound whose digit-bearing parts are
+    each allowed: the panel gene in Observed's "TP53-mutated" label. A signed number ("-1.78") is not."""
+    if not any(ch.isdigit() for ch in token) or token in allowed:
+        return True
+    parts = [part for part in token.split("-") if part]
+    return "-" in token.strip("-") and all(not any(ch.isdigit() for ch in part) or part in allowed for part in parts)
+
+
 def unexplained_digits(view: Mapping[str, Any], question: str | None = None) -> list[JsonObj]:
     """Digits outside fact segments that no allow-list explains (contract "Numbers on screen")."""
     allowed = allowed_tokens(view, question)
@@ -147,7 +156,7 @@ def unexplained_digits(view: Mapping[str, Any], question: str | None = None) -> 
                 continue
             text = str(seg.get("text", "")).replace(VIEWER_FOOTNOTE, "")
             for token in _tokens(text):
-                if not any(ch.isdigit() for ch in token) or token in allowed:
+                if _explained(token, allowed):
                     continue
                 if where.startswith("limitations") and token in LIMITATION_CONSTANTS:
                     continue

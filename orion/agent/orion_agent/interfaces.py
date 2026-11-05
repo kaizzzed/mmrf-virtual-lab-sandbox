@@ -15,6 +15,12 @@ Model text names numbers and gene symbols only through fact placeholders, `{{<fa
 as `{{f.s10.top.1.gene}}`; the verifier resolves each into a Segment carrying that factId, with
 its text written by `models.format_fact`, as Observed and TEXT_MESSAGE write it.
 
+Model call records: Planner.plan and Composer.compose take no run id. They record their
+ModelCallRecords in `orion_agent.model.calls.model_call_scope(run_id, existing=record.model_calls)`,
+which the controller enters around each call; the scope numbers the callIds
+(`<runId>.planner.c<n>`, `<runId>.v<planVersion>.composer.c<n>`) and its `records` are
+authoritative, a cancelled call included.
+
 Cancellation (contract "cancel"): Planner.plan, Composer.compose and ToolClient.call honour
 asyncio cancellation. On Stop the controller cancels a planner or composer call itself (recorded
 as a ModelCallRecord with outcome `cancelled`); during Executing it sets the session's stop, and
@@ -59,8 +65,12 @@ from .tools.base import ToolCallOutcome
 from .vocab import Vocabulary
 
 PLACEHOLDER: Final = re.compile(r"\{\{(f\.s[1-9][0-9]*(?:\.[A-Za-z0-9_-]+)+)\}\}")
-PLANNER_MODEL: Final = "anthropic.claude-opus-5-5"
-REFUSAL_FALLBACK_MODEL: Final = "anthropic.claude-opus-5"
+# The default models of the default Bedrock client (bedrock-runtime takes inference-profile ids;
+# orion_agent.model.config.DEFAULT_MODELS["runtime"], which tests/test_contract.py keeps equal).
+# The served model of each call is in its ModelCallRecord; these name a model only where no call
+# served one (a planner call cancelled before any attempt finished).
+PLANNER_MODEL: Final = "us.anthropic.claude-opus-5-5"
+REFUSAL_FALLBACK_MODEL: Final = "us.anthropic.claude-opus-5"
 
 
 class RoleModel(BaseModel):
@@ -107,7 +117,12 @@ class Planner(Protocol):
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    """How execution ended. Facts, calls and cohorts reach the record step by step, through the session."""
+    """How execution ended. Facts, calls and cohorts reach the record step by step, through the session.
+
+    `status` is `Answering` when every step finished and the run is ready to answer (the controller
+    renders Observed and calls the composer); `AwaitingConfirmation` with `pending` at a write step;
+    otherwise the end status (`Partial`, `Limited`, `Cancelled`, `Failed`) with its code.
+    """
 
     status: RunStatus
     code: Code | None
@@ -136,7 +151,12 @@ class ResumeState:
 
 
 class StepSession(Protocol):
-    """The controller's side of execution. Every call is one transition: a snapshot follows it."""
+    """The controller's side of execution. Every call is one transition: a snapshot follows it.
+
+    The engine (`executor.Engine`) also reads the run's context, `executor.EngineSession.context`
+    (run id, cohort context, the run's cohorts and each cohort's defining step); the controller's
+    session implements that runtime-checkable extension.
+    """
 
     @property
     def stop_requested(self) -> bool: ...
@@ -174,9 +194,12 @@ class StepSession(Protocol):
         ...
 
     async def skip_step(
-        self, step_id: str, code: Code | None, reason: str, *, calls: Sequence[CallRecord] = ()
+        self, step_id: str, code: Code | None, reason: str, *, calls: Sequence[CallRecord] = (), duration_ms: int | None = None
     ) -> None:
-        """Skipped with `reason` ("Not run: stopped"), with the CallRecord of an aborted attempt, if any."""
+        """Skipped with `reason` ("Not run: stopped"), with the CallRecord of an aborted attempt, if any.
+
+        `duration_ms` is how long an aborted running step ran (the j1-stop fixture's 4840); null for
+        a step that never started."""
         ...
 
     async def reuse_step(self, step_id: str, *, origin: StepOrigin) -> None:

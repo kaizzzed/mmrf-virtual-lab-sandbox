@@ -6,3 +6,23 @@ ag-ui-protocol==1.0.0
 pydantic==2.14.2
 uvicorn==0.54.0
 starlette==1.10.0
+# The tool HTTP client (orion_agent/tools/http.py) imports h11 directly; uvicorn alone would let
+# an upgrade change it. The Gateway Lambda package pins the same version (lambda/build.py).
+h11==0.16.0
+# The Bedrock planner and composer (orion_agent/model/): AsyncAnthropicBedrock and
+# AsyncAnthropicBedrockMantle with the refusal-fallback middleware. Mode L uses the stubs and makes
+# no model call. The bedrock extra reuses the boto3 and botocore that bedrock-agentcore pulls in.
+anthropic[bedrock]==2.5.0
+# boto3 and botocore sign the Gateway (SigV4) and back the S3 run store: pinned to the version the
+# tools' signer tests and the BFF's offline signature cross-check ran against.
+boto3==1.43.123
+botocore==1.43.123
+s3transfer==0.19.3
+# The versions pip resolved for anthropic[bedrock]==2.5.0 on python:3.12-slim (2026-11-05).
+docstring_parser==0.18.0
+httpcore2==2.16.0
+httpx2==2.16.0
+jiter==0.18.0
+opentelemetry-api==1.45.2
+sniffio==1.3.1
+truststore==0.10.5

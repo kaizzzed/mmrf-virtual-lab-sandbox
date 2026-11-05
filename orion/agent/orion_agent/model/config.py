@@ -24,8 +24,8 @@ and `us.anthropic.claude-opus-5` succeeded). Inference-profile ids are a bedrock
 the Anthropic docs show them only with `AnthropicBedrock` (InvokeModel), while the Mantle endpoint
 documents base `anthropic.*` ids. So the default client is `runtime` with the `us.*` profiles;
 `global.anthropic.claude-opus-5-5` and `global.anthropic.claude-opus-5` also exist (no pricing
-premium, routing across all regions). Note interfaces.PLANNER_MODEL and REFUSAL_FALLBACK_MODEL
-still name the base ids; this module does not use them.
+premium, routing across all regions). interfaces.PLANNER_MODEL and REFUSAL_FALLBACK_MODEL equal
+the `runtime` defaults below (tests/test_contract.py keeps them so); this module does not read them.
 
 Worst case of one role call: (max_retries + 1) attempts of `timeout_s` on the primary model, then
 the same on the fallback model after a refusal: 2 x 2 x 30 s for the planner with the defaults.

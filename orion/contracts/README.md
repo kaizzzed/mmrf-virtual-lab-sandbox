@@ -1,4 +1,4 @@
-# ORION run-event contract (v1.2, reviewed 2026-11-04)
+# ORION run-event contract (v1.2, reviewed 2026-11-04, amended 2026-11-05)
 
 One contract joins the browser, the BFF routes and the agent: AG-UI events over server-sent
 events, ORION's run view in `STATE_SNAPSHOT`, one action per turn, and the run record the BFF
@@ -9,6 +9,9 @@ A4 (timeouts, modes). This file is meant to be implemented from without the desi
 Types live in two places that must match: `orion/agent/orion_agent/models.py` (Pydantic, the
 source of the fixtures) and `.sources/frontend/src/features/orion/agui/types.ts`. Internal
 Python interfaces for the builders are in `orion_agent/interfaces.py` and `orion_agent/tools/base.py`.
+The tool and step catalog (tool inputs and outputs, step tables, facts, Observed templates) is
+[`TOOLS.md`](TOOLS.md), typed in `orion_agent/tools/schemas.py`; where it and this file disagree,
+this file wins.
 
 **v1.2 adds** (all additive to v1; schema ids stay `orion.run-view/v1` and `orion.run-record/v1`):
 every resume action fully specified, `cancel` per status, `vizReports` riding on any turn,
@@ -18,6 +21,14 @@ call, the three BFF routes with the client's handling of their errors, the run r
 eleven codes, the finish status `Recorded`, fact chips for every on-screen number, one fact
 format, the view's `environment` (mode H fingerprint), callIds, the 32 KB budget and fault
 injection.
+
+**Amended 2026-11-05** (still additive; the schema ids are unchanged): the BFF code
+`UNAUTHENTICATED` (401) and the route errors for a wrong method or body; the BFF's idle limit, Stop
+grace and S3 `AccessDenied` rules; a `confirm` read-back's `defSha256` may be null (filters that
+cannot be read); the record's `environment.composer` and the compiler's keys in `planVersions`;
+when the composer's scope chip can make all cases active; `cancel` under `SESSION_BUSY`; the
+standalone report timer; the browser's DEinput fallback and its mode H fingerprint sources; J2's
+fixtures (`j2-*`), and every fixture plan offers the scope edit.
 
 ## Fixtures
 
@@ -41,14 +52,17 @@ docker run --rm -v $PWD/orion/agent:/app:ro -v $PWD/orion/contracts:/contracts \
 | `j1-partial.events.jsonl` | E11: `survival_compare` times out, Retrying, Failed `TOOL_FAILED`, run Partial | `agui/__fixtures__/` |
 | `j1-retry.events.jsonl` | `retry_step s4` on that run: s4 and s5 Queued again, then Complete | `agui/__fixtures__/` |
 | `j1-stop.events.jsonl` | E24: a `cancel` joining a live run at s4: Stopping, the call aborted, Cancelled with finished steps kept | `agui/__fixtures__/` |
+| `j2-save-pause.events.jsonl` | J2 ask turn to AwaitingConfirmation: top 3 mutated genes in a planned filter cohort, the one save last (s5), `eligibleCount` null, no Observed yet | `agui/__fixtures__/` |
+| `j2-after-confirm.events.jsonl` | The confirm turn: s5 Running, "1 cohort saved and read back", then Observed, the `oncomatrix` card pinned to the saved cohort, Complete | `agui/__fixtures__/` |
+| `j2-dont-save.events.jsonl` | `confirm dont_save` on J2: s5 Skipped `WRITE_SKIPPED`, the cohort `skipped`, the one-cohort `WRITE_SKIPPED` line, hand-off off | `agui/__fixtures__/` |
 | `j3-save-pause.events.jsonl` | J3 ask turn to AwaitingConfirmation: six rows, ten steps, count chips on the card, `save_cohorts` TOOL_CALL_* | `agui/__fixtures__/` |
 | `j3-after-confirm.events.jsonl` | The confirm turn to Complete: s8 Running as the action applies, read-back verified, `deDirect` viz with the DE sort caption and a frozen top-10 table | `agui/__fixtures__/` |
 | `j3-edit-at-pause.events.jsonl` | `edit_plan cohortName` at the pause: version 2, s1–s7 Reused with their facts, `superseded`, a new nonce | `agui/__fixtures__/` |
 | `j3-dont-save.events.jsonl` | `confirm dont_save`: s8 Skipped `WRITE_SKIPPED`, cohorts `skipped`, DE on the proposed names | `agui/__fixtures__/` |
 | `j3-deinput.events.jsonl` | The DE fallback card (`deInput` on the saved cohorts), whose pinned inputs are trimmed from every snapshot | `agui/__fixtures__/` |
-| `oncomatrix.events.jsonl` | J1's follow-up chip in the same thread: top 3 mutated genes, an `oncomatrix` card | `agui/__fixtures__/` |
+| `oncomatrix.events.jsonl` | J1's follow-up chip in J1's thread when CGS high-risk is already saved: the cohort `reused` at compile time, no save step, an `oncomatrix` card | `agui/__fixtures__/` |
 | `clarify.events.jsonl` | Clarifying with two field options (FR-04, E10) | `agui/__fixtures__/` |
-| `consent.events.jsonl` | AwaitingConsent: "Use OncoMatrix to plot survival" (E7), no data call | `agui/__fixtures__/` |
+| `consent.events.jsonl` | AwaitingConsent: "Use OncoMatrix to plot survival" (E7), no data call; its plan lists the scope edit, which the card does not offer while waiting | `agui/__fixtures__/` |
 | `interrupted.events.jsonl` | An ask on a thread whose run lost its controller: the old run Interrupted first, then the new run | `agui/__fixtures__/` |
 | `cancel-waiting.events.jsonl` | An ask with `cancelWaiting`: the paused run Cancelled first, then the new run | `agui/__fixtures__/` |
 | `request-examples.json` | One `RunAgentInput` per action and edit field, each naming the run of the fixture it belongs to | `agui/__fixtures__/` |
@@ -60,8 +74,10 @@ docker run --rm -v $PWD/orion/agent:/app:ro -v $PWD/orion/contracts:/contracts \
 | `cohort-def-vectors.json` | `defSha256` vectors | `cohort/__fixtures__/` |
 
 The agent's `tests/test_contract.py` checks the builder reproduces every file byte for byte, that
-every fixture validates and keeps the rules below, and that the largest allowed views fit 32 KB;
+every fixture validates and keeps the rules below, that the largest allowed views fit 32 KB, and
+that the real compiler and engine (with fake tools) send the J2 and `oncomatrix` streams' shapes;
 the fork's `agui/fixtures.unit.test.ts` and `cohort/cohortDef.unit.test.ts` replay and parse the copies.
+Every fixture plan lists the scope edit first (`plan.editable`, TOOLS.md 6.4), as the compiler does.
 
 ## Wire format
 
@@ -98,7 +114,9 @@ The browser sends it to the BFF, which forwards the bytes unchanged. All seven f
   and sends them with its next turn.
 - **When the browser sends a report.** A viz card queues its report when the viewer mounts or
   fails. If no invocation is open for the thread 2 s after the last queued report, the browser
-  sends a standalone `viz_report` (one per report); otherwise reports ride on the next turn.
+  sends a standalone `viz_report` (one per report); otherwise reports ride on the next turn. When
+  an open invocation ends with reports still queued, the 2 s timer starts again, so a report never
+  waits for a turn that may not come.
 
 `cohortContext` (on `ask` and scope edits) is the browser's cohort snapshot, validated like planner output:
 
@@ -109,9 +127,12 @@ The browser sends it to the BFF, which forwards the bytes unchanged. All seven f
 
 **The composer's scope chip** (before any run) is the client write `set_active_cohort`: picking
 all cases or a saved cohort from the chip runs `setCurrentCohortId` in the click handler, after
-an existence check, with an undo toast, and is logged with the thread id. The next `ask` carries
-the result in `cohortContext`; `ask` has no scope field. The plan card's scope chip, once a run
-exists, is a scope edit (below).
+an existence check, with an undo toast, and is logged with the thread id. The platform has no
+all-cases cohort id, so all cases is offered only through a saved cohort with no filters (its
+definition `{"kind": "filter", "clauses": []}`) when one exists; otherwise the chip does not
+offer it (clearing the active cohort's filters would be a different write). The next `ask`
+carries the result in `cohortContext`; `ask` has no scope field. The plan card's scope chip, once
+a run exists, is a scope edit (below).
 
 ## Actions (`forwardedProps.orion.action`)
 
@@ -297,7 +318,10 @@ On Create the browser, inside the click handler:
    Save Cohort modal does), diffs ids, reads back id and name, and refreshes counts. A resumed
    Create creates only cohorts missing from the ledger.
 3. Recomputes `defSha256` from each saved cohort's stored filters and sends `confirm` with
-   `saved: [{ref, cohortId, name, defSha256, reused}]` for every pending cohort.
+   `saved: [{ref, cohortId, name, defSha256, reused}]` for every pending cohort. When the store
+   holds filters ORION cannot read (see "Reading a saved cohort's FilterSet"), that cohort's
+   `defSha256` is **null**: it never equals the pending hash, so the agent fails the write step
+   with `WRITE_VERIFY_FAILED` rather than the run waiting on a confirm that never comes.
 
 The FilterSet the browser writes for a definition: `case_ids` becomes
 `{"mode": "and", "root": {"case_id": {"operator": "in", "field": "case_id", "operands": [<sorted ids>]}}}`
@@ -529,6 +553,16 @@ switch. When the full tool needs an active cohort other than the current one, th
 "Make active and open" and the switch is a `set_active_cohort` with undo. A `skipped` cohort
 disables hand-off with the `WRITE_SKIPPED` reason.
 
+**Client fallback (cut 2).** When a `deDirect` card's viewer fails, the browser seeds DEinput with
+`derive_request_pinned("deInput", <the cited de_run call's recorded request>)`, read from the record
+route, when both `cohortRefs` are saved or reused. It shows the frozen table when DEinput also
+fails, or when the groups are not saved (always so after Don't save). This is separate from the
+deployment's `ORION_DE_LAUNCHER=deInput` (TOOLS.md 5.6), which makes the agent emit `deInput` specs.
+The card's reports keep `pinnedHashVerified` for the spec's own `pinned`. A report with `mounted`
+true and a non-null `error` means the DEinput fallback mounted after the direct mount failed (the
+error names that failure). In mode H a frozen card reports `mounted` false with an `error` starting
+`Frozen in mode H`.
+
 **Parity badge.** The browser recomputes `pinnedHash` from `pinned`. The badge shows a match only
 when that value equals both `pinnedHash` and `requestPinnedHash`; a `requestPinnedHash` that
 differs is a valid spec (the chart would not reproduce the cited request) and the badge says so.
@@ -575,6 +609,13 @@ from the four sources `fixture_fingerprint` reads (`models.fingerprint_document`
 
 Launch dates and init status are left out, so a restart keeps the fingerprint.
 `fixtures/fingerprint-vectors.json` holds the sources, documents, canonical strings and hashes.
+
+The browser reads the same four sources from its own origin: `GEN3_API/sandbox/status`,
+`GEN3_ANALYSIS_API/_version`, `PROTEINPAINT_API/healthcheck`, and
+`POST PROTEINPAINT_API/termdb/topMutatedGenes` with the golden query as a JSON body
+(`orion/golden/proteinpaint/termdb-topMutatedGenes.json`). The ranking is normalised as the tool
+normalises it (TOOLS.md 2.5: a gene without an SNV/indel entry keeps its place with 0 cases). It
+computes the fingerprint once per page; a card whose check cannot complete freezes too, and says why.
 
 ### Canonical JSON (every hash)
 
@@ -656,12 +697,13 @@ Limitation and error codes from v1: `NAMED_TOOL_MISMATCH`, `OUT_OF_PANEL`, `INEL
 | `PANEL_COVERAGE` | Mutation data covers the six-gene panel only |
 | `STAT_UNAVAILABLE` | A statistic the platform lacks, such as a hazard ratio, is named under Limitations |
 | `REQUEST_TOO_LARGE` | A sample-list body over 8 MiB or a DE request over 4,000 samples |
-| `CALL_BUDGET` | A plan would exceed 20 tool calls per run (compile time, no data call) |
+| `CALL_BUDGET` | A plan would exceed 20 tool calls per run, or the compiler estimates its largest view would not fit 32 KB (compile time, no data call; TOOLS.md choice 18) |
 | `KG_NOT_CONNECTED` | `kg_query` before the Workstream 1 target is registered |
 
 Transport and controller codes: `INVALID_INPUT`, `NOT_IMPLEMENTED`, `RUN_BUSY`, `RUN_NOT_FOUND`,
 `STALE_ACTION` (the five rejection codes) and `INTERNAL_ERROR`. `NOT_IMPLEMENTED` may also be a
-limitation or step code while a capability is stubbed; a run that hits one ends Limited.
+limitation or step code while a capability is stubbed (the Day 1 stub executor, `ORION_EXECUTOR=stub`);
+a run that hits one ends Limited. Every action is implemented: none is rejected `NOT_IMPLEMENTED`.
 
 ## BFF routes
 
@@ -676,6 +718,9 @@ state: it tracks only each thread's open upstream call. It never writes a run re
 | Condition | HTTP | `code` |
 | --- | --- | --- |
 | Body not JSON, a field missing, an id malformed | 400 | `INVALID_INPUT` |
+| A turn body that is not `application/json`, is compressed, or is over 8 MiB | 400 | `INVALID_INPUT` |
+| A wrong method (the response carries `Allow`) | 405 | `INVALID_INPUT` |
+| No valid session (the fork's own session check, run first on every route) | 401 | `UNAUTHENTICATED` |
 | A view or record that does not exist (or whose `threadId` differs) | 404 | `RUN_NOT_FOUND` |
 | A second turn for a thread whose upstream call is still open (not `cancel`, `edit_plan` or `confirm`), or AgentCore 409 | 409 | `SESSION_BUSY` |
 | Upstream non-2xx before the stream starts (other than 409, 429, 503) | 502 | `UPSTREAM_ERROR` |
@@ -689,8 +734,9 @@ its `code` to the controller, which acts by code:
 
 | `code` | The browser |
 | --- | --- |
-| `INVALID_INPUT` (400) | Treats the turn as rejected (as a rejected `RUN_ERROR` turn: an `ask`'s question goes back to the composer). |
-| `SESSION_BUSY` (409) | Polls the target run's view route every 2 s for up to 30 s until the run is not in a leased status. It resends the turn, unchanged, only if the action still applies (the run still waits for it: same status, same pending nonce); otherwise it shows the run as the view route has it. For an `ask` (no run yet): a view 404 means the ask never started, so it resends with the same `runId`; a 200 means it started, so it follows the view route. |
+| `INVALID_INPUT` (400, 405) | Treats the turn as rejected (as a rejected `RUN_ERROR` turn: an `ask`'s question goes back to the composer). |
+| `UNAUTHENTICATED` (401) | Treats the turn as rejected with a notice to sign in again; an `ask`'s question goes back to the composer. The view and record routes say the run cannot be read. |
+| `SESSION_BUSY` (409) | Polls the target run's view route every 2 s for up to 30 s until the run is not in a leased status. It resends the turn, unchanged, only if the action still applies (the run still waits for it: same status, same pending nonce); otherwise it shows the run as the view route has it. For an `ask` (no run yet): a view 404 means the ask never started, so it resends with the same `runId`; a 200 means it started, so it follows the view route. **`cancel` is exempt from waiting**: after one poll that shows the run still unfinished (not an end status), it resends the `cancel` (every 2 s, within the same 30 s), and stops once the run has ended. |
 | `UPSTREAM_TIMEOUT` (504), `UPSTREAM_ERROR` (502) | GETs the view for the turn's `runId` before deciding: a 200 shows that run (an `ask` may have started its run), and the run is then followed by polling; a 404 treats the turn as rejected. Never resends an `ask` under a new `runId`. |
 | `UPSTREAM_UNAVAILABLE` (503) | Treats the turn as rejected with a notice that ORION is unavailable; an `ask`'s question goes back to the composer. |
 | `RUN_NOT_FOUND` (404, view or record) | The run is not stored (yet): on restore, drops it from the thread; in the Evidence Inspector, says the record is not available. |
@@ -717,13 +763,20 @@ view route, as above.
   reading it to its terminal event and discards the rest, so the run finishes in its record.
 - **Stop, edit and confirm.** A turn whose action is `cancel`, `edit_plan` or `confirm` for a
   thread with an open upstream call first aborts that call (the agent's run continues detached;
-  the abort frees the session), then sends the new turn. A resent `confirm` (E19) therefore
-  reaches the idempotent path instead of `SESSION_BUSY`. For `cancel` in modes A and H, if no
-  snapshot of the run with status `Cancelled` arrives within 10 s, the BFF calls
-  `StopRuntimeSession` for the session. The grace is short because the controller aborts the
+  the abort frees the session), waits up to 5 s for it to close, then sends the new turn. A
+  resent `confirm` (E19) therefore reaches the idempotent path instead of `SESSION_BUSY`.
+- **Stop grace (modes A and H).** The 10 s grace starts when the BFF sends the `cancel`. It is
+  met by a `STATE_SNAPSHOT` of the target run with status `Cancelled` or by `RUN_FINISHED
+  Cancelled`. Otherwise the BFF calls `StopRuntimeSession` for the session, also when the cancel
+  itself was refused before streaming (an AgentCore 409, say), but not when a newer call of the
+  thread holds the session by then. The grace is short because the controller aborts the
   in-flight call at once; if `StopRuntimeSession` kills it mid-Stopping, the run's Stopping lease
   lapses within 30 s, the view route then shows it Cancelled, and the browser's resent `cancel`
   (with its next turn) records it Cancelled.
+- **First byte and idle limit.** The response headers are flushed at the agent's first byte, the
+  last point at which a `504 UPSTREAM_TIMEOUT` (no first byte within 30 s) can still be sent as
+  JSON. After the stream started, 60 s without a byte (four missed heartbeats) ends the response
+  like an upstream failure and frees the thread's session.
 - After the stream started, an upstream failure just ends the response; the BFF never invents a
   frame. The browser sees a stream with no terminal event and restores from the view route.
 
@@ -751,7 +804,7 @@ record's own `lease` shows a lapse. The Evidence Inspector reads full step outpu
 | Mode | Location | Writer | BFF reader |
 | --- | --- | --- | --- |
 | L | `${ORION_RUN_DIR}/runs/<runId>.json` and `threads/<threadId>.json`; the named volume `orion-runs` at `/data/runs` in `orion-agent` (read-write) and the frontend container (read-only), both with `ORION_RUN_DIR=/data/runs` | Agent, atomic rename per transition | File read |
-| A, H | `s3://${ORION_RUN_BUCKET}/${ORION_RUN_PREFIX}runs/<runId>.json` (and `threads/`), `ORION_RUN_PREFIX` default `orion/` | Runtime, one PUT per transition and lease renewal | `s3:GetObject` on `<prefix>runs/*` |
+| A, H | `s3://${ORION_RUN_BUCKET}/${ORION_RUN_PREFIX}runs/<runId>.json` (and `threads/`), `ORION_RUN_PREFIX` default `orion/` | Runtime, one PUT per transition and lease renewal | `s3:GetObject` on `<prefix>runs/*`. The BFF has no `s3:ListBucket`, so S3 answers a missing key with 403 `AccessDenied`; the BFF treats that like `NoSuchKey`, 404 `RUN_NOT_FOUND`, and logs it (`record_access_denied`). Granting `s3:ListBucket` with an `s3:prefix` condition on `<prefix>runs/` makes S3 answer 404 instead |
 
 BFF environment: `ORION_MODE` (`L`, `A`, `H`), `ORION_AGENT_URL`, `ORION_RUN_DIR`,
 `ORION_RUNTIME_ARN`, `ORION_RUNTIME_QUALIFIER`, `ORION_RUN_BUCKET`, `ORION_RUN_PREFIX`, `AWS_REGION`.
@@ -770,11 +823,11 @@ rerun; `attempt` keeps its own count, 1 or 2 within one call). A model call is
 | Field | Type | Notes |
 | --- | --- | --- |
 | `schema`, `threadId`, `runId`, `revision`, `status`, `code`, `question`, `createdAt`, `updatedAt` | | As in the view |
-| `environment` | `{mode, planner, executor, agentVersion, toolTransport, fingerprintSha256, faults}` | `toolTransport` `in_process` or `gateway`; the fingerprint of s1, null until it ran; `faults` the ORION_FAULTS in force (`<target>:<kind>`, sorted), empty in a real run |
+| `environment` | `{mode, planner, composer, executor, agentVersion, toolTransport, fingerprintSha256, faults}` | `planner` and `composer` the model roles (`stub` or `bedrock`), so a run that never composed still names its composer (`composer` null only in a record written before it existed); `toolTransport` `in_process` or `gateway`, the tool client's own; the fingerprint of s1, null until it ran; `faults` the ORION_FAULTS in force (`<target>:<kind>`, sorted), empty in a real run |
 | `lease` | `{owner, renewedAt, expiresAt}` or null | Set only in a leased status |
 | `request` | the `ask` action | The question and cohort context as received |
 | `plannerOutput` | IR (snake_case, `orion_agent/ir.py`) | The latest planner output: Plan, Clarify or Unsupported |
-| `planVersions` | `[CompiledPlan]` | `{version, signature, scope{source, name, caseCount, clauses}, rows, steps[{id, row, tool, kind, folded, inputSummary, args, dependsOn}], assumptions, limitations, writes, paraphrase, altScope, altScopeChoice, editable}`; every editable value is in some step's `args` |
+| `planVersions` | `[CompiledPlan]` | `{version, signature, scope{source, name, caseCount, clauses}, rows, steps[{id, row, tool, kind, folded, inputSummary, args, dependsOn}], assumptions, limitations, writes, paraphrase, altScope, altScopeChoice, editable}`; every editable value is in some step's `args`. The compiler may add `cohorts` (the run cohorts it plans: `ref`, `role`, `source`, `name`, `definitionText`, `definition`, `ids` (a StepRef), `stepId`, `countFactId`, `save`, `cohortId`, `savedName`), `consent` (the ConsentPending a named-tool substitution waits for), `openApps` (NearestApp[] the answer offers as hand-offs) and `ledger` (LedgerUse), each omitted when empty, and `scope.cohortId` / `scope.ledgerRef`, omitted when null: a paused or reloaded run rebuilds its cohorts, pending payload and consent from the record alone |
 | `planHistory` | `[{version, cause, at, ir, edit}]` | Why each version exists: `ask`, `clarify_answer` or `edit_plan`, with the IR it compiled and the edit |
 | `modelCalls` | `[{callId, role, model, fallback, effort, attempt, startedAt, elapsedMs, outcome, stopReason, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens}]` | Every planner and composer call, refusal fallback and repair included; `model` names the model that served; `outcome` `ok`, `refused`, `invalid`, `error` or `cancelled` |
 | `steps` | `[Step]` | The current version's steps. A step's calls are the `calls` with its `planVersion` and `stepId`, or, for a Reused step, its `reusedFrom`'s |
@@ -797,6 +850,11 @@ The view is a projection of the record: `plan` is the last `planVersions` entry 
 
 ## Tool envelope (agent internal)
 
+The tool and step catalog (tool inputs and outputs, step tables, facts, Observed templates) is
+[`TOOLS.md`](TOOLS.md), typed in `orion_agent/tools/schemas.py`. The deployment picks how server
+tools are reached with `ORION_TOOLS` (`inprocess` or `gateway`, `orion_agent/settings.py`); the
+record's `environment.toolTransport` is the tool client's own transport.
+
 Server tools, pure functions and client actions share one result shape, `ToolResult`, also the
 JSON the Gateway Lambda returns for `vlab___<tool>`:
 `{"status": "ok"|"empty"|"error"|"unavailable", "observed", "warnings", "limitation", "provenance", "error"}`.
@@ -806,13 +864,15 @@ design's `ArtifactRef` is not part of the MVP). The ToolClient (in-process or Ga
 `ToolCallOutcome` with every attempt, each with its own callId; each attempt becomes a `calls`
 entry. It honours asyncio cancellation (an aborted attempt is a `CANCELLED` tool error, never
 retried). Types, guards, the A4 timeout budget (55 s HTTP, 58 s Lambda, 60 s step, 130 s cap, one
-retry on 429, 502, 503, 504 or a timeout with an identical body, 10–20 s backoff on 429) and the
-pure-function signatures are in `orion_agent/tools/base.py`.
+retry on 429, 502, 503, 504 or a timeout with an identical body, 10–20 s backoff on 429; the
+executor passes the 60 s step timeout as each attempt's `timeout_s`, and the client gives the HTTP
+requests at most 55 s of it) and the pure-function signatures are in `orion_agent/tools/base.py`.
 
 The run controller's collaborators are in `orion_agent/interfaces.py`: `Planner`, `Executor` with
 its `StepSession` (`start_step`, `retrying`, `finish_step` with the step's facts, calls and
-cohorts, `skip_step`, `reuse_step`, `wait_stop`, and `resume`, the `ResumeState` a confirm,
-retry, consent or edit starts from), the extractor, the Observed renderer, `Composer.compose(question,
+cohorts, `skip_step` with an aborted step's `duration_ms`, `reuse_step`, `wait_stop`, and
+`resume`, the `ResumeState` a confirm, retry, consent or edit starts from; `execute` returns
+`Answering` when every step finished), the extractor, the Observed renderer, `Composer.compose(question,
 facts, plan, observed, allow_list=, ledger=, feedback=)` with the verifier's V-NUM allow-list,
 the `Verifier`, and the ledger store.
 

@@ -36,6 +36,7 @@ from pydantic import BaseModel, JsonValue  # noqa: E402
 from orion_agent import ir  # noqa: E402
 from orion_agent.compiler import CompiledPlan, ResolvedScope, StepSpec  # noqa: E402
 from orion_agent.events import fit_view  # noqa: E402
+from orion_agent.interfaces import PLANNER_MODEL  # noqa: E402
 from orion_agent.models import (  # noqa: E402
     CANONICAL_DEFINITION,
     FROZEN_ROWS_CAP,
@@ -130,6 +131,9 @@ from orion_agent.models import (  # noqa: E402
     text_message_chunks,
 )
 from orion_agent.run_store import Environment, RunRecord  # noqa: E402
+from orion_agent.tools import schemas as catalog  # noqa: E402
+from orion_agent.tools.base import KmCurve, KmPoint  # noqa: E402
+from orion_agent.tools.functions import derive_km_median  # noqa: E402
 
 T0 = datetime(2026, 11, 4, 15, 0, 0, tzinfo=UTC)
 ALL_CASES_DEF = FilterDefinition(kind="filter", clauses=[])
@@ -443,6 +447,11 @@ J1_QUESTION = "Compare survival of CGS high-risk vs. CGS standard-risk patients"
 J1_SIGNATURE = "3c1f0e7a9b5d2c4e6f8a0b1c3d5e7f9a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e"
 
 
+# Every plan offers the scope edit (TOOLS.md 6.4); the plan card offers an edit only while the
+# run's status accepts edit_plan (ACTION_STATUSES).
+SCOPE_EDIT = EditableScope(field="scope", label="Scope", value=ScopeChoice(source="active_cohort"))
+
+
 def j1_plan_view(editable: list[Editable] | None = None) -> PlanView:
     return PlanView(
         version=1,
@@ -458,7 +467,7 @@ def j1_plan_view(editable: list[Editable] | None = None) -> PlanView:
         ],
         writes=False,
         paraphrase="Compare overall survival between CGS High risk and Standard risk cases in All cases.",
-        editable=editable or [],
+        editable=[SCOPE_EDIT] if editable is None else editable,
     )
 
 
@@ -473,6 +482,28 @@ def j1_steps() -> list[StepView]:
 
 
 J1_P = 7.1e-60
+
+
+def _curve(points: Sequence[tuple[float, float]]) -> list[KmPoint]:
+    return [KmPoint(time=t, survival=v) for t, v in points]
+
+
+# s4's recorded curves (illustrative): High risk first falls to 0.5 or below at 1,095 days,
+# Standard risk at 2,190. derive_km_median (TOOLS.md 3: the first time with survival <= 0.5) runs
+# over them, so the median facts are what the function writes (floats: base.KmPoint.time is one).
+J1_CURVES = [
+    KmCurve(label="High risk", points=_curve([(0, 1.0), (365, 0.85), (730, 0.7), (1095, 0.48), (1460, 0.37), (2190, 0.22)])),
+    KmCurve(label="Standard risk", points=_curve([(0, 1.0), (365, 0.93), (730, 0.85), (1095, 0.76), (1460, 0.62), (2190, 0.47)])),
+]
+J1_MEDIANS = derive_km_median(J1_CURVES, unit="days")
+
+
+def _median(index: int) -> float:
+    value = J1_MEDIANS.groups[index].median
+    assert value is not None, "both J1 curves reach their median"
+    return value
+
+
 J1_FACTS: dict[str, list[Fact]] = {
     "s1": [fact("f.s1.cases", "Cases in the sandbox", 1000, "cases", "s1", 1, "fixture_fingerprint", "/observed/document/sandbox/cases")],
     "s2": [fact("f.s2.count", "High risk cases", 339, "cases", "s2", 1, "cohort_count", "/observed/count")],
@@ -483,8 +514,8 @@ J1_FACTS: dict[str, list[Fact]] = {
         fact("f.s4.p", "Log-rank p", J1_P, "p", "s4", 2, "survival_compare", "/observed/pValue"),
     ],
     "s5": [
-        fact("f.s5.median.high", "High risk median overall survival", 1095, "days", "s5", 2, "derive_km_median", "/observed/groups/0/median"),
-        fact("f.s5.median.standard", "Standard risk median overall survival", 2190, "days", "s5", 2, "derive_km_median", "/observed/groups/1/median"),
+        fact("f.s5.median.high", "High risk median overall survival", _median(0), "days", "s5", 2, "derive_km_median", "/observed/groups/0/median"),
+        fact("f.s5.median.standard", "Standard risk median overall survival", _median(1), "days", "s5", 2, "derive_km_median", "/observed/groups/1/median"),
     ],
 }
 J1_ALL = by_id([f for facts in J1_FACTS.values() for f in facts])
@@ -595,20 +626,21 @@ def j1_model_text(run: Run) -> None:
     run.open_links = [NearestApp.of("CohortComparison")]
 
 
-def j1_open(run: Run, stream: Stream, at: float = 2.6, editable: list[Editable] | None = None) -> None:
+def j1_open(run: Run, stream: Stream, at: float = 2.6) -> None:
     stream.started()
     stream.snapshot(iso(0.1))
-    scope_edit = EditableScope(field="scope", label="Scope", value=ScopeChoice(source="active_cohort"))
-    plan = j1_plan_view([scope_edit] if editable is None else editable)
-    run.status, run.plan, run.steps, run.cohorts = "Executing", plan, j1_steps(), [scope_cohort()]
+    run.status, run.plan, run.steps, run.cohorts = "Executing", j1_plan_view(), j1_steps(), [scope_cohort()]
     stream.snapshot(iso(at))
 
 
 def build_j1_stub() -> str:
-    """The Day 1 reference stream: the stub era's J1, ending ObservedOnly (no fingerprint fact yet)."""
+    """The Day 1 reference stream: the stub era's J1, ending ObservedOnly (no fingerprint fact yet).
+
+    Its plan is the J1 plan the live stub ask sends (tests/test_contract.py LiveAppStreamTests),
+    the scope edit included: every plan offers it (TOOLS.md 6.4)."""
     run = Run(thread_id="4f0c1a9e2b7d4c3e8a6f5b1d0e9c2a7b", run_id="9b2e7c4a1f6d4e0b8c3a5d7f2e1b6c90", question=J1_QUESTION)
     stream = Stream(run)
-    j1_open(run, stream, at=3.2, editable=[])
+    j1_open(run, stream, at=3.2)
     steps = [StepRun(sid, at, out, ms) for (sid, out, ms), at in zip(J1_OUTPUTS, J1_STEP_TIMES)]
     steps[0] = StepRun("s1", J1_STEP_TIMES[0], "fingerprint 7d41…", 412)
     run_steps(stream, steps, facts_live=False, heartbeat=("s4", 5.3))
@@ -731,6 +763,7 @@ def j1_stop() -> Stream:
 
 # --- J3: differential expression by KRAS status ----------------------------------------------------------
 
+J2_NONCE = hexid("j2/nonce-1")
 J3_QUESTION = "Differential expression between patients with and without a KRAS mutation, top 10 genes"
 J3_SIGNATURE = fake_sha("j3-plan-v1")
 J3_NONCE = hexid("j3/nonce-1")
@@ -1137,7 +1170,7 @@ def build_clarify() -> str:
 
 
 def consent_state(run: Run) -> None:
-    plan = j1_plan_view()
+    plan = j1_plan_view()  # the scope edit is listed; edit_plan is not accepted while AwaitingConsent
     rows = list(plan.rows)
     rows[1] = rows[1].model_copy(update={"reason": "Correlation Plot runs survival comparisons; OncoMatrix, which you named, ranks mutated genes"})
     run.plan = plan.model_copy(update={"rows": rows, "paraphrase": "Compare overall survival between CGS High risk and Standard risk cases in All cases, in Correlation Plot instead of OncoMatrix."})
@@ -1227,11 +1260,26 @@ def build_cancel_waiting() -> str:
     return stream.text()
 
 
-# --- An OncoMatrix run: J1's follow-up chip in the same thread ------------------------------------------------
+# --- J2: top mutated genes in a planned cohort, saved after one confirmation ---------------------------------
+# The question is J1's follow-up chip. A planned filter cohort is saved once, last, after the ranking
+# (C-SAVE, TOOLS.md 5.2 and choice 1): j2-save-pause, j2-after-confirm and j2-dont-save. When the
+# browser already holds an identical saved cohort, the compiler reuses it and plans no save
+# (TOOLS.md choice 15): `oncomatrix`, the chip asked in J1's thread.
 
 ONCO_QUESTION = "Top 3 most frequently mutated genes in CGS high-risk patients"
 ONCO_GENES = [("KRAS", 163), ("NRAS", 121), ("DIS3", 97)]
 HIGH_DEF = FilterDefinition(kind="filter", clauses=[FilterClause(field=CGS, op="in", values=["High risk"])])
+HIGH_NAME = "CGS high-risk (ORION)"
+HIGH_TEXT = "CGS risk category = High risk"
+HIGH_COHORT_ID = "3c7a1e9b-5d2f-4b8a-9e6c-1f0d2a4b6c88"
+J2_SIGNATURE = fake_sha("j2-plan-v1")
+J2_PARAPHRASE = "List the 3 most frequently mutated genes among CGS high-risk cases in All cases."
+PANEL_RANKING = Limitation(code="PANEL_COVERAGE", text="Mutation data covers the six-gene panel only.", unblock=None)
+WRITE_SKIPPED_ONE = Limitation(
+    code="WRITE_SKIPPED",
+    text="You chose Don't save, so the cohort was not saved and Open with this cohort is off.",
+    unblock="Ask again and choose Create to save the cohort.",
+)
 
 
 def high_risk_ids() -> list[str]:
@@ -1239,52 +1287,82 @@ def high_risk_ids() -> list[str]:
     return [case_id(n) for n in sorted(ranked[:339])]
 
 
-def build_oncomatrix() -> str:
-    run = Run(thread_id=hexid("j1-complete/thread"), run_id=hexid("oncomatrix/run"), question=ONCO_QUESTION)
-    stream = Stream(run)
-    stream.started()
-    stream.snapshot(iso(20.1))
-    run.plan = PlanView(
-        version=1, signature=fake_sha("oncomatrix-plan-v1"), scope=Scope(source="active_cohort", name="All cases", case_count=1000),
-        rows=[
-            PlanRow(row=1, label="Find CGS high-risk cases", tool="cases_query", reason="Gen3 Analysis API lists case IDs", step_ids=["s1", "s2"]),
-            PlanRow(row=2, label="Rank mutated genes: top 3", tool="top_mutated_genes", reason="OncoMatrix ranks mutated genes", step_ids=["s3", "s4"]),
-        ],
+def high_saved_context() -> dict[str, JsonValue]:
+    """The cohort context when CGS high-risk is already a saved cohort (read as HIGH_DEF)."""
+    filters: dict[str, JsonValue] = {"mode": "and", "root": {CGS: {"operator": "includes", "field": CGS, "operands": ["High risk"]}}}
+    context = all_cases_context()
+    context["saved"] = [{"id": HIGH_COHORT_ID, "name": HIGH_NAME, "filters": filters, "caseCount": 339}]
+    return context
+
+
+def j2_plan_view(*, saves: bool, signature: str = J2_SIGNATURE) -> PlanView:
+    rows = [
+        PlanRow(row=1, label="Find CGS high-risk cases", tool="cases_query", reason="Gen3 Analysis API lists case IDs", step_ids=["s1", "s2"]),
+        PlanRow(row=2, label="Rank mutated genes: top 3", tool="top_mutated_genes", reason="OncoMatrix ranks mutated genes", step_ids=["s3", "s4"]),
+    ]
+    editable: list[Editable] = [SCOPE_EDIT, EditableTopN(field="topN", label="Top N", value=3, max=50)]
+    if saves:
+        rows.append(PlanRow(row=3, label="Save 1 cohort", tool="save_cohorts", reason="Cohort Builder saves cohorts after your click", step_ids=["s5"]))
+        editable.append(EditableCohortName(field="cohortName", label="Cohort name", value=HIGH_NAME, ref="high"))
+    return PlanView(
+        version=1, signature=signature, scope=Scope(source="active_cohort", name="All cases", case_count=1000), rows=rows,
         assumptions=[Assumption(code="DEFAULT_SCOPE_ACTIVE", text="No cohort named: using the active cohort, All cases")],
-        writes=False, paraphrase="List the 3 most frequently mutated genes among CGS High risk cases in All cases.",
-        editable=[EditableTopN(field="topN", label="Top N", value=3, max=50)],
+        writes=saves, paraphrase=J2_PARAPHRASE, editable=editable,
     )
-    run.steps = [
+
+
+def j2_steps(*, saves: bool) -> list[StepView]:
+    steps = [
         queued("s1", 1, "fixture_fingerprint", "server", "sandbox status, versions, ranking", folded=True),
-        queued("s2", 1, "cases_query", "server", "CGS risk category = High risk"),
+        queued("s2", 1, "cases_query", "server", HIGH_TEXT),
         queued("s3", 2, "top_mutated_genes", "server", "High risk cases, top 3"),
         queued("s4", 2, "rank_top_n", "exec", "Top 3 by mutated cases, ties disclosed"),
     ]
-    run.cohorts = [
-        scope_cohort(),
-        CohortView(ref="high", role="planned", source="planned", name="CGS high-risk cases", definition_text="CGS risk category = High risk",
-                   def_sha256=def_sha256(HIGH_DEF), case_count=None, save="none", cohort_id=None, saved_name=None),
-    ]
-    run.status = "Executing"
-    stream.snapshot(iso(22.4))
+    return [*steps, queued("s5", 3, "save_cohorts", "client", HIGH_NAME)] if saves else steps
+
+
+def high_cohort(save: Literal["proposed", "reused"]) -> CohortView:
+    reused = save == "reused"
+    return CohortView(
+        ref="high", role="planned", source="planned", name=HIGH_NAME, definition_text=HIGH_TEXT, def_sha256=def_sha256(HIGH_DEF),
+        case_count=None, save=save, cohort_id=HIGH_COHORT_ID if reused else None, saved_name=HIGH_NAME if reused else None,
+    )
+
+
+def j2_read_steps(at: float) -> list[StepRun]:
     tops: list[Fact] = []
     for k, (gene, cases) in enumerate(ONCO_GENES, start=1):
         tops += [fact(f"f.s4.top.{k}.gene", f"Rank {k} gene", gene, "gene", "s4", 2, "rank_top_n", f"/observed/rows/{k - 1}/key"),
                  fact(f"f.s4.top.{k}.cases", f"{gene} mutated cases", cases, "cases", "s4", 2, "rank_top_n", f"/observed/rows/{k - 1}/value")]
     s2 = fact("f.s2.count", "CGS high-risk cases", 339, "cases", "s2", 1, "cases_query", "/observed/count")
-    steps = [
-        StepRun("s1", 22.5, FP_SUMMARY, 398, J1_FACTS["s1"]),
-        StepRun("s2", 22.9, "339 case IDs, 1 page", 205, [s2]),
-        StepRun("s3", 23.2, "3 genes", 612),
-        StepRun("s4", 23.9, "Top 3, no ties", 1, tops),
+    return [
+        StepRun("s1", at, FP_SUMMARY, 398, J1_FACTS["s1"]),
+        StepRun("s2", at + 0.4, "339 case IDs, 1 page", 205, [s2]),
+        StepRun("s3", at + 0.7, "3 genes", 612),
+        StepRun("s4", at + 1.4, "Top 3, no ties", 1, tops),
     ]
 
-    def sized(r: Run, step: StepRun) -> None:
-        fingerprinted(r, step)
-        if step.step_id == "s2":
-            r.set_cohort("high", case_count=339, case_count_fact_id="f.s2.count")
 
-    run_steps(stream, steps, facts_live=True, on_finish=sized)
+def j2_sized(run: Run, step: StepRun) -> None:
+    fingerprinted(run, step)
+    if step.step_id == "s2":
+        run.set_cohort("high", case_count=339, case_count_fact_id="f.s2.count")
+
+
+def j2_open(stream: Stream, at: float, *, saves: bool, signature: str = J2_SIGNATURE) -> None:
+    """RUN_STARTED, Planning, then the plan with its Queued steps and run cohorts."""
+    run = stream.run
+    stream.started()
+    stream.snapshot(iso(at))
+    run.plan = j2_plan_view(saves=saves, signature=signature)
+    run.steps = j2_steps(saves=saves)
+    run.cohorts = [scope_cohort(), high_cohort("proposed" if saves else "reused")]
+    run.status = "Executing"
+    stream.snapshot(iso(at + 2.3))
+
+
+def j2_answer(run: Run, limitations: Sequence[Limitation]) -> None:
+    """J2's code-written parts (Observed, Limitations, the OncoMatrix card), at Answering."""
     f = by_id(run.facts)
     run.status = "Answering"
     run.observed = [
@@ -1292,18 +1370,22 @@ def build_oncomatrix() -> str:
         sentence("The most frequently mutated genes are ", f["f.s4.top.1.gene"], " (", f["f.s4.top.1.cases"], " of ", f["f.s2.count"],
                  " cases), ", f["f.s4.top.2.gene"], " (", f["f.s4.top.2.cases"], ") and ", f["f.s4.top.3.gene"], " (", f["f.s4.top.3.cases"], ")."),
     ]
-    run.limitations = [Limitation(code="PANEL_COVERAGE", text="Mutation data covers the six-gene panel only.", unblock=None)]
+    run.limitations = list(limitations)
     request: dict[str, JsonValue] = {"filter0": case_filter(high_risk_ids()), "geneCount": 3}
     observed: dict[str, JsonValue] = {"genes": [{"gene": g, "cases": c} for g, c in ONCO_GENES]}
     pinned = derive_request_pinned("oncomatrix", request, observed)
     run.viz_specs = [VizSpec(
         viz_id="v1", app_id="OncoMatrix", launcher="oncomatrix", cites_steps=["s3"], pinned=pinned, pinned_hash=pinned_hash(pinned),
-        title="Top mutated genes: CGS high-risk cases", caption=None,
+        # viz.oncomatrix.title over the cohort's label: its name without " (ORION)" (TOOLS.md 8).
+        title="Top mutated genes: CGS high-risk", caption=None,
         request_pinned_hash=pinned_hash(derive_request_pinned("oncomatrix", request, observed)),
         frozen=FrozenTable(columns=["Gene", "Mutated cases"], rows=[[chip(f[f"f.s4.top.{k}.gene"]), chip(f[f"f.s4.top.{k}.cases"])] for k in (1, 2, 3)], note=None),
         cohort_refs=["high"],
     )]
-    stream.snapshot(iso(24.0))
+
+
+def j2_model_text(run: Run) -> None:
+    f = by_id(run.facts)
     run.interpretation = [model_sentence(
         ["Among the profiled panel genes, ", f["f.s4.top.1.gene"], " is the most often mutated in this cohort; frequency alone does not show a driver role."],
         [f["f.s4.top.1.gene"], f["f.s4.top.1.cases"]],
@@ -1312,8 +1394,79 @@ def build_oncomatrix() -> str:
     run.follow_ups = [FollowUp(label="Top mutated genes in all other cases",
                                question="Top 3 most frequently mutated genes in CGS standard-risk patients", kind="top_mutated_genes")]
     run.open_links = [NearestApp.of("MutationFrequency")]
+
+
+def build_oncomatrix() -> str:
+    """J1's follow-up chip in J1's thread, with CGS high-risk already saved: reused, no save step."""
+    run = Run(thread_id=hexid("j1-complete/thread"), run_id=hexid("oncomatrix/run"), question=ONCO_QUESTION)
+    stream = Stream(run)
+    j2_open(stream, 20.1, saves=False, signature=fake_sha("oncomatrix-plan-v1"))
+    run_steps(stream, j2_read_steps(22.5), facts_live=True, on_finish=j2_sized)
+    j2_answer(run, [PANEL_RANKING])
+    stream.snapshot(iso(24.0))
+    j2_model_text(run)
     end_with_answer(stream, 27.2)
     return stream.text()
+
+
+def j2_pending(nonce: str) -> SaveCohortsArgs:
+    cohort = PendingCohort(
+        ref="high", name=HIGH_NAME, definition_text=HIGH_TEXT, definition=HIGH_DEF, def_sha256=def_sha256(HIGH_DEF), case_count=339,
+        eligible_count=None, reuse=None, case_count_fact_id="f.s2.count", eligible_count_fact_id=None,
+    )
+    return SaveCohortsArgs(kind="confirm", nonce=nonce, plan_signature=J2_SIGNATURE, plan_version=1, step_id="s5", cohorts=[cohort])
+
+
+def j2_run(seed: str = "j2") -> Run:
+    return Run(thread_id=hexid(f"{seed}/thread"), run_id=hexid(f"{seed}/run"), question=ONCO_QUESTION)
+
+
+def j2_pause(run: Run, nonce: str) -> Stream:
+    """The ask turn: plan, the four read steps, then the save pause (eligibleCount null) and its tool call."""
+    stream = Stream(run)
+    j2_open(stream, 0.1, saves=True)
+    run_steps(stream, j2_read_steps(2.5), facts_live=True, on_finish=j2_sized)
+    args = j2_pending(nonce)
+    run.status = "AwaitingConfirmation"
+    run.set_step("s5", status="AwaitingUser")
+    run.pending = ConfirmPending.model_validate(args.model_dump())
+    stream.snapshot(iso(4.0))
+    stream.save_cohorts_call(args)
+    stream.finished("AwaitingConfirmation")
+    return stream
+
+
+def j2_confirm(run: Run, *, decision: Literal["create", "dont_save"], start: float = 30.0) -> Stream:
+    """The confirm turn: s5 Running (Create) or Skipped (Don't save), then Observed, the card, Complete."""
+    stream = Stream(run)
+    stream.started()
+    run.status, run.pending = "Executing", None
+    limitations = [PANEL_RANKING]
+    if decision == "create":
+        run.set_step("s5", status="Running")
+        stream.snapshot(iso(start))
+        stream.add(StepStartedFrame(type="STEP_STARTED", step_name="s5"))
+        stream.add(StepFinishedFrame(type="STEP_FINISHED", step_name="s5"))
+        run.set_step("s5", status="Done", output_summary="1 cohort saved and read back", duration_ms=5)
+        run.set_cohort("high", save="saved", cohort_id=HIGH_COHORT_ID, saved_name=HIGH_NAME)
+    else:
+        run.set_step("s5", status="Skipped", output_summary="Not saved: you chose Don't save", code="WRITE_SKIPPED")
+        run.set_cohort("high", save="skipped")
+        run.limitations = [WRITE_SKIPPED_ONE]
+        stream.snapshot(iso(start))
+        limitations.append(WRITE_SKIPPED_ONE)
+    j2_answer(run, limitations)
+    stream.snapshot(iso(start + 0.1))
+    j2_model_text(run)
+    end_with_answer(stream, start + 3.2)
+    return stream
+
+
+def j2_variant(seed: str) -> Run:
+    """A J2 run brought to its save pause silently, for a fixture that starts there."""
+    run = j2_run(seed)
+    j2_pause(run, hexid(f"{seed}/nonce-1"))
+    return run
 
 
 # --- The largest views the contract allows (contract "Size: 32 KB"; tests/test_contract.py) -------------------
@@ -1538,8 +1691,11 @@ def build_request_examples() -> str:
         ("warmup when the Assistant opens", j1t, hexid("warmup/run"), [], {"action": "warmup"}),
         ("ask, J3", j3t, j3r, user("j3/message", J3_QUESTION),
          {"action": "ask", "question": J3_QUESTION, "cohortContext": all_cases_context()}),
-        ("ask, the follow-up chip after J1, carrying the J1 card's viz report", j1t, hexid("oncomatrix/run"), user("oncomatrix/message", ONCO_QUESTION),
-         {"action": "ask", "question": ONCO_QUESTION, "cohortContext": all_cases_context(), "vizReports": [report]}),
+        ("ask, J2: top mutated genes in a planned cohort, saved after one confirmation", hexid("j2/thread"), hexid("j2/run"),
+         user("j2/message", ONCO_QUESTION), {"action": "ask", "question": ONCO_QUESTION, "cohortContext": all_cases_context()}),
+        ("ask, the follow-up chip after J1 with CGS high-risk already saved (reused, no save), carrying the J1 card's viz report",
+         j1t, hexid("oncomatrix/run"), user("oncomatrix/message", ONCO_QUESTION),
+         {"action": "ask", "question": ONCO_QUESTION, "cohortContext": high_saved_context(), "vizReports": [report]}),
         ("ask that first cancels the paused run (cancelWaiting)", hexid("cancel-waiting/thread"), hexid("cancel-waiting/new"),
          user("cancel-waiting/message", CLARIFY_QUESTION),
          {"action": "ask", "question": CLARIFY_QUESTION, "cohortContext": all_cases_context(), "cancelWaiting": hexid("cancel-waiting/old")}),
@@ -1548,6 +1704,9 @@ def build_request_examples() -> str:
         ("consent, accepted", hexid("consent/thread"), hexid("consent/run"), [], {"action": "consent", "accept": True}),
         ("consent, declined", hexid("consent/thread"), hexid("consent/run"), [], {"action": "consent", "accept": False}),
         ("confirm, Create with make-active", j3t, j3r, [], {"action": "confirm", "nonce": J3_NONCE, "decision": "create", "saved": saved, "makeActive": "kras_mut"}),
+        ("confirm, Create of J2's one cohort", hexid("j2/thread"), hexid("j2/run"), [],
+         {"action": "confirm", "nonce": J2_NONCE, "decision": "create", "makeActive": None, "saved": [
+             {"ref": "high", "cohortId": HIGH_COHORT_ID, "name": HIGH_NAME, "defSha256": def_sha256(HIGH_DEF), "reused": False}]}),
         ("confirm, Don't save", hexid("j3-dont-save/thread"), hexid("j3-dont-save/run"), [],
          {"action": "confirm", "nonce": variant_nonce("j3-dont-save"), "decision": "dont_save", "saved": [], "makeActive": None}),
         ("edit_plan, scope chip (altScopeChoice or a scope picked on the plan card)", j3t, j3r, [],
@@ -1579,6 +1738,14 @@ def _call(
     elapsed: int, provenance: list[Provenance], http_status: int | None, *, attempt: int = 1, status: ToolStatus = "ok",
     error: str | None = None, limitation: Code | None = None,
 ) -> CallRecord:
+    """One attempt, its request and Observed written as the tool writes them: through the catalog's
+    Input and Observed models (tools/schemas.py), so requestSha256 and responseSha256 are what a
+    tool's own output hashes to."""
+    spec = catalog.tool_spec(tool)
+    request = spec.input_model.model_validate(request).model_dump(mode="json")
+    if observed is not None:
+        assert spec.observed_model is not None, f"{tool} records its Observed"
+        observed = spec.observed_model.model_validate(observed).model_dump(mode="json")
     return CallRecord(
         call_id=call_id(run_id, 1, step_id, n), plan_version=1, step_id=step_id, tool=tool, transport=transport, attempt=attempt,
         started_at=iso(started), request=request, request_sha256=sha256_hex(canonical_json(request, portable=False)),
@@ -1594,16 +1761,16 @@ def _prov(method: str, path: str, seed: str, ms: int, status: int | None = 200) 
     )
 
 
-def _curve(drop: float) -> list[JsonValue]:
-    return [{"time": t, "survival": round(1 - drop * i, 3)} for i, t in enumerate((0, 365, 730, 1095, 1460, 2190))]
+def _points(curve: KmCurve) -> list[JsonValue]:
+    return [point.model_dump(mode="json") for point in curve.points]
 
 
 J1_S4_OBSERVED: dict[str, JsonValue] = {
     "groups": [
-        {"label": "High risk", "cases": 339, "events": 299, "curve": _curve(0.15)},
-        {"label": "Standard risk", "cases": 661, "events": 300, "curve": _curve(0.08)},
+        {"label": "High risk", "cases": 339, "events": 299, "curve": _points(J1_CURVES[0])},
+        {"label": "Standard risk", "cases": 661, "events": 300, "curve": _points(J1_CURVES[1])},
     ],
-    "pValue": J1_P, "engine": "gen3-analysis@ffa4069",
+    "pValue": J1_P, "engine": catalog.ENGINE_GEN3_ANALYSIS,
 }
 
 
@@ -1625,10 +1792,7 @@ def j1_survival(rid: str, n: int, started: float) -> list[CallRecord]:
     return [
         _call(rid, "s4", n, "survival_compare", "in_process", started, J1_S4_REQUEST, J1_S4_OBSERVED, 1290,
               [_prov("POST", "/analysis/v0/survival/", f"s4{x}{n}", 400) for x in "abc"], 200),
-        _call(rid, "s5", 1, "derive_km_median", "in_process", started + 1.3, {"curves": "s4"}, {
-            "version": "derive_km_median@1", "unit": "days",
-            "groups": [{"label": "High risk", "median": 1095, "reached": True}, {"label": "Standard risk", "median": 2190, "reached": True}],
-        }, 3, [], None),
+        _call(rid, "s5", 1, "derive_km_median", "in_process", started + 1.3, {"curves": "s4"}, J1_MEDIANS.model_dump(mode="json"), 3, [], None),
     ]
 
 
@@ -1647,7 +1811,8 @@ def j1_compiled(plan: PlanView) -> CompiledPlan:
     )
 
 
-J1_ENGINES: dict[str, str | None] = {"s1": "fixture-fingerprint@1", "s2": "guppy@e318cf6", "s3": "guppy@e318cf6", "s4": "gen3-analysis@ffa4069", "s5": None}
+# FactRecord.engine is the step's tool's engine (ToolSpec.engine, TOOLS.md 1 "Engines"); null for ORION's functions.
+J1_ENGINES: dict[str, str | None] = {spec.id: catalog.tool_spec(spec.tool).engine for spec in j1_compiled(j1_plan_view()).steps}
 
 
 def j1_record(run: Run, final: RunView, calls: list[CallRecord], actions: list[ActionLogEntry], composer_at: float) -> str:
@@ -1669,7 +1834,7 @@ def j1_record(run: Run, final: RunView, calls: list[CallRecord], actions: list[A
 
     def model_call(role: ModelRole, effort: Literal["low", "medium"], start: float, ms: int, inp: int, out: int) -> ModelCallRecord:
         return ModelCallRecord(
-            call_id=model_call_id(rid, role, 1, None if role == "planner" else 1), role=role, model="anthropic.claude-opus-5-5",
+            call_id=model_call_id(rid, role, 1, None if role == "planner" else 1), role=role, model=PLANNER_MODEL,
             fallback=False, effort=effort, attempt=1, started_at=iso(start), elapsed_ms=ms, outcome="ok", stop_reason="end_turn",
             input_tokens=inp, output_tokens=out, cache_read_tokens=7120, cache_write_tokens=0,
         )
@@ -1678,8 +1843,8 @@ def j1_record(run: Run, final: RunView, calls: list[CallRecord], actions: list[A
     record = RunRecord(
         thread_id=run.thread_id, run_id=rid, revision=final.revision, status=final.status, code=None, question=J1_QUESTION,
         created_at=iso(0.1), updated_at=final.updated_at,
-        environment=Environment(mode="L", planner="bedrock", executor="engine", agent_version="0.2.0", tool_transport="in_process",
-                                fingerprint_sha256=FP_SHA),
+        environment=Environment(mode="L", planner="bedrock", composer="bedrock", executor="engine", agent_version="0.2.0",
+                                tool_transport="in_process", fingerprint_sha256=FP_SHA),
         lease=None,
         request=AskAction.model_validate({"action": "ask", "question": J1_QUESTION, "cohortContext": all_cases_context()}),
         planner_output=plan_ir,
@@ -1725,8 +1890,9 @@ def j1_retry_record(run: Run, final: RunView) -> str:
 # --- Assembly ------------------------------------------------------------------------------------------------------
 
 STREAMS = (
-    "j1-stub", "j1-complete", "j1-partial", "j1-retry", "j1-stop", "j3-save-pause", "j3-after-confirm", "j3-edit-at-pause",
-    "j3-dont-save", "j3-deinput", "oncomatrix", "clarify", "consent", "interrupted", "cancel-waiting",
+    "j1-stub", "j1-complete", "j1-partial", "j1-retry", "j1-stop", "j2-save-pause", "j2-after-confirm", "j2-dont-save",
+    "j3-save-pause", "j3-after-confirm", "j3-edit-at-pause", "j3-dont-save", "j3-deinput", "oncomatrix", "clarify", "consent",
+    "interrupted", "cancel-waiting",
 )
 
 
@@ -1735,6 +1901,9 @@ def build_all() -> dict[str, str]:
     retry_run = j1_retry_run()
     partial = j1_partial(retry_run)
     retried = j1_retry(retry_run)
+    j2 = j2_run()
+    j2_paused = j2_pause(j2, J2_NONCE)
+    j2_after = j2_confirm(j2, decision="create")
     j3 = j3_run()
     pause = j3_pause(j3)
     j3_after = j3_confirm(j3)
@@ -1744,6 +1913,9 @@ def build_all() -> dict[str, str]:
         "j1-partial.events.jsonl": partial.text(),
         "j1-retry.events.jsonl": retried.text(),
         "j1-stop.events.jsonl": j1_stop().text(),
+        "j2-save-pause.events.jsonl": j2_paused.text(),
+        "j2-after-confirm.events.jsonl": j2_after.text(),
+        "j2-dont-save.events.jsonl": j2_confirm(j2_variant("j2-dont-save"), decision="dont_save").text(),
         "j3-save-pause.events.jsonl": pause.text(),
         "j3-after-confirm.events.jsonl": j3_after.text(),
         "j3-edit-at-pause.events.jsonl": j3_edit_rename(j3_variant("j3-edit")).text(),

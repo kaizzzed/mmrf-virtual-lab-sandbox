@@ -46,6 +46,7 @@ from orion_agent.tools.schemas import (
     tool_spec,
 )
 from orion_agent.tools.server import build_server_tools
+from orion_agent.tools.vlab import wire_json
 
 CONTRACTS = Path(os.environ.get("ORION_CONTRACTS_DIR", "/contracts"))
 VECTORS = CONTRACTS / "fixtures" / "request-pinned-vectors.json"
@@ -60,6 +61,19 @@ def _golden_dir() -> Path | None:
 
 
 GOLDEN_DIR = _golden_dir()
+
+
+def key_paths(value: Any) -> list[str]:
+    """Every object key as a pointer (array items as *), in the order the objects hold them."""
+
+    def walk(node: Any, at: str) -> list[str]:
+        if isinstance(node, dict):
+            return [p for key, child in node.items() for p in [f"{at}/{key}", *walk(child, f"{at}/{key}")]]
+        if isinstance(node, list):
+            return [p for child in node for p in walk(child, f"{at}/*")]
+        return []
+
+    return list(dict.fromkeys(walk(value, "")))
 
 
 def diff_pointers(a: Any, b: Any, at: str = "") -> list[str]:
@@ -215,6 +229,27 @@ class BodiesAgainstGoldenTests(unittest.TestCase):
         golden = goldens().payload(DE_RUN_REQUEST)
         self.assertEqual(default["volcanoRender"], obj(golden)["volcanoRender"])
         self.assertNotIn("/volcanoRender/significanceThresholds/pValueCutoff", diff_pointers(golden, default))
+
+    def test_de_run_sends_the_viewer_body_in_the_viewer_key_order(self) -> None:
+        # ProteinPaint's DE cache key (data.cacheId) depends on the body's key order, so the body
+        # de_run sends keeps the golden's order at every level: only then does the DE card's own
+        # request read the cache entry s9 made ("same entry as s9" in the card's request list).
+        golden = goldens().payload(DE_RUN_REQUEST)
+        self.assertEqual(list(obj(golden))[:4], ["kind", "genome", "dslabel", "method"])
+        groups = [{"name": "KRAS not detected (ORION)", "sampleIds": [3, 7]}, {"name": "KRAS mutated (ORION)", "sampleIds": [1, 2]}]
+        body = bodies.de_run_body(DeRunInput.model_validate({"groups": groups, "method": "wilcoxon"}), goldens())
+        # filter0 is a substitution (null for the golden's {"and": []}), so its inside is not compared.
+        expected = [p for p in key_paths(golden) if not p.startswith("/filter0/")]
+        self.assertEqual(key_paths(body), expected)
+        self.assertEqual(key_paths(json.loads(wire_json(body))), expected)
+
+    @unittest.skipIf(GOLDEN_DIR is None, "orion/golden is not mounted (mount it at /golden or set ORION_GOLDEN_DIR)")
+    def test_the_snapshot_keeps_each_golden_payload_in_its_captured_key_order(self) -> None:
+        assert GOLDEN_DIR is not None
+        from_dir, from_snapshot = GoldenStore.from_dir(GOLDEN_DIR), GoldenStore.from_snapshot()
+        for file, index in GOLDEN_REQUESTS:
+            with self.subTest(golden=f"{file}#{index}"):
+                self.assertEqual(wire_json(from_snapshot.request(file, index).payload), wire_json(from_dir.request(file, index).payload))
 
     def test_fill_refuses_an_undeclared_pointer(self) -> None:
         with self.assertRaises(bodies.BodyError):

@@ -93,6 +93,7 @@ ToolErrorCode = Literal[
     "UPSTREAM_SHAPE",  # a 2xx response that does not match `output_schema`
     "NOT_CONNECTED",  # kg_query before its target is registered (KG_NOT_CONNECTED)
     "CANCELLED",  # a Stop or an edit aborted the attempt; never retried
+    "INTERNAL_ERROR",  # an executor function raised; its CallRecord's error starts "INTERNAL_ERROR"
 ]
 
 
@@ -214,8 +215,11 @@ class RetryHook(Protocol):
 class ToolClient(Protocol):
     """Calls a server tool in-process (mode L) or through Gateway MCP over SigV4 (modes A and H).
 
-    Applies the A4 budget: per-attempt `timeout_s`, one retry with an identical body on 429, 502,
-    503, 504 or a timeout (after BACKOFF_429_S on 429), and never raises for a tool failure: the
+    Applies the A4 budget. `timeout_s` is one attempt's budget: the executor passes the step
+    timeout, STEP_TIMEOUT_S (60 s), and the client gives the tool's HTTP requests at most
+    TOOL_HTTP_TIMEOUT_S (55 s) of it (behind Gateway, the Lambda's LAMBDA_TIMEOUT_S sits between
+    the two). One retry with an identical body on 429, 502, 503, 504 or a timeout (after
+    BACKOFF_429_S on 429), all within STEP_CAP_S, and it never raises for a tool failure: the
     outcome's result has status `error` or `unavailable` instead. `on_retry` runs before the
     backoff of a retry, so the executor can report the step Retrying (StepSession.retrying).
     The attempts take callIds `<runId>.v<plan_version>.<step_id>.c<first_call>`, then c<first_call + 1>.

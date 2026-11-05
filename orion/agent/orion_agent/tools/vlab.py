@@ -8,6 +8,11 @@ deployment. The Basic credential is attached only over https, or to a loopback h
 `requestSha256` hashes the canonical JSON of the payload sent (`null` for a payload-free GET:
 models.Provenance requires a hash), `responseSha256` the canonical JSON of the parsed response
 body, null when the body is not JSON. Both use canonical_json(portable=False), as record hashes do.
+
+The body on the wire is the payload's own JSON, keys in the payload's order (`wire_json`), not the
+canonical form: a golden-based payload keeps the order the native viewer sends. ProteinPaint keys
+its DE result cache (`data.cacheId`) on the body as sent, key order included, so only then does the
+viewer's identical request read the entry `de_run` made, as the viz card's request list states.
 """
 
 import json
@@ -46,6 +51,12 @@ class VlabRequestError(Exception):
         super().__init__(str(cause))
         self.cause = cause
         self.provenance = provenance
+
+
+def wire_json(payload: JsonValue) -> str:
+    """A request body as sent: compact JSON in the payload's own key order (as the browser's
+    JSON.stringify writes it), non-ASCII unescaped, NaN and infinities refused."""
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 def _is_local(host: str) -> bool:
@@ -126,7 +137,7 @@ class VlabClient:
             raise PermissionError(f"{method} {path} is not an allow-listed tool request")
         if method == "GET" and payload is not None:
             raise ValueError("a GET carries no payload")
-        body = None if method == "GET" else canonical_json(payload, portable=False).encode("utf-8")
+        body = None if method == "GET" else wire_json(payload).encode("utf-8")
         request_sha256 = sha256_hex(canonical_json(payload, portable=False))
         headers: list[tuple[str, str]] = [("Accept", "application/json")]
         if body is not None:

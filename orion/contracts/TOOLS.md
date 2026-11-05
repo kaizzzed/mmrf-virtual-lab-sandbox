@@ -1,4 +1,4 @@
-# ORION tool and step catalog (v1, 2026-11-05)
+# ORION tool and step catalog (v1.1, 2026-11-05)
 
 The catalog every builder codes against: the ten server tools, four executor functions and five
 client actions, the step tables the compiler emits and the executor runs, the facts each step
@@ -40,6 +40,9 @@ Contents: 1 Conventions · 2 Server tools · 3 Executor functions · 4 Client ac
   tool's Input model and sends it. That resolved Input is the call's **`request`** (CallRecord),
   and `requestSha256` is the sha256 of its canonical JSON (`portable=False`). The Gateway Lambda
   never sees a reference.
+- A nullable Input field (`top_mutated_genes.filter0`, `survival_compare.scope` and `.split`)
+  defaults to null: the Gateway's tool schema cannot say "or null", so omitting the key equals
+  sending null. The recorded `request` always writes the key, so its hash does not depend on it.
 - `de_run` and `save_cohorts` steps carry their own args models (`DeRunStepArgs`,
   `SaveCohortsStepArgs`), because they also read the confirm read-back (5.3, 5.8).
 - An **executor function**'s Input names earlier steps by bare step id (`{"curves": "s4"}`) and is
@@ -59,8 +62,11 @@ cohorts a `save_cohorts` step saves, and, for a step after a write step, that wr
 
 An edit marks a step Reused when its input hash equals a finished step's of the previous version
 (contract "The edit sequence"). The input hash is the sha256 of the canonical JSON of
-`{"tool", "version", "args"}` in which every StepRef and every bare step id an executor Input names
-is replaced by the referenced step's own input hash. A step whose args name a proposed cohort name
+`{"tool", "version", "args", "dependsOn"}` in which every StepRef and every bare step id an
+executor Input names is replaced by the referenced step's own input hash, and `dependsOn` lists the
+input hashes of the steps it names. `dependsOn` matters where args do not change: a J2 save's args
+(`{ref, name}`) are the same after a scope edit, but its cohort's defining step changed, so it is
+not Reused (`compiler.step_input_hashes`, `executor.input_hashes`). A step whose args name a proposed cohort name
 (`save_cohorts`, `de_run`) changes when that name is edited; so a Rename at the J3 save pause
 reuses s1 to s7, re-pauses s8 with a new nonce and reruns s9 and s10 (`j3-edit-at-pause`).
 
@@ -68,18 +74,26 @@ reuses s1 to s7, re-pauses s8 with a new nonce and reruns s9 and s10 (`j3-edit-a
 
 - `provenance` lists every HTTP request of the attempt, in order:
   `{method, path, requestSha256, httpStatus, responseSha256, elapsedMs}`. `requestSha256` hashes the
-  canonical JSON of the payload sent (`null` for a payload-free GET), `responseSha256` the canonical
-  JSON of the parsed response body (null when there was none), both `portable=False`.
+  canonical JSON of the payload sent (for a payload-free GET, the sha256 of the canonical JSON
+  `null`: `models.Provenance.request_sha256` is never null), `responseSha256` the canonical JSON of
+  the parsed response body (null when there was none), both `portable=False`.
 - Every request is sent as a JSON POST of its payload, except a payload-free GET. The gateway turns
   a ProteinPaint GET carrying `filter0`, `filter` or `samplelst` into that same POST anyway.
+- The body sent is the payload's own JSON, keys in the payload's order (`vlab.wire_json`), so a
+  golden-based body keeps the native viewer's key order; only the hashes use canonical JSON.
+  ProteinPaint keys its DE result cache (`data.cacheId`) on the body as sent, key order included, so
+  the DE card's own request reads the entry `de_run` made only when the two bodies match byte for
+  byte (checked live in mode L: the card's request list says "same entry as s9").
 - A tool reads at most `MAX_UPSTREAM_BYTES` (16 MiB) of an upstream body, and its Observed is at most
   `MAX_TOOL_RESPONSE_BYTES` (6,000,000 bytes of canonical JSON), below Lambda's 6 MB synchronous
   limit. Either cap exceeded is `UPSTREAM_SHAPE`.
 
 ### Timeouts and retries (A4)
 
-`timeout_s` (55 s, `TOOL_HTTP_TIMEOUT_S`) is one attempt's budget; a multi-request tool gives each
-request what remains. The executor's step timeout is 60 s and the step cap 130 s. Server reads retry
+`ToolClient.call`'s `timeout_s` is one attempt's budget: the executor passes the step timeout,
+60 s (`STEP_TIMEOUT_S`), and the client gives the tool's HTTP requests at most 55 s
+(`TOOL_HTTP_TIMEOUT_S`) of it; a multi-request tool gives each request what remains. Behind Gateway
+the Lambda's 58 s (`LAMBDA_TIMEOUT_S`) sits between the two. The step cap is 130 s (`STEP_CAP_S`). Server reads retry
 **once**, with an identical body (the same resolved Input, so every request of the attempt is
 re-sent), on 429, 502, 503, 504 or a timeout; a 429 backs off 10 to 20 s first. Executor functions
 never retry (they are deterministic). Client writes never retry. `kg_query` never retries.
@@ -95,12 +109,14 @@ never retry (they are deterministic). Client writes never retry. `kg_query` neve
 | Any other non-2xx (the gateway's 400 "Invalid sandbox request", 401, 403, 404, 500) | `HTTP_ERROR` | no | `error` | Failed | `TOOL_FAILED` |
 | No response within the attempt budget | `TIMEOUT` after the retry | once | `error` | Failed | `TOOL_FAILED` |
 | 2xx body not JSON, not the expected shape, a GraphQL `errors` array, or a size cap exceeded | `UPSTREAM_SHAPE` | no | `error` | Failed | `TOOL_FAILED` |
-| Stop or an edit aborted the attempt | `CANCELLED` | never | `error` | Skipped "Not run: stopped" | none |
+| Stop or an edit aborted the attempt | `CANCELLED` | never | `error` | Skipped "Not run: stopped" (with how long it ran) | none |
+| An executor function raised | `INTERNAL_ERROR` | never | `error` | Failed | `TOOL_FAILED` |
 | `kg_query` before its target exists | `NOT_CONNECTED` | no | `unavailable` | Skipped | `KG_NOT_CONNECTED`; run Limited |
 
 The `TOOL_FAILED` line uses template `tool.failed` with `TOOL_PHRASES`, `FAILURE_PHRASES` and
-`MISSING_PHRASES` (7.2). An executor function that raises fails its step the same way (failure
-phrase `FAILED`, the CallRecord `error` starting `INTERNAL_ERROR`).
+`MISSING_PHRASES` (7.2). An executor function that raises fails its step the same way (the
+CallRecord `error` starting `INTERNAL_ERROR`, failure phrase "failed"; `FAILED` is the phrase for
+an error with no code).
 
 ### Guards
 
@@ -174,7 +190,8 @@ golden payload is sent unchanged. Tools read goldens from `ORION_GOLDEN_DIR` (de
   `filter0 {"and": []}`).
 - **Observed** (`FixtureFingerprintObserved`): `{"document", "fingerprintSha256"}`. `document` is
   `models.fingerprint_document(status, version, healthcheck, ranking)` with the ranking normalised
-  as for `top_mutated_genes` (`[{gene, cases}]`, returned order); `fingerprintSha256` is
+  as for `top_mutated_genes` (`[{gene, cases}]`, returned order, a gene without a `dt` 1 entry
+  kept with cases 0, as the browser's mode H check reads it); `fingerprintSha256` is
   `models.fingerprint_sha256(document)` and becomes `RunView.environment.fingerprintSha256`.
 - **Guards.** None. It runs only after the plan compiles: a compile-time stop makes no data call.
 - **Empty.** Never empty. A missing `versionInfo` is `UPSTREAM_SHAPE`.
@@ -234,8 +251,9 @@ golden payload is sent unchanged. Tools read goldens from `ORION_GOLDEN_DIR` (de
   `filter0` is the cohort's case-ID filter (`case_id_filter`, C-CASEIDS), null for all cases;
   `geneCount` is top N (1 to 50).
 - **Observed.** `{"genes": [{gene, cases}], "nextGene"?}`. `cases` is the `count` of the gene's
-  `mutationStat` entry with `dt` 1 (SNV/indel; the sandbox has no other class, any other is dropped
-  with a warning). `genes` are the first `geneCount` rows in returned order: the card's pinned
+  `mutationStat` entry with `dt` 1 (SNV/indel; the sandbox has no other class). A gene with no
+  `dt` 1 entry normalises to cases 0 and keeps its place (it is not dropped); an entry of any other
+  `dt` is dropped with a warning. `genes` are the first `geneCount` rows in returned order: the card's pinned
   `genes`. `nextGene` is the extra row, read only so `rank_top_n` can see a tie at the cutoff.
 - **Guards.** pre `filter0_bridge_safe` -> `UNSUPPORTED_FIELD` (the executor checks `filter0` names
   only `case_id` or fields whose vocabulary `es_only` is false; the gateway's bridge answers 400 for
@@ -261,7 +279,8 @@ golden payload is sent unchanged. Tools read goldens from `ORION_GOLDEN_DIR` (de
   distinct donor time t ascending, the engine's estimate just after t: the `survivalEstimate` of a
   censored donor at t; else of an event donor at the next distinct time (the engine gives event
   donors the estimate before their event); else of a censored donor at the next time (no event
-  there, so no drop); else 0 (t is the last time and every donor there had the event).
+  there, so no drop); else 0 (t is the last time and every donor there had the event). Times are
+  written as floats (`base.KmPoint.time`), so a Gen3 time of 30 is recorded as 30.0.
 - **Guards.** pre `group_cases>=10` -> `INELIGIBLE_GROUP` (stop; the executor reads each group's count
   fact from `dependsOn`, so no survival call is made for a small group); post
   `every_group_has_a_curve` -> `EMPTY_COHORT` (stop; Gen3 Analysis drops a group with no survival
@@ -343,7 +362,7 @@ provenance). Signatures and result models are in `tools/base.py`.
 | `set_operation` | `{"op", "a", "b"?}` (`b` absent only for `size`) | `a`'s and `b`'s `/observed/caseIds` | `SetOperationResult` (`caseIds` sorted; empty for `size`) | post `count>0` -> `EMPTY_COHORT` (stop) | `f.sN.count` (`/observed/count`, cases, `${cases_label}` of the resulting cohort) |
 | `check_subset` | `{"inner", "outer"}` | both `/observed/caseIds` | `SubsetResult` | post `inner_subset_of_outer` -> `NOT_SUBSET` (report) | `f.sN.outside` (`/observed/outsideCount`, cases, "${inner} outside the tested cases") |
 | `rank_top_n` | `{"rows", "key", "rankBy", "n", "ascending", "tieBreak", "thresholds"?}` | `RANK_SOURCES[tool of rows]` | `RankResult` | post `rows>=n` -> `FEWER_THAN_N`, post `no_ties_at_cutoff` -> `TIES_AT_CUTOFF` (both report) | `RANK_FACT_SPECS` (below) |
-| `derive_km_median` | `{"curves"}` | `/observed/groups[].{label, curve}` | `KmMedianResult` (unit `days`) | none | `f.sN.median.<key>` (`/observed/groups/<i>/median`, days, "${group} median overall survival"; only when reached) |
+| `derive_km_median` | `{"curves"}` | `/observed/groups[].{label, curve}` | `KmMedianResult` (unit `days`; `median` a float, as the curve's time) | none | `f.sN.median.<key>` (`/observed/groups/<i>/median`, days, "${group} median overall survival"; only when reached) |
 
 - **`set_operation`.** `difference` a minus b, `intersection`, `union`, `size` (count of a). A
   difference always follows a `check_subset(inner=b, outer=a)` (C-GUARD).
@@ -442,7 +461,10 @@ IR: a filter cohort (J2's race cohort) and `top_mutated_genes {cohort, n?}`. Unf
 | s5 | 3 "Save 1 cohort" | `save_cohorts` | `{"cohorts": [{"ref": <cohort>, "name": "<name> (ORION)"}]}` | W | none | `save.skipped_one` on Don't save |
 
 The run pauses at s5 (AwaitingConfirmation, `eligibleCount` null) once s1 to s4 are Done; Observed
-and the card render when the run reaches Answering after the confirm turn. The saved cohort's
+and the card render when the run reaches Answering after the confirm turn (fixtures `j2-save-pause`,
+`j2-after-confirm`, `j2-dont-save`; Don't save writes `save.skipped_one` and turns hand-off off).
+When the browser already holds a saved cohort with the same definition, the compiler marks it
+`reused` and plans no save step (choice 15): the `oncomatrix` fixture. The saved cohort's
 definition is its filter (scope clauses plus the cohort's, `kind: filter`), so an identical saved
 filter cohort is reused. A filtered scope adds the scope's `cases_query` as s2 (row 1 "Find cases
 in {scope}"), the cohort's `cases_query` filter becomes `{"and": [scopeFilter, cohort clauses...]}`
@@ -514,11 +536,13 @@ OncoMatrix shows the first n). Frozen table: `Gene`, `Mutated cases` from `rank_
 ### 5.6 The DEinput fallback (cut 2)
 
 The same J3 steps. The DE card uses launcher `deInput` instead of `deDirect` only when the deployment
-selects the fallback (`ORION_DE_LAUNCHER=deInput`, proposed setting) **and** both groups are saved or
-reused, so `de_run`'s request carries `cohortId` and `filter0` and
+selects the fallback (`ORION_DE_LAUNCHER=deInput`, `Settings.de_launcher`, default `deDirect`) **and**
+both groups are saved or reused, so `de_run`'s request carries `cohortId` and `filter0` and
 `derive_request_pinned("deInput")` has what it needs (`j3-deinput`). After Don't save the card stays
 `deDirect` and hand-off is off (`WRITE_SKIPPED`). The caption tells the researcher to choose
-Wilcoxon and click Run.
+Wilcoxon and click Run. Separately, a `deDirect` card whose viewer fails falls back to DEinput in
+the browser, from the cited `de_run` call's recorded request, when both groups are saved (contract
+"Viz specs", client fallback).
 
 ### 5.7 Step summaries
 
@@ -534,7 +558,7 @@ Code text on the step row (exempt from fact chips), as the fixtures write them:
 | `set_operation` | Mutation-tested minus {GENE}-mutated | {n} case IDs |
 | `sample_lists` | Both groups as ProteinPaint samples | {a} and {b} samples |
 | `de_preanalysis` | RNA-seq-eligible samples per group | {a} and {b} RNA-seq eligible |
-| `save_cohorts` | {name}, {name} | 2 cohorts saved and read back / 1 saved, 1 reused / Not saved: you chose Don't save |
+| `save_cohorts` | {name}, {name} | {n} cohort(s) saved and read back / {n} cohort(s) reused / {a} saved, {b} reused / Not saved: you chose Don't save |
 | `de_run` | {Method}, {control} vs. {case} | {significant} of {tested} genes past the thresholds |
 | `rank_top_n` | Top {n} by adjusted p / Top {n} by mutated cases, ties disclosed | Top {n} by adjusted p, no ties / Top {n}, no ties / Top {n}, {k} tied |
 | `top_mutated_genes` | {cohort values} cases, top {n} | {n} genes |
@@ -582,10 +606,10 @@ Failed and skipped rows: "Timed out on both attempts", "Not run: s4 failed", "No
 | C-GUARD | `check_subset(inner=b, outer=a)` before every `set_operation difference`; the guards of section 2 |
 | C-CASEIDS | case-ID StepRefs wherever ProteinPaint needs a cohort (`filter0`, `sample_lists`) |
 | C-SPLIT | `split.overlay` = the field's ProteinPaint twin; no twin: `split` null, no survival card |
-| C-SAVE | J2: one `save_cohorts` after the ranking; DE: one `save_cohorts` of both groups after `de_preanalysis` and before `de_run`; `writes: true` |
+| C-SAVE | J2: one `save_cohorts` after the ranking; DE: one `save_cohorts` of both groups after `de_preanalysis` and before `de_run`; `writes: true` (or reuses at compile time, choice 15) |
 | C-DEFAULTS | DE: `method` wilcoxon (`DE_METHOD_WILCOXON`), `rankBy` adjusted p (`RANK_ADJ_P`), thresholds adjusted p < 0.05 and abs(log2FC) > 0.3 (`DE_THRESHOLDS_VIEWER`), control = group1 first (`CONTROL_FIRST`); top N 10 for DE and 3 for top mutated genes when the question gives none (`TOP_N_DEFAULT`) |
 | J2, J3 | `rank_top_n` after `top_mutated_genes` and `de_run`; `sample_lists` and `de_preanalysis` before the DE save |
-| CALL_BUDGET | each step is one counted call; a plan over 20 steps stops at compile time |
+| CALL_BUDGET | each step is one counted call; a plan over 20 steps, or one whose largest view the compiler estimates over 32 KB, stops at compile time (choice 18) |
 
 Assumption texts follow the fixtures ("Method: Wilcoxon rank-sum", "Genes ranked by adjusted
 p-value", "Thresholds: adjusted p < 0.05 and |log2FC| > 0.3, the viewer's defaults",
@@ -604,7 +628,8 @@ p-value", "Thresholds: adjusted p < 0.05 and |log2FC| > 0.3, the viewer's defaul
 | `save_cohorts` | Cohort Builder saves cohorts after your click |
 | `de_run` | Differential Expression runs the comparison in its own viewer |
 
-The first four are `catalog.TOOL_REASONS`; the last three must be added there. Proposed names
+These are `catalog.TOOL_REASONS` (`tests/test_tool_schemas.py` keeps the two equal, and every
+fixture row's reason starts with its tool's). Proposed names
 carry " (ORION)": `{GENE} mutated (ORION)`, `{GENE} not detected (ORION)`, a filter cohort's name
 plus the suffix; definition texts as the fixtures write them ("Mutation-tested cases with a KRAS
 mutation, as a case-ID list").
@@ -613,7 +638,7 @@ mutation, as a case-ID list").
 
 | `plan.editable` | Offered for | Changes |
 | --- | --- | --- |
-| `scope` | every plan | every step's args (recompile); signature |
+| `scope` | every plan, listed first (the card offers any edit only while the run's status accepts `edit_plan`, so not while AwaitingConsent or Clarifying) | every step's args (recompile); signature |
 | `method` | DE | `de_run.method`; row 6 label; `DE_METHOD_*` assumption; s9 input summary |
 | `topN` (max 100 DE, 50 genes) | DE, top mutated genes | `rank_top_n.n`; for top mutated genes also `top_mutated_genes.geneCount` |
 | `thresholds` | DE | `de_run.thresholds` and `rank_top_n.thresholds`; `de.totals_edited`, `viz.de.note_edited` |
@@ -695,7 +720,7 @@ contract's and the compiler's.
 | Analysis | `appId`, `launcher` | `citesSteps` (first derives `requestPinnedHash`) | Pinned from | Title | Caption | Frozen columns, rows, note | `cohortRefs` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | survival by a split | `Correlation`, `survival` | the `survival_compare` step | its request: `filter0` = scope, `term`, `overlay` | `Overall survival by ${split}` | `viz.survival.caption` with `VIEWER_P_ROUNDED`, else null | Group, Cases, Events, Median (days); per group the label, the count chip, the events chip, the median chip or "not reached"; note `Log-rank p = {{p}} (Gen3 Analysis)` | `["base"]` |
-| top mutated genes | `OncoMatrix`, `oncomatrix` | the `top_mutated_genes` step | its request's `filter0` and its Observed `genes` | `Top mutated genes: ${cohort}` | null | Gene, Mutated cases; up to 10 ranked rows; no note | the ranked cohort's ref, or `["base"]` |
+| top mutated genes | `OncoMatrix`, `oncomatrix` | the `top_mutated_genes` step | its request's `filter0` and its Observed `genes` | `Top mutated genes: ${cohort}` (the cohort's label: its name without " (ORION)") | null | Gene, Mutated cases; up to 10 ranked rows; no note | the ranked cohort's ref, or `["base"]` |
 | DE | `DE`, `deDirect` | `[de_run step, rank_top_n step]` | de_run's request: groups (name, sampleIds), method, volcano from thresholds | `Differential expression: ${case} vs. ${control}` (labels without " (ORION)") | `Table sorted by fold change. Sort by adjusted p-value to match the answer.` | Gene, log2FC, Adjusted p; the top 10; note `Ranked by ${rank_short}; {{significant}} genes passed the viewer's thresholds.` (or `viz.de.note_edited`) | `[control ref, case ref]` |
 | DE fallback | `DE`, `deInput` | as deDirect | de_run's request: groups (name, cohortId, filter0) | as deDirect | `viz.de_input.caption` | as deDirect | as deDirect |
 | cohort size | none | | | | | | |
@@ -714,9 +739,9 @@ the `WRITE_SKIPPED` reason (contract "Hand-off").
 Each is a decision where the design, the contract or the fixtures left room; builders follow it.
 
 1. **J2's save comes last** (s5, after the ranking), so J2's s1 to s4 keep the `oncomatrix`
-   fixture's ids and the analysis never waits on a write; Observed renders after the confirm. The
-   `oncomatrix` fixture itself (a planned filter cohort, no save) predates C-09: under this catalog
-   its question compiles with a fifth step `save_cohorts`.
+   fixture's ids and the analysis never waits on a write; Observed renders after the confirm
+   (`j2-save-pause`, `j2-after-confirm`, `j2-dont-save`). The `oncomatrix` fixture is the same
+   question when the browser already holds the cohort, reused at compile time (choice 15).
 2. **Tie detection for top mutated genes** asks ProteinPaint for `geneCount + 1` genes and keeps the
    extra row as `nextGene`, so `genes` stays what the card pins.
 3. **C-23 everywhere:** a filtered scope's case IDs (not its clauses) reach every later step, Gen3
@@ -740,4 +765,24 @@ Each is a decision where the design, the contract or the fixtures left room; bui
 13. **Facts are cited by count steps, not by survival's own `cases`** (the J1 fixture has no
     `cases.<key>` fact); a survival group with fewer cases with survival data than its count is
     visible only in the call record.
-14. **The DE fallback is a deployment setting** (`ORION_DE_LAUNCHER`), not a per-run choice.
+14. **The agent's DE fallback is a deployment setting** (`ORION_DE_LAUNCHER`, `deDirect` or
+    `deInput`), not a per-run choice. The browser's own fallback when a viewer fails is the
+    contract's ("Viz specs", client fallback).
+15. **C-SAVE also reuses at compile time:** a cohort whose compile-time definition (a filter cohort,
+    or a thread cohort in the scope it was built in) hashes like a `cohortContext` saved cohort, or
+    like a ledger cohort whose id the cohort list still holds, gets save `reused` with `cohortId` and
+    `savedName`, and no save step. A plan whose cohorts are all reused writes nothing (E15's "Show
+    the top 5 instead" after Create).
+16. **A thread cohort is rebuilt as a planned cohort** by one `cases_query` of `scopeFilter` plus its
+    definition (a case-ID list becomes one `in` clause on `case_id`), so a scope switch intersects it
+    with the new scope.
+17. **Survival-between-cohorts group labels** are the cohorts' labels (name without " (ORION)" and
+    without the " cases" suffix).
+18. **The compile-time 32 KB estimate stops with `CALL_BUDGET`** (no data call; contract "Size: 32
+    KB": the compiler keeps plans inside the budget). `REQUEST_TOO_LARGE` stops at compile time only
+    when a step's own args exceed 8 MiB.
+19. **Edits are recorded as the patched IR**, with `CohortDef.name` and
+    `DifferentialExpression.thresholds` added when set. A method or threshold edit becomes a stated
+    value, so its default assumption (`DE_METHOD_WILCOXON`, `DE_THRESHOLDS_VIEWER`) is no longer listed.
+20. **Every plan lists the scope edit first** (6.4), in every fixture too; whether the card offers it
+    follows the run's status (the contract's `ACTION_STATUSES`), not `plan.editable`.

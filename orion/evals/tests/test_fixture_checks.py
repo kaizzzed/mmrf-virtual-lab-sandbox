@@ -170,8 +170,17 @@ class J2(unittest.TestCase):
         by_name = {c.name: c.status for c in checks}
         for name in ("cohort size", "denominator", "gene counts used to rank", "ties disclosed", "OncoMatrix shows the top genes"):
             self.assertEqual(by_name[name], "pass", name)
-        # The fixture predates C-09: under the catalog J2 saves its cohort once; this stream has no save.
+        # oncomatrix is the cohort already saved (TOOLS.md choice 15): reused at compile time, so no save pause.
         self.assertEqual(by_name["one confirmation"], "fail")
+
+    def test_the_j2_save_pause_and_confirm_pass_every_check(self) -> None:
+        """Contract v1.2's J2 fixtures: the save comes last (s5), one confirmation saves the one cohort."""
+        ev = fixture_evidence("J2", ("j2-save-pause.events.jsonl", "ask"), ("j2-after-confirm.events.jsonl", "confirm"))
+        exp = J2Expected([], [], 339, 339, 339, 3, {"KRAS": 163, "NRAS": 121, "DIS3": 97}, [("KRAS", 163), ("NRAS", 121), ("DIS3", 97)], [("KRAS", 163), ("NRAS", 121), ("DIS3", 97)], [], None)
+        checks = ec.j2_run(ev, exp)
+        self.assertEqual([f"{c.name}: {c.detail}" for c in checks if c.status == "fail"], [])
+        by_name = {c.name: c.status for c in checks}
+        self.assertEqual((by_name["one confirmation"], by_name["1 cohort(s) proposed"]), ("pass", "pass"))
 
     def test_an_undisclosed_tie_fails(self) -> None:
         ev = fixture_evidence("J2", ("oncomatrix.events.jsonl", "ask"))

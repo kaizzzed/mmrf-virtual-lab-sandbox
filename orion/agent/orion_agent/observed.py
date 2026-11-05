@@ -93,6 +93,15 @@ def failure_code(call: CallRecord | None) -> str:
     return head if head in catalog.FAILURE_PHRASES else "FAILED"
 
 
+def survival_count_steps(plan: CompiledPlan, survival: StepSpec) -> list[str]:
+    """The steps that size a survival_compare's groups, in group order: its counting dependencies, less the
+    filtered scope's cases_query (C-23: every group filter reads the scope's case IDs, so the scope is a
+    dependency too, but it is not a group)."""
+    specs = {s.id: s for s in plan.steps}
+    scope = next((s.id for s in plan.steps if s.tool == "cases_query" and not s.depends_on), None) if plan.scope.clauses else None
+    return [d for d in survival.depends_on if d in specs and specs[d].tool in COUNT_TOOLS and d != scope]
+
+
 def step_refs(value: JsonValue) -> Iterator[catalog.StepRef]:
     """Every StepRef inside a step's args, depth first."""
     if isinstance(value, dict):
@@ -354,7 +363,7 @@ class TemplateRenderer:
     def _survival(self, run: _Run, spec: StepSpec, lines: _Lines) -> None:
         anchor = run.order[spec.id]
         labels = [_arg_str(g, "label") for g in _groups(spec.args)]
-        counts = [d for d in spec.depends_on if d in run.specs and run.specs[d].tool in COUNT_TOOLS]
+        counts = survival_count_steps(run.plan, spec)
         if not labels or len(counts) != len(labels):
             return
         keys = catalog.group_keys(labels)

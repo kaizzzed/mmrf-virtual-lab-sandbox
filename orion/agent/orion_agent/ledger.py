@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from typing import Final
 
 from . import ir
-from .compiler import LedgerCohort, LedgerRun, ResolvedScope, SessionLedger
+from .compiler import LedgerCohort, LedgerRun, SessionLedger
 from .models import CaseIdsDefinition, CohortRef, FilterDefinition
 from .run_store import RecordStore, RunRecord
 
@@ -32,20 +32,33 @@ def _clauses(cohort: CohortRef) -> list[ir.Clause]:
     return []
 
 
+def plan_ir(record: RunRecord) -> ir.Plan | None:
+    """The IR the run's current plan version compiled: its planHistory entry, else the planner's Plan."""
+    version = record.plan_versions[-1].version if record.plan_versions else None
+    entry = next((h for h in reversed(record.plan_history) if h.version == version and h.ir is not None), None)
+    if entry is not None:
+        return entry.ir
+    return record.planner_output if isinstance(record.planner_output, ir.Plan) else None
+
+
 def ledger_run(record: RunRecord) -> LedgerRun | None:
-    """One earlier run as the ledger lists it, or None when it never had a plan."""
+    """One earlier run as the ledger lists it, or None when it never had a plan.
+
+    It carries what the compiler rebuilds a follow-up from (compiler integration notes): each run
+    cohort's canonical definition (a J3 case-ID cohort cannot be rebuilt from clauses alone), the
+    IR of the current plan version ("Show the top 5 instead" reuses its analysis), the active
+    cohort the run was asked on (E15: a follow-up names both scopes only when it changed since),
+    and the resolved scope as compiled (its cohortId and ledgerRef kept).
+    """
     if not record.plan_versions:
         return None
     plan = record.plan_versions[-1]
-    scope = plan.scope
     planned = [c for c in record.cohorts if c.role == "planned"]
-    analyses = []
-    output = record.planner_output
-    if isinstance(output, ir.Plan):
-        analyses = [a.kind for a in output.analyses]
+    current = plan_ir(record)
+    analyses = [a.kind for a in current.analyses] if current is not None else []
     return LedgerRun(
         run_id=record.run_id,
-        scope=ResolvedScope(source=scope.source, name=scope.name, case_count=scope.case_count, clauses=list(scope.clauses)),
+        scope=plan.scope.model_copy(deep=True),
         cohorts=[
             LedgerCohort(
                 ref=c.ref,
@@ -54,6 +67,8 @@ def ledger_run(record: RunRecord) -> LedgerRun | None:
                 cohort_id=c.cohort_id,
                 def_sha256=c.def_sha256,
                 case_count=c.case_count,
+                definition=c.definition,
+                definition_text=c.definition_text,
             )
             for c in planned
         ],
@@ -62,6 +77,8 @@ def ledger_run(record: RunRecord) -> LedgerRun | None:
         status=record.status,
         analyses=analyses,
         fact_labels=[f.label for f in record.facts if f.label][:MAX_FACT_LABELS],
+        plan_ir=current,
+        active=record.request.cohort_context.active,
     )
 
 

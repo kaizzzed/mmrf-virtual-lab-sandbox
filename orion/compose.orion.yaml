@@ -35,9 +35,8 @@ services:
       ORION_FIELDS_PATH: /config/cohort-fields.json
       ORION_GOLDEN_DIR: /golden
       ORION_VLAB_ORIGIN: http://identity:8080
-      # Both names: settings.py reads ORION_TOOLS, tools/config.py ORION_TOOL_TRANSPORT.
+      # The one tool-transport switch (settings.py): in-process tools against ORION_VLAB_ORIGIN.
       ORION_TOOLS: inprocess
-      ORION_TOOL_TRANSPORT: in_process
       # Stub planner and composer by default; override from the shell to try others.
       ORION_PLANNER: ${ORION_PLANNER:-stub}
       ORION_COMPOSER: ${ORION_COMPOSER:-stub}

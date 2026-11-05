@@ -329,7 +329,9 @@ class GeneCasesObserved(CatalogModel):
 
 
 class TopMutatedGenesInput(CatalogModel):
-    filter0: Gen3Filter | None
+    # Nullable fields default to null: Gateway's tool schema cannot say "or null", so omitting the key
+    # equals sending null; the recorded request always writes it (TOOLS.md 1, "Args, request and Observed").
+    filter0: Gen3Filter | None = None
     """The cohort as Gen3 filter0 (a case-ID list, C-CASEIDS); null for all cases. Pinned as the card's filter0."""
     gene_count: int = Field(ge=1, le=MAX_TOP_N_GENES)
     """How many genes the card shows: top N (sent as maxGenes = geneCount + 1, the extra row only detects a tie)."""
@@ -359,11 +361,12 @@ class SurvivalGroupInput(CatalogModel):
 class SurvivalCompareInput(CatalogModel):
     """Exactly what derive_request_pinned("survival") reads: scope, term and split {field, overlay}."""
 
-    scope: Gen3Filter | None
+    # As TopMutatedGenesInput.filter0: omitting a nullable field equals null.
+    scope: Gen3Filter | None = None
     """The scope as Gen3 filter (the scope step's case-ID clause); null for all cases. The card's filter0."""
     term: Literal["overall_survival"]
     """The survival term; Gen3 Analysis' default survivalType "overall" (the body sends none)."""
-    split: SurvivalSplit | None
+    split: SurvivalSplit | None = None
     """The split field and its twin; null when the groups are cohorts with no twin (no survival card)."""
     groups: list[SurvivalGroupInput] = Field(min_length=2, max_length=6)
 
@@ -1527,7 +1530,8 @@ FAILURE_PHRASES: Final[dict[str, str]] = {
     "TIMEOUT": "timed out on both attempts", "CACHE_BUSY": "stayed busy on both attempts", "HTTP_ERROR": "returned an error",
     "UPSTREAM_SHAPE": "returned a response ORION could not read", "INVALID_INPUT": "could not be sent",
     "NOT_CONNECTED": "is not connected", "GUARD_FAILED": "was stopped by a check",
-    "FAILED": "failed",  # an executor function raised: its CallRecord error starts INTERNAL_ERROR
+    "INTERNAL_ERROR": "failed",  # an executor function raised: its CallRecord error starts INTERNAL_ERROR
+    "FAILED": "failed",  # the fallback for an error with no ToolErrorCode head
 }
 MISSING_PHRASES: Final[dict[str, str]] = {
     "fixture_fingerprint": "the data and service versions are not recorded",

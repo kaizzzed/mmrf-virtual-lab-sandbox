@@ -142,7 +142,8 @@ class StepTests(unittest.TestCase):
 
     def test_a_failed_function_is_an_error_recorded_as_internal_error(self) -> None:
         result = run_function("set_operation", {"op": "difference", "a": "s9", "b": "s2"}, reader({"s2": {"caseIds": B}}))
-        self.assertEqual((result.status, result.limitation, result.error and result.error.code), ("error", "TOOL_FAILED", "INVALID_INPUT"))
+        # The contract's ToolErrorCode has INTERNAL_ERROR for an executor function that raised (v1.2).
+        self.assertEqual((result.status, result.limitation, result.error and result.error.code), ("error", "TOOL_FAILED", "INTERNAL_ERROR"))
         bad = run_function("check_subset", {"inner": "s2"}, reader({}))
         self.assertEqual(bad.status, "error")
         clock = ManualClock()

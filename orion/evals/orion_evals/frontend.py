@@ -30,7 +30,10 @@ BROWSER_CHECKS: Final[dict[str, BrowserCheck]] = {
     ),
     "opens_in_cohort_builder": BrowserCheck(
         "a chat-made cohort opens in Cohort Builder",
-        (f"{ORION_SRC}/cohort/useCohortContext.unit.test.ts", f"{ORION_SRC}/cohort/cohortAdapter.unit.test.ts"),
+        # saveCohorts: Create writes each cohort with the Cohort Builder store's createNewCohort and reads it back;
+        # setActiveCohort: "Open with this cohort" makes it the Cohort Builder's current cohort.
+        (f"{ORION_SRC}/cohort/saveCohorts.unit.test.ts", f"{ORION_SRC}/cohort/setActiveCohort.unit.test.ts",
+         f"{ORION_SRC}/cohort/useCohortContext.unit.test.ts", f"{ORION_SRC}/cohort/cohortAdapter.unit.test.ts"),
         r"Cohort Builder|createNewCohort|set_active_cohort|setCurrentCohort",
     ),
     "enter_saves_nothing": BrowserCheck(
@@ -45,7 +48,8 @@ BROWSER_CHECKS: Final[dict[str, BrowserCheck]] = {
     ),
     "could_not_plan_card": BrowserCheck(
         "a planner refusal shows the Could not plan card",
-        (f"{ORION_SRC}/cards/FailedCard.unit.test.tsx", f"{ORION_SRC}/AssistantApp.unit.test.tsx"),
+        (f"{ORION_SRC}/cards/FailedCard.unit.test.tsx", f"{ORION_SRC}/cards/LimitationCard.unit.test.tsx",
+         f"{ORION_SRC}/components/RunItem.unit.test.tsx", f"{ORION_SRC}/AssistantApp.unit.test.tsx"),
         r"Could not plan",
     ),
     "stopped_by_you": BrowserCheck(
@@ -55,7 +59,8 @@ BROWSER_CHECKS: Final[dict[str, BrowserCheck]] = {
     ),
     "handoff_disabled_when_skipped": BrowserCheck(
         "Don't save disables Open with this cohort",
-        (f"{ORION_SRC}/viz/OrionPpCard.unit.test.tsx", f"{ORION_SRC}/cards/AnswerCard.unit.test.tsx"),
+        (f"{ORION_SRC}/viz/VizCard.unit.test.tsx", f"{ORION_SRC}/handoff/handoff.unit.test.ts",
+         f"{ORION_SRC}/viz/OrionPpCard.unit.test.tsx", f"{ORION_SRC}/cards/AnswerCard.unit.test.tsx"),
         r"WRITE_SKIPPED|Don't save|Don\\'t save",
     ),
     "thread_restore": BrowserCheck(

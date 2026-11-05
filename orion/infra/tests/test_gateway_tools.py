@@ -180,14 +180,14 @@ class GatewayToolSchemaTest(unittest.TestCase):
         self.assertIn('"wilcoxon"', cast(str, method["description"]))
 
     def test_required_nullable_fields_are_optional_on_the_gateway(self) -> None:
-        # Gateway cannot say "or null": these required-but-nullable Input fields are shown optional,
-        # so a transport that strips nulls would break them. Pinned so a change gets reviewed.
+        # Gateway cannot say "or null", so a transport may strip a null. Every nullable Input field
+        # has a None default (TOOLS.md 1, "Args, request and Observed"): omitting it equals null,
+        # so no Input has a required-but-nullable field left. Pinned so a change gets reviewed.
         found = {
             name: g.required_nullable(TOOL_REGISTRY[cast(ServerToolName, name)].input_model.model_json_schema(by_alias=True))
             for name in self.by_name
         }
-        self.assertEqual({name: paths for name, paths in found.items() if paths},
-                         {"top_mutated_genes": ["filter0"], "survival_compare": ["scope", "split"]})
+        self.assertEqual({name: paths for name, paths in found.items() if paths}, {})
         for name, paths in found.items():
             schema = cast(JsonObject, self.by_name[name]["inputSchema"])
             for path in paths:

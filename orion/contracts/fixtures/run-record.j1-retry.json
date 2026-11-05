@@ -11,6 +11,7 @@
   "environment": {
     "mode": "L",
     "planner": "bedrock",
+    "composer": "bedrock",
     "executor": "engine",
     "agentVersion": "0.2.0",
     "toolTransport": "in_process",
@@ -263,7 +264,7 @@
     {
       "callId": "f0618656cd9dbfc4b27818fec4c8edb2.planner.c1",
       "role": "planner",
-      "model": "anthropic.claude-opus-5-5",
+      "model": "us.anthropic.claude-opus-5-5",
       "fallback": false,
       "effort": "low",
       "attempt": 1,
@@ -279,7 +280,7 @@
     {
       "callId": "f0618656cd9dbfc4b27818fec4c8edb2.v1.composer.c1",
       "role": "composer",
-      "model": "anthropic.claude-opus-5-5",
+      "model": "us.anthropic.claude-opus-5-5",
       "fallback": false,
       "effort": "medium",
       "attempt": 1,
@@ -723,7 +724,7 @@
       },
       "requestSha256": "762f8ac51551f49b438deff8659e37d5c32bbb8ea9adf4ecb26b95c226253bea",
       "httpStatus": 200,
-      "responseSha256": "8662eefb668b0009b734a9e06c30ff1001a71e357ffa30a14f6d44b95e07c198",
+      "responseSha256": "c7e55573d80c1ff944328a1eb12f5cdcb7d0dd98d0749e1bad7ebaa7357c9567",
       "elapsedMs": 1290,
       "status": "ok",
       "observed": {
@@ -734,28 +735,28 @@
             "events": 299,
             "curve": [
               {
-                "time": 0,
+                "time": 0.0,
                 "survival": 1.0
               },
               {
-                "time": 365,
+                "time": 365.0,
                 "survival": 0.85
               },
               {
-                "time": 730,
+                "time": 730.0,
                 "survival": 0.7
               },
               {
-                "time": 1095,
-                "survival": 0.55
+                "time": 1095.0,
+                "survival": 0.48
               },
               {
-                "time": 1460,
-                "survival": 0.4
+                "time": 1460.0,
+                "survival": 0.37
               },
               {
-                "time": 2190,
-                "survival": 0.25
+                "time": 2190.0,
+                "survival": 0.22
               }
             ]
           },
@@ -765,28 +766,28 @@
             "events": 300,
             "curve": [
               {
-                "time": 0,
+                "time": 0.0,
                 "survival": 1.0
               },
               {
-                "time": 365,
-                "survival": 0.92
+                "time": 365.0,
+                "survival": 0.93
               },
               {
-                "time": 730,
-                "survival": 0.84
+                "time": 730.0,
+                "survival": 0.85
               },
               {
-                "time": 1095,
+                "time": 1095.0,
                 "survival": 0.76
               },
               {
-                "time": 1460,
-                "survival": 0.68
+                "time": 1460.0,
+                "survival": 0.62
               },
               {
-                "time": 2190,
-                "survival": 0.6
+                "time": 2190.0,
+                "survival": 0.47
               }
             ]
           }
@@ -837,7 +838,7 @@
       },
       "requestSha256": "4a8fa5084cbf741bd7ca7c722e7f31f68a3bafa6995c652a673a18b590d68d85",
       "httpStatus": null,
-      "responseSha256": "b70c7c07411046ad2018b90fa62619d0564c0464a7d4d34b6492e921e0970389",
+      "responseSha256": "36cb7360f30bbdf7de8e3abd16ac1c2f837c8d5e535334edcb712a7743d5c932",
       "elapsedMs": 3,
       "status": "ok",
       "observed": {
@@ -846,12 +847,12 @@
         "groups": [
           {
             "label": "High risk",
-            "median": 1095,
+            "median": 1095.0,
             "reached": true
           },
           {
             "label": "Standard risk",
-            "median": 2190,
+            "median": 2190.0,
             "reached": true
           }
         ]
@@ -891,7 +892,7 @@
       "callId": "f0618656cd9dbfc4b27818fec4c8edb2.v1.s2.c1",
       "requestSha256": "f7f42f07e768187e2decb7367ff9634c01a35edfeefbdffc1f5ed65f952d0f1d",
       "responseSha256": "de2d38b63aee5f572c5126dfbb22c07a5140998f8bcce2610cc200059e5b2635",
-      "engine": "guppy@e318cf6"
+      "engine": "guppy@c687656"
     },
     {
       "id": "f.s3.count",
@@ -906,7 +907,7 @@
       "callId": "f0618656cd9dbfc4b27818fec4c8edb2.v1.s3.c1",
       "requestSha256": "362a6369ea45d536d12da40680ce64b8e11eade29e85e6b1bb305d0b42b9a1eb",
       "responseSha256": "7094dc23de209903890284caab32c63366c2decea8d8a2607b494488e1718c46",
-      "engine": "guppy@e318cf6"
+      "engine": "guppy@c687656"
     },
     {
       "id": "f.s4.events.high",
@@ -920,7 +921,7 @@
       "planVersion": 1,
       "callId": "f0618656cd9dbfc4b27818fec4c8edb2.v1.s4.c3",
       "requestSha256": "762f8ac51551f49b438deff8659e37d5c32bbb8ea9adf4ecb26b95c226253bea",
-      "responseSha256": "8662eefb668b0009b734a9e06c30ff1001a71e357ffa30a14f6d44b95e07c198",
+      "responseSha256": "c7e55573d80c1ff944328a1eb12f5cdcb7d0dd98d0749e1bad7ebaa7357c9567",
       "engine": "gen3-analysis@ffa4069"
     },
     {
@@ -935,7 +936,7 @@
       "planVersion": 1,
       "callId": "f0618656cd9dbfc4b27818fec4c8edb2.v1.s4.c3",
       "requestSha256": "762f8ac51551f49b438deff8659e37d5c32bbb8ea9adf4ecb26b95c226253bea",
-      "responseSha256": "8662eefb668b0009b734a9e06c30ff1001a71e357ffa30a14f6d44b95e07c198",
+      "responseSha256": "c7e55573d80c1ff944328a1eb12f5cdcb7d0dd98d0749e1bad7ebaa7357c9567",
       "engine": "gen3-analysis@ffa4069"
     },
     {
@@ -950,13 +951,13 @@
       "planVersion": 1,
       "callId": "f0618656cd9dbfc4b27818fec4c8edb2.v1.s4.c3",
       "requestSha256": "762f8ac51551f49b438deff8659e37d5c32bbb8ea9adf4ecb26b95c226253bea",
-      "responseSha256": "8662eefb668b0009b734a9e06c30ff1001a71e357ffa30a14f6d44b95e07c198",
+      "responseSha256": "c7e55573d80c1ff944328a1eb12f5cdcb7d0dd98d0749e1bad7ebaa7357c9567",
       "engine": "gen3-analysis@ffa4069"
     },
     {
       "id": "f.s5.median.high",
       "label": "High risk median overall survival",
-      "value": 1095,
+      "value": 1095.0,
       "unit": "days",
       "stepId": "s5",
       "row": 2,
@@ -965,13 +966,13 @@
       "planVersion": 1,
       "callId": "f0618656cd9dbfc4b27818fec4c8edb2.v1.s5.c1",
       "requestSha256": "4a8fa5084cbf741bd7ca7c722e7f31f68a3bafa6995c652a673a18b590d68d85",
-      "responseSha256": "b70c7c07411046ad2018b90fa62619d0564c0464a7d4d34b6492e921e0970389",
+      "responseSha256": "36cb7360f30bbdf7de8e3abd16ac1c2f837c8d5e535334edcb712a7743d5c932",
       "engine": null
     },
     {
       "id": "f.s5.median.standard",
       "label": "Standard risk median overall survival",
-      "value": 2190,
+      "value": 2190.0,
       "unit": "days",
       "stepId": "s5",
       "row": 2,
@@ -980,7 +981,7 @@
       "planVersion": 1,
       "callId": "f0618656cd9dbfc4b27818fec4c8edb2.v1.s5.c1",
       "requestSha256": "4a8fa5084cbf741bd7ca7c722e7f31f68a3bafa6995c652a673a18b590d68d85",
-      "responseSha256": "b70c7c07411046ad2018b90fa62619d0564c0464a7d4d34b6492e921e0970389",
+      "responseSha256": "36cb7360f30bbdf7de8e3abd16ac1c2f837c8d5e535334edcb712a7743d5c932",
       "engine": null
     }
   ],
@@ -1458,7 +1459,7 @@
       {
         "id": "f.s5.median.high",
         "label": "High risk median overall survival",
-        "value": 1095,
+        "value": 1095.0,
         "unit": "days",
         "stepId": "s5",
         "row": 2,
@@ -1468,7 +1469,7 @@
       {
         "id": "f.s5.median.standard",
         "label": "Standard risk median overall survival",
-        "value": 2190,
+        "value": 2190.0,
         "unit": "days",
         "stepId": "s5",
         "row": 2,

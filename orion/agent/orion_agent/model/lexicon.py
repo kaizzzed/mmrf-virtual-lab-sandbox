@@ -110,20 +110,8 @@ def model_display_name(model_id: str) -> str:
 
 
 def vocabulary_fields(vocab: Vocabulary) -> list[FieldSpec]:
-    """Every field of the vocabulary, sorted by id.
-
-    Vocabulary exposes `field(id)` only; this reads its field table through `fields()` when a
-    later vocab.py offers one, else through the private mapping (integration note: add
-    `Vocabulary.fields()`).
-    """
-    public = getattr(vocab, "fields", None)
-    if callable(public):
-        found = public()
-        specs = list(found.values()) if isinstance(found, dict) else list(found)
-    else:
-        table = getattr(vocab, "_fields", {})
-        specs = list(table.values()) if isinstance(table, dict) else []
-    return sorted((s for s in specs if isinstance(s, FieldSpec)), key=lambda s: s.id)
+    """Every field of the vocabulary, sorted by id."""
+    return vocab.fields()
 
 
 def panel_genes(vocab: Vocabulary) -> tuple[str, ...]:

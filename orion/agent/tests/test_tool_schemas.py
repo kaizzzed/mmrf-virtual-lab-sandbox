@@ -38,7 +38,8 @@ from orion_agent.models import (
     pinned_hash,
     sha256_hex,
 )
-from orion_agent.tools import base
+from orion_agent import catalog
+from orion_agent.tools import base, normalize
 from orion_agent.tools import schemas as s
 
 AGENT = Path(__file__).resolve().parents[1]
@@ -90,17 +91,6 @@ def last_view(name: str) -> RunView:
 def save_args(name: str) -> SaveCohortsArgs:
     deltas = "".join(f.delta for f in stream(name) if isinstance(f, ToolCallArgsFrame))
     return SaveCohortsArgs.model_validate_json(deltas)
-
-
-def ints_for_floats(value: JsonValue) -> JsonValue:
-    """Integral floats as ints: a model dump writes 1095.0 where a fixture wrote 1095."""
-    if isinstance(value, dict):
-        return {k: ints_for_floats(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [ints_for_floats(v) for v in value]
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return value
 
 
 def segment_parts(sentence: Sequence[Mapping[str, JsonValue]]) -> list[s.TemplatePart]:
@@ -447,10 +437,9 @@ class FixtureRecordTest(unittest.TestCase):
         return [as_dict(load_json(FIXTURES / name)) for name in ("run-record.j1-complete.json", "run-record.j1-retry.json")]
 
     def test_recorded_requests_and_outputs_validate(self) -> None:
-        """Every recorded request validates against its Input and dumps back byte for byte, so its
-        requestSha256 is reproducible. Known difference, pinned: base.KmPoint.time and
-        base.KmMedian.median are floats, so a model dump writes 1095.0 where the fixture wrote
-        1095; the values are equal, so only the fixture's responseSha256 is not reproduced."""
+        """Every recorded request and Observed validates against its catalog model and dumps back byte
+        for byte, so requestSha256 and responseSha256 are what a tool's own output hashes to (the
+        builder writes calls through these models; base.KmPoint.time and KmMedian.median are floats)."""
         for record in self.records():
             for raw in as_list(record["calls"]):
                 call = CallRecord.model_validate(raw)
@@ -465,8 +454,8 @@ class FixtureRecordTest(unittest.TestCase):
                         continue
                     assert spec.observed_model is not None
                     observed = spec.observed_model.model_validate(call.observed)
-                    self.assertEqual(ints_for_floats(dump(observed)), ints_for_floats(call.observed))
-                    self.assertEqual(sha256_hex(canonical_json(call.observed, portable=False)), call.response_sha256)
+                    self.assertEqual(dump(observed), call.observed)
+                    self.assertEqual(sha256_hex(canonical_json(dump(observed), portable=False)), call.response_sha256)
                     expected_hops = {"fixture_fingerprint": 4, "survival_compare": 3}.get(call.tool, 0 if spec.kind == "exec" else 1)
                     self.assertEqual(len(call.provenance), expected_hops)
                     for hop in call.provenance:
@@ -722,7 +711,9 @@ class TemplateFixtureTest(unittest.TestCase):
         onco = last_view("oncomatrix").viz_specs[0]
         ot = s.VIZ_TEMPLATES["oncomatrix"]
         self.assertEqual((onco.app_id, onco.launcher, onco.caption, onco.cites_steps), (ot.app_id, "oncomatrix", None, ["s3"]))
-        self.assertEqual(onco.title, title(ot.title, {"cohort": "CGS high-risk cases"}))
+        # ${cohort} is the ranked cohort's label: its name without " (ORION)" (TOOLS.md 8).
+        high = next(c for c in last_view("oncomatrix").cohorts if c.ref == "high")
+        self.assertEqual(onco.title, title(ot.title, {"cohort": s.cohort_label(high.name)}))
         assert onco.frozen is not None
         self.assertEqual(tuple(onco.frozen.columns), ot.columns)
 
@@ -773,7 +764,8 @@ class VectorTest(unittest.TestCase):
         examples = as_list(as_dict(load_json(FIXTURES / "request-examples.json"))["examples"])
         confirms = [as_dict(as_dict(as_dict(e)["body"])["forwardedProps"])["orion"] for e in examples]
         confirms = [c for c in confirms if as_dict(c)["action"] == "confirm"]
-        self.assertEqual(len(confirms), 2)
+        # J3 Create with make-active, J3 Don't save and J2's Create of its one cohort.
+        self.assertEqual(len(confirms), 3)
         for c in confirms:
             report = ConfirmAction.model_validate(c)
             if report.decision == "create":
@@ -808,6 +800,67 @@ class CatalogDocumentTest(unittest.TestCase):
         for suffix in suffixes:
             shown = suffix.replace("${key}", "<key>")
             self.assertTrue(shown in documented or shown.replace("<key>", "<control|case>") in documented, suffix)
+
+
+class SettledContractTest(unittest.TestCase):
+    """Settings and strings one track needs from another, settled in the catalog (TOOLS.md 2, 5.6 and 6.3)."""
+
+    def test_tool_reasons_are_the_documented_reasons(self) -> None:
+        if not (CONTRACTS / "TOOLS.md").is_file():
+            self.skipTest(f"{CONTRACTS / 'TOOLS.md'} is not mounted")
+        text = (CONTRACTS / "TOOLS.md").read_text(encoding="utf-8")
+        section = text.split("### 6.3 Rows, reasons and names", 1)[1].split("###", 1)[0]
+        documented: dict[str, str] = {}
+        for tools, reason in re.findall(r"^\| (`[a-z_]+`(?:, `[a-z_]+`)*) \| ([^|]+?) \|$", section, re.M):
+            for tool in re.findall(r"`([a-z_]+)`", tools):
+                documented[tool] = reason
+        self.assertEqual(documented, dict(catalog.TOOL_REASONS))
+
+    def test_every_fixture_row_gives_its_tools_reason(self) -> None:
+        if not FIXTURES.is_dir():
+            self.skipTest(f"{FIXTURES} is not mounted")
+        for path in sorted(FIXTURES.glob("*.events.jsonl")):
+            for frame in stream(path.name.removesuffix(".events.jsonl")):
+                if isinstance(frame, StateSnapshotFrame) and frame.snapshot.plan is not None:
+                    for row in frame.snapshot.plan.rows:
+                        with self.subTest(path.name, row=row.row):
+                            self.assertTrue(row.reason.startswith(catalog.TOOL_REASONS[row.tool]), row.reason)
+
+    def test_the_de_launcher_is_a_deployment_setting(self) -> None:
+        from orion_agent.settings import Settings
+
+        self.assertEqual(Settings().de_launcher, "deDirect")
+        self.assertEqual(Settings.model_validate({"de_launcher": "deInput"}).de_launcher, "deInput")
+        with self.assertRaises(ValidationError):
+            Settings.model_validate({"de_launcher": "deFallback"})
+
+    def test_a_nullable_input_may_be_omitted_and_still_writes_null(self) -> None:
+        # Gateway's tool schema cannot say "or null": omitting the key equals sending null, and the
+        # request a tool records (and hashes) is the same either way.
+        cases: list[tuple[type[BaseModel], dict[str, JsonValue], dict[str, JsonValue]]] = [
+            (s.TopMutatedGenesInput, {"geneCount": 3}, {"filter0": None}),
+            (s.SurvivalCompareInput,
+             {"term": "overall_survival", "groups": [{"label": "a", "filter": {"and": []}}, {"label": "b", "filter": {"and": []}}]},
+             {"scope": None, "split": None}),
+        ]
+        for model, given, nulls in cases:
+            with self.subTest(model.__name__):
+                omitted, explicit = model.model_validate(given), model.model_validate({**given, **nulls})
+                self.assertEqual(dump(omitted), dump(explicit))
+                self.assertLessEqual(nulls.items(), dump(omitted).items())
+                schema = model.model_json_schema(by_alias=True)
+                self.assertFalse(set(nulls) & set(schema.get("required", [])))
+
+    def test_a_gene_without_an_snv_entry_keeps_its_place_with_zero_cases(self) -> None:
+        # TOOLS.md 2.5 and 2.1: the gene is kept (cases 0); an entry of another dt is dropped with a warning.
+        body: JsonValue = {"genes": [
+            {"gene": "KRAS", "mutationStat": [{"dt": 1, "count": 480}]},
+            {"gene": "MYC", "mutationStat": [{"dt": 4, "count": 12}]},
+            {"gene": "TP53", "mutationStat": [{"dt": 1, "count": 301}, {"dt": 4, "count": 3}]},
+        ]}
+        genes, warnings = normalize.mutated_genes(body)
+        self.assertEqual([(g.gene, g.cases) for g in genes], [("KRAS", 480), ("MYC", 0), ("TP53", 301)])
+        self.assertEqual(len(warnings), 2)
 
 
 # --- Helpers and the template grammar ---------------------------------------------------------------------------
