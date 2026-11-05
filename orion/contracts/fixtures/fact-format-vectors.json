@@ -1,0 +1,116 @@
+{
+  "schema": "orion.fact-format-vectors/v1",
+  "about": "format_fact(value, unit): the one way a fact value is written in Observed, model text and TEXT_MESSAGE.",
+  "vectors": [
+    {
+      "value": 339,
+      "unit": "cases",
+      "text": "339"
+    },
+    {
+      "value": 1095,
+      "unit": "days",
+      "text": "1,095"
+    },
+    {
+      "value": 1204567,
+      "unit": "genes",
+      "text": "1,204,567"
+    },
+    {
+      "value": 1095.5,
+      "unit": "days",
+      "text": "1,095.5"
+    },
+    {
+      "value": 2.0,
+      "unit": "cases",
+      "text": "2"
+    },
+    {
+      "value": 0.125,
+      "unit": "days",
+      "text": "0.13"
+    },
+    {
+      "value": 7.1e-60,
+      "unit": "p",
+      "text": "7.1e-60"
+    },
+    {
+      "value": 2.1e-09,
+      "unit": "p",
+      "text": "2.1e-9"
+    },
+    {
+      "value": 8.149e-06,
+      "unit": "p",
+      "text": "8.1e-6"
+    },
+    {
+      "value": 9.96e-05,
+      "unit": "p",
+      "text": "1.0e-4"
+    },
+    {
+      "value": 0.0342,
+      "unit": "p",
+      "text": "0.0342"
+    },
+    {
+      "value": 0.05,
+      "unit": "p",
+      "text": "0.05"
+    },
+    {
+      "value": 0.00105,
+      "unit": "p",
+      "text": "0.00105"
+    },
+    {
+      "value": 1.0,
+      "unit": "p",
+      "text": "1"
+    },
+    {
+      "value": 0,
+      "unit": "p",
+      "text": "0"
+    },
+    {
+      "value": 1.12,
+      "unit": "log2FC",
+      "text": "1.12"
+    },
+    {
+      "value": -0.87,
+      "unit": "log2FC",
+      "text": "-0.87"
+    },
+    {
+      "value": 0.125,
+      "unit": "log2FC",
+      "text": "0.13"
+    },
+    {
+      "value": -0.004,
+      "unit": "log2FC",
+      "text": "0.00"
+    },
+    {
+      "value": 2,
+      "unit": "log2FC",
+      "text": "2.00"
+    },
+    {
+      "value": "DIS3",
+      "unit": "gene",
+      "text": "DIS3"
+    },
+    {
+      "value": "KRAS",
+      "unit": "gene",
+      "text": "KRAS"
+    }
+  ]
+}

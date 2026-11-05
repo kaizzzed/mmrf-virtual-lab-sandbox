@@ -1,42 +1,209 @@
-"""The shared wire contract: the reference fixture and the real AGUIApp's stream obey the same models."""
+"""The shared wire contract v1.2: every fixture and the real AGUIApp's stream obey the same models."""
 
+import importlib.util
 import json
+import re
+import sys
 import unittest
+from datetime import timedelta
+from types import ModuleType
 from typing import Any, get_args
 
-from pydantic import JsonValue, ValidationError
-from support import FIXTURE, J1_QUESTION, PINNED_VECTORS, ControllerCase, ask_body, asgi_call, check_stream, context, snapshots
+from pydantic import JsonValue, TypeAdapter, ValidationError
+from support import (
+    CONTRACTS,
+    FIXTURE,
+    J1_QUESTION,
+    PINNED_VECTORS,
+    ControllerCase,
+    action_body,
+    ask_body,
+    asgi_call,
+    check_stream,
+    context,
+    snapshots,
+)
 
+from orion_agent import events
+from orion_agent.catalog import AnalysisKind
+from orion_agent.events import iso_utc, utc_now
 from orion_agent.ids import new_id
+from orion_agent.lease import Lease
 from orion_agent.models import (
+    ACTION_STATUSES,
+    CANONICAL_DEFINITION,
     CODES,
+    FROZEN_ROWS_CAP,
+    LEASED_STATUSES,
+    RENEWED_STATUSES,
+    STOP_LEASE_S,
+    VIEW_RANK_CAP,
+    ORION_ACTION,
     PINNED,
     REJECTION_CODES,
     RUN_STATUSES,
+    SNAPSHOT_LIMIT_BYTES,
     STEP_STATUSES,
+    SYNTHETIC_NOTICE,
+    ActionName,
+    AnswerRecord,
+    AskAction,
+    CallId,
+    ClarifyPending,
+    ConfirmAction,
+    ConfirmPending,
+    ConsentPending,
     DeDirectPinned,
+    DeInputPinned,
+    EditableTopN,
+    EditCohortNameAction,
+    FilterSet,
+    FrozenTable,
     HeartbeatFrame,
     Limitation,
     NearestApp,
+    PendingCohort,
     PinnedKind,
     PinnedNumberError,
     PlanView,
+    ModelCallId,
+    OncomatrixPinned,
+    RunAgentInputModel,
     RunFinishedFrame,
+    RunStartedFrame,
+    RunStatus,
+    RunView,
     SampleGroup,
+    SaveCohortsArgs,
+    Segment,
+    Sentence,
     StateSnapshotFrame,
+    StepFinishedFrame,
+    StepStartedFrame,
+    StepStatus,
     StepView,
     SurvivalPinned,
+    TextMessageContentFrame,
+    TextMessageEndFrame,
+    TextMessageStartFrame,
+    ToolCallArgsFrame,
+    ToolCallEndFrame,
+    ToolCallStartFrame,
     VizSpec,
     Volcano,
+    WireEvent,
+    canonical_definition,
+    canonical_json,
     canonical_pinned,
+    def_sha256,
+    definition_from_filter_set,
+    derive_request_pinned,
+    fingerprint_document,
+    fingerprint_sha256,
+    format_fact,
     iter_sse_data,
     parse_frame,
     pinned_hash,
+    sha256_hex,
 )
+from orion_agent.run_store import Environment, RunRecord, RunStore, ThreadIndex
+from orion_agent.settings import Settings, parse_faults
 from orion_agent.stubs import STUB_SKIP_REASON
+
+FIXTURES = CONTRACTS / "fixtures"
+STREAMS: dict[str, tuple[str, str | None]] = {
+    # fixture: (the status its RUN_FINISHED carries, its code)
+    "j1-stub": ("ObservedOnly", None),
+    "j1-complete": ("Complete", None),
+    "j1-partial": ("Partial", "TOOL_FAILED"),
+    "j1-retry": ("Complete", None),
+    "j1-stop": ("Cancelled", None),
+    "j3-save-pause": ("AwaitingConfirmation", None),
+    "j3-after-confirm": ("Complete", None),
+    "j3-edit-at-pause": ("AwaitingConfirmation", None),
+    "j3-dont-save": ("Complete", None),
+    "j3-deinput": ("Complete", None),
+    "oncomatrix": ("Complete", None),
+    "clarify": ("Clarifying", None),
+    "consent": ("AwaitingConsent", "NAMED_TOOL_MISMATCH"),
+    "interrupted": ("Unsupported", "UNSUPPORTED_ANALYSIS"),
+    "cancel-waiting": ("Clarifying", None),
+}
+# Resume streams: the action's snapshot follows RUN_STARTED directly.
+RESUMES = ("j1-retry", "j1-stop", "j3-after-confirm", "j3-edit-at-pause", "j3-dont-save", "j3-deinput")
+RECORDS = ("run-record.j1-complete.json", "run-record.j1-retry.json")
+# Words with digits that code-written text may carry outside fact segments: app and term names,
+# the panel genes the PANEL_COVERAGE line names, and the viewer's rounded "p = 0" footnote.
+DIGIT_ALLOW = re.compile(r"Gen3|log2FC|log2|six-gene|TP53|DIS3|p = 0|Day 1 stub")
+NUMBER_WORDS = re.compile(
+    r"\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|hundred|thousand|million|dozen|half|twice)\b", re.I
+)
+
+
+def read_stream(name: str) -> tuple[str, list[WireEvent]]:
+    text = (FIXTURES / f"{name}.events.jsonl").read_text(encoding="utf-8")
+    return text, [parse_frame(data) for data in iter_sse_data(text)]
+
+
+def views(frames: list[WireEvent]) -> list[RunView]:
+    return [f.snapshot for f in frames if isinstance(f, StateSnapshotFrame)]
+
+
+def model_sentences(view: RunView) -> list[Sentence]:
+    return [*(view.interpretation or []), *(view.hypotheses or [])]
+
+
+def all_segments(view: RunView) -> list[Segment]:
+    """Every segment on screen: answer sentences, limitation lines and frozen tables (cells and notes)."""
+    out = [seg for sentence in [*view.observed, *model_sentences(view)] for seg in sentence.segments]
+    out += [seg for item in view.limitations for seg in item.segments or []]
+    for spec in view.viz_specs:
+        if spec.frozen is not None:
+            out += [cell for row in spec.frozen.rows for cell in row] + list(spec.frozen.note or [])
+    return out
+
+
+def cited_fact_ids(view: RunView) -> set[str]:
+    ids = {s.fact_id for s in all_segments(view) if s.fact_id is not None}
+    ids |= {fid for sentence in model_sentences(view) for fid in sentence.cites or []}
+    ids |= {c.case_count_fact_id for c in view.cohorts if c.case_count_fact_id is not None}
+    if isinstance(view.pending, ConfirmPending):
+        for cohort in view.pending.cohorts:
+            ids |= {fid for fid in (cohort.case_count_fact_id, cohort.eligible_count_fact_id) if fid is not None}
+    return ids
+
+
+def screen_strings(view: RunView) -> list[str]:
+    """Code- and model-written text a number could hide in, outside fact segments (FR-16, NFR-03).
+
+    Plan texts and step summaries are left out: their numbers are the question's or the plan's
+    own settings, and a step row is itself the source its numbers cite.
+    """
+    out = [s.text for s in all_segments(view) if s.fact_id is None]
+    out += [item.text for item in view.limitations if item.segments is None]
+    out += [item.unblock for item in view.limitations if item.unblock]
+    out += [view.withheld_reason or ""]
+    for spec in view.viz_specs:
+        out += [spec.title, spec.caption or "", *(spec.frozen.columns if spec.frozen else [])]
+    for cohort in view.cohorts:
+        out += [cohort.name, cohort.definition_text, cohort.saved_name or ""]
+    if isinstance(view.pending, ConfirmPending):
+        out += [text for c in view.pending.cohorts for text in (c.name, c.definition_text)]
+    return out
+
+
+def load_builder() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("orion_build_fixtures", FIXTURES / "build_fixtures.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve the module's annotations through sys.modules
+    spec.loader.exec_module(module)
+    return module
 
 
 class FixtureTests(unittest.TestCase):
+    """`j1-stub.events.jsonl`, the Day 1 reference stream the frontend reducer replays."""
+
     def setUp(self) -> None:
         if not FIXTURE.exists():
             self.skipTest(f"{FIXTURE} is not mounted")
@@ -69,15 +236,21 @@ class FixtureTests(unittest.TestCase):
     def test_contract_enumerations_are_complete(self) -> None:
         self.assertEqual(len(RUN_STATUSES), 15)
         self.assertEqual(len(STEP_STATUSES), 9)
-        self.assertEqual(len(CODES), 22)
-        self.assertEqual(REJECTION_CODES, {"INVALID_INPUT", "RUN_BUSY", "RUN_NOT_FOUND", "NOT_IMPLEMENTED"})
+        self.assertEqual(len(CODES), 33)
+        self.assertEqual(REJECTION_CODES, {"INVALID_INPUT", "RUN_BUSY", "RUN_NOT_FOUND", "NOT_IMPLEMENTED", "STALE_ACTION"})
+        resumable = set(get_args(ActionName)) - {"ask", "warmup"}
+        self.assertEqual(set(ACTION_STATUSES), resumable)
+        self.assertTrue(all(statuses <= RUN_STATUSES for statuses in ACTION_STATUSES.values()))
 
     def test_fixture_limitations_and_viz_specs_carry_the_amended_fields(self) -> None:
         view = StateSnapshotFrame.model_validate(self._final_frame()).snapshot
         self.assertEqual([lim.nearest_apps for lim in view.limitations], [[]])
         spec = view.viz_specs[0]
+        assert spec.pinned is not None
         self.assertEqual((spec.launcher, spec.pinned.kind), ("survival", "survival"))
         self.assertEqual(spec.pinned_hash, pinned_hash(spec.pinned))
+        self.assertEqual(spec.request_pinned_hash, spec.pinned_hash)
+        self.assertEqual((view.pending, view.notice), (None, SYNTHETIC_NOTICE))
 
     def test_viz_specs_must_match_their_pinned_inputs(self) -> None:
         spec = self._final_frame()["snapshot"]["vizSpecs"][0]
@@ -86,21 +259,718 @@ class FixtureTests(unittest.TestCase):
             {"launcher": "oncomatrix"},
             {"pinned": {**spec["pinned"], "overlay": "iss_stage"}},
             {"pinned": {**spec["pinned"], "extra": 1}},
+            {"appId": "Excel"},
+            {"citesSteps": []},
         ]
         for change in changes:
             with self.subTest(change=change), self.assertRaises(ValidationError):
                 VizSpec.model_validate({**spec, **change})
+        # A request-side mismatch is a legitimate state the parity badge shows, not a malformed spec.
+        VizSpec.model_validate({**spec, "requestPinnedHash": "0" * 64})
 
-    def test_run_finished_carries_interrupted(self) -> None:
-        frame = parse_frame(
-            json.dumps({"type": "RUN_FINISHED", "threadId": new_id(), "runId": new_id(), "result": {"status": "Interrupted", "code": "RUN_INTERRUPTED"}})
-        )
-        assert isinstance(frame, RunFinishedFrame)
-        self.assertEqual(frame.result.status, "Interrupted")
+    def test_run_finished_carries_interrupted_and_recorded(self) -> None:
+        for status, code in (("Interrupted", "RUN_INTERRUPTED"), ("Recorded", None)):
+            frame = parse_frame(
+                json.dumps({"type": "RUN_FINISHED", "threadId": new_id(), "runId": new_id(), "result": {"status": status, "code": code}})
+            )
+            assert isinstance(frame, RunFinishedFrame)
+            self.assertEqual(frame.result.status, status)
 
     def _final_frame(self) -> dict[str, Any]:  # Any: the test edits raw frame JSON.
         value: dict[str, Any] = json.loads(list(iter_sse_data(self.text))[-2])
         return value
+
+
+class StreamFixtureTests(unittest.TestCase):
+    """Every `*.events.jsonl` fixture: validates, keeps the stream invariants, and cites only facts it carries."""
+
+    def setUp(self) -> None:
+        if not FIXTURES.exists():
+            self.skipTest(f"{FIXTURES} is not mounted")
+
+    def test_every_stream_keeps_the_invariants_and_ends_as_named(self) -> None:
+        for name, (status, code) in STREAMS.items():
+            with self.subTest(name):
+                text, _ = read_stream(name)
+                frames = check_stream(self, text)
+                for data in iter_sse_data(text):
+                    self.assertLessEqual(len(f"data: {data}\n\n".encode()), SNAPSHOT_LIMIT_BYTES)
+                    frame = parse_frame(data)
+                    if isinstance(frame, StateSnapshotFrame):
+                        self.assertEqual(frame.snapshot.model_dump(mode="json"), json.loads(data)["snapshot"])
+                last = frames[-1]
+                assert isinstance(last, RunFinishedFrame)
+                self.assertEqual((last.result.status, last.result.code), (status, code))
+                self.assertEqual(views(frames)[-1].status, status)
+
+    def test_every_cited_fact_and_step_exists(self) -> None:
+        for name in STREAMS:
+            _, frames = read_stream(name)
+            for view in views(frames):
+                with self.subTest(name, revision=view.revision):
+                    self.assertLessEqual(cited_fact_ids(view), {f.id for f in view.facts})
+                    step_ids = {s.id for s in view.steps}
+                    if view.plan is not None:
+                        self.assertEqual({sid for row in view.plan.rows for sid in row.step_ids}, step_ids)
+                    self.assertTrue(all(f.step_id in step_ids for f in view.facts))
+                    for spec in view.viz_specs:
+                        self.assertLessEqual(set(spec.cites_steps), step_ids)
+                        self.assertEqual(spec.request_pinned_hash, spec.pinned_hash)
+                        if spec.pinned is not None:
+                            self.assertEqual(spec.pinned_hash, pinned_hash(spec.pinned))
+
+    def test_every_number_on_screen_is_a_fact_written_by_format_fact(self) -> None:
+        for name in STREAMS:
+            _, frames = read_stream(name)
+            for view in views(frames):
+                with self.subTest(name, revision=view.revision):
+                    facts = {f.id: f for f in view.facts}
+                    for seg in all_segments(view):
+                        if seg.fact_id is not None:
+                            fact = facts[seg.fact_id]
+                            self.assertEqual(seg.text, format_fact(fact.value, fact.unit), seg.fact_id)
+                    stray = [text for text in screen_strings(view) if re.search(r"\d", DIGIT_ALLOW.sub("", text))]
+                    self.assertEqual(stray, [], "a number outside a fact segment")
+                    for follow_up in view.follow_ups:
+                        # A follow-up may name the one top N its analysis takes (Verifier docstring).
+                        digits = set(re.findall(r"\d+", f"{follow_up.label} {follow_up.question}"))
+                        if digits:
+                            self.assertIn(follow_up.kind, ("top_mutated_genes", "differential_expression"))
+                            self.assertEqual(len(digits), 1)
+                            self.assertTrue(1 <= int(digits.pop()) <= 100)
+
+    def test_model_text_cites_facts_and_passes_v_num(self) -> None:
+        for name in STREAMS:
+            _, frames = read_stream(name)
+            for view in views(frames):
+                facts = {f.id: f for f in view.facts}
+                cohort_names = {c.name for c in view.cohorts} | {c.saved_name for c in view.cohorts if c.saved_name}
+                for sentence in model_sentences(view):
+                    with self.subTest(name, revision=view.revision):
+                        if sentence.dropped is not None:
+                            continue
+                        assert sentence.cites is not None, "a kept model sentence keeps the composer's cites"
+                        self.assertLessEqual(set(sentence.cites), set(facts))
+                        prose = "".join(seg.text for seg in sentence.segments if seg.fact_id is None)
+                        for allowed in sorted(cohort_names, key=len, reverse=True):
+                            prose = prose.replace(allowed, "")
+                        self.assertIsNone(NUMBER_WORDS.search(prose), prose)
+                        self.assertIsNone(re.search(r"\d", DIGIT_ALLOW.sub("", prose)), prose)
+                        genes = {str(f.value) for f in facts.values() if f.unit == "gene"} | {"KRAS", "NRAS", "TP53", "BRAF", "DIS3", "MYC"}
+                        self.assertEqual([g for g in genes if re.search(rf"\b{g}\b", prose)], [], "a gene symbol outside a placeholder")
+
+    def test_limitation_segments_say_what_the_text_says(self) -> None:
+        for name in STREAMS:
+            _, frames = read_stream(name)
+            for view in views(frames):
+                for item in view.limitations:
+                    if item.segments is not None:
+                        self.assertEqual("".join(seg.text for seg in item.segments), item.text)
+
+    def test_no_step_waits_for_the_user_outside_the_confirmation_pause(self) -> None:
+        for name in STREAMS:
+            _, frames = read_stream(name)
+            for view in views(frames):
+                waiting = [s.id for s in view.steps if s.status == "AwaitingUser"]
+                with self.subTest(name, revision=view.revision):
+                    self.assertEqual(waiting, [view.pending.step_id] if isinstance(view.pending, ConfirmPending) else [])
+                    reused = [s for s in view.steps if s.status == "Reused"]
+                    self.assertTrue(all(s.reused_from is not None and s.reused_from.plan_version < (view.plan.version if view.plan else 1) for s in reused))
+
+    def test_resumes_send_the_applied_action_first(self) -> None:
+        for name in RESUMES:
+            with self.subTest(name):
+                _, frames = read_stream(name)
+                first = frames[1]
+                assert isinstance(first, StateSnapshotFrame), "the run's snapshot with the action applied follows RUN_STARTED"
+                self.assertIsNone(first.snapshot.pending)
+                self.assertIn(first.snapshot.status, ("Executing", "Stopping"))
+        _, partial = read_stream("j1-partial")
+        _, retried = read_stream("j1-retry")
+        self.assertEqual(views(retried)[0].revision, views(partial)[-1].revision + 1)
+
+    def test_answering_shows_observed_before_the_model_text(self) -> None:
+        for name in [n for n, (status, _) in STREAMS.items() if status == "Complete"]:
+            with self.subTest(name):
+                _, frames = read_stream(name)
+                answering = [v for v in views(frames) if v.status == "Answering"]
+                complete = views(frames)[-1]
+                self.assertEqual(len(answering), 1)
+                self.assertTrue(answering[0].observed and answering[0].viz_specs)
+                self.assertEqual((answering[0].interpretation, answering[0].hypotheses, answering[0].follow_ups), (None, None, []))
+                self.assertTrue(complete.interpretation and complete.hypotheses and complete.follow_ups)
+                self.assertTrue(set(f.kind for f in complete.follow_ups) <= set(get_args(AnalysisKind)))
+                kinds = [type(f) for f in frames]
+                self.assertEqual(kinds[-4:], [TextMessageStartFrame, TextMessageContentFrame, TextMessageEndFrame, RunFinishedFrame])
+                self.assertIsInstance(frames[-5], StateSnapshotFrame)
+
+    def test_save_pause_sends_the_pending_payload_as_save_cohorts_args(self) -> None:
+        _, frames = read_stream("j3-save-pause")
+        pause = views(frames)[-1]
+        pending = pause.pending
+        assert isinstance(pending, ConfirmPending)
+        self.assertEqual(pending.plan_signature, pause.plan.signature if pause.plan else None)
+        self.assertEqual([s.status for s in pause.steps if s.id == pending.step_id], ["AwaitingUser"])
+        start = next(f for f in frames if isinstance(f, ToolCallStartFrame))
+        self.assertEqual((start.tool_call_id, start.tool_call_name), (pending.nonce, "save_cohorts"))
+        args_text = "".join(f.delta for f in frames if isinstance(f, ToolCallArgsFrame))
+        args = SaveCohortsArgs.model_validate_json(args_text)
+        self.assertEqual(ConfirmPending.model_validate(args.model_dump()), pending)
+        self.assertEqual([type(f) for f in frames[-2:]], [ToolCallEndFrame, RunFinishedFrame])
+        for cohort in args.cohorts:
+            assert cohort.definition is not None
+            self.assertEqual(cohort.def_sha256, def_sha256(cohort.definition))
+            listed = next(c for c in pause.cohorts if c.ref == cohort.ref)
+            self.assertEqual((listed.save, listed.def_sha256, listed.case_count), ("proposed", cohort.def_sha256, cohort.case_count))
+
+    def test_confirm_turn_resumes_the_paused_run(self) -> None:
+        _, pause_frames = read_stream("j3-save-pause")
+        _, frames = read_stream("j3-after-confirm")
+        paused, resumed = views(pause_frames)[-1], views(frames)
+        self.assertEqual((resumed[0].thread_id, resumed[0].run_id), (paused.thread_id, paused.run_id))
+        self.assertEqual(resumed[0].revision, paused.revision + 1)
+        self.assertIsInstance(frames[1], StateSnapshotFrame)
+        self.assertEqual((resumed[0].status, resumed[0].pending), ("Executing", None))
+        self.assertEqual([s.status for s in resumed[0].steps if s.id == "s8"], ["Running"], "the write step runs as the confirm applies")
+        final = resumed[-1]
+        saved = {c.ref: c for c in final.cohorts if c.save == "saved"}
+        self.assertEqual(set(saved), {"kras_wt", "kras_mut"})
+        self.assertTrue(all(c.cohort_id for c in saved.values()))
+        spec = final.viz_specs[0]
+        assert isinstance(spec.pinned, DeDirectPinned)
+        self.assertEqual([g.name for g in spec.pinned.groups], [saved["kras_wt"].saved_name, saved["kras_mut"].saved_name])
+        self.assertEqual(spec.caption, "Table sorted by fold change. Sort by adjusted p-value to match the answer.")
+        self.assertEqual(spec.cohort_refs, ["kras_wt", "kras_mut"])
+
+    def test_clarify_and_consent_pause_before_any_data_call(self) -> None:
+        for name, kind in (("clarify", ClarifyPending), ("consent", ConsentPending)):
+            with self.subTest(name):
+                _, frames = read_stream(name)
+                self.assertFalse(any(isinstance(f, StepStartedFrame) for f in frames))
+                pending = views(frames)[-1].pending
+                self.assertIsInstance(pending, kind)
+        _, frames = read_stream("clarify")
+        clarify = views(frames)[-1].pending
+        assert isinstance(clarify, ClarifyPending)
+        self.assertTrue(all(o.field is not None and o.preview for o in clarify.options))
+        _, frames = read_stream("consent")
+        consent = views(frames)[-1].pending
+        assert isinstance(consent, ConsentPending)
+        self.assertEqual((consent.named.app_id, consent.proposed.app_id), ("OncoMatrix", "Correlation"))
+
+
+class BuilderTests(unittest.TestCase):
+    """`fixtures/build_fixtures.py` reproduces every fixture byte for byte (it is the only way to change them)."""
+
+    def test_builder_output_equals_the_fixtures_on_disk(self) -> None:
+        if not (FIXTURES / "build_fixtures.py").exists():
+            self.skipTest(f"{FIXTURES} is not mounted")
+        builder = load_builder()
+        built: dict[str, str] = builder.build_all()
+        self.assertTrue(set(built) >= {f"{name}.events.jsonl" for name in STREAMS})
+        for name, text in built.items():
+            with self.subTest(name):
+                self.assertEqual((FIXTURES / name).read_text(encoding="utf-8"), text)
+        mirrored: dict[str, str] = builder.mirror_files(built)
+        self.assertEqual(json.loads(mirrored["agui/__fixtures__/j1Stub.ts"].split("=\n  ", 1)[1].rstrip(";\n")), built["j1-stub.events.jsonl"])
+
+
+class CohortDefinitionTests(unittest.TestCase):
+    """`fixtures/cohort-def-vectors.json`: both sides reproduce every canonical definition and defSha256."""
+
+    def setUp(self) -> None:
+        path = FIXTURES / "cohort-def-vectors.json"
+        if not path.exists():
+            self.skipTest(f"{path} is not mounted")
+        self.vectors: list[dict[str, Any]] = json.loads(path.read_text(encoding="utf-8"))["vectors"]
+
+    def test_every_vector_reproduces_its_canonical_json_and_sha256(self) -> None:
+        for vector in self.vectors:
+            with self.subTest(vector["name"]):
+                if "definition" in vector:
+                    definition = CANONICAL_DEFINITION.validate_python(vector["definition"])
+                    self.assertEqual(canonical_definition(definition), vector["canonical"])
+                    self.assertEqual(def_sha256(definition), vector["sha256"])
+                else:
+                    read = definition_from_filter_set(FilterSet.model_validate(vector["filterSet"]))
+                    self.assertEqual(None if read is None else canonical_definition(read), vector["canonical"])
+                    self.assertEqual(None if read is None else def_sha256(read), vector["sha256"])
+                if vector["canonical"] is not None:
+                    self.assertEqual(sha256_hex(vector["canonical"]), vector["sha256"])
+
+    def test_equivalent_definitions_share_a_hash(self) -> None:
+        by_hash: dict[str | None, list[str]] = {}
+        for vector in self.vectors:
+            by_hash.setdefault(vector["sha256"], []).append(vector["name"])
+        groups = sorted(len(names) for digest, names in by_hash.items() if digest is not None)
+        self.assertEqual(groups[-3:], [2, 2, 4], "case-ID forms, the J2 race forms and = versus includes")
+        self.assertEqual(len(by_hash[None]), 3, "OR across fields, excludes, a number outside the canonical range")
+
+    def test_an_out_of_range_number_makes_a_filter_unreadable_instead_of_raising(self) -> None:
+        tiny = FilterSet.model_validate({"mode": "and", "root": {"x": {"operator": ">=", "field": "x", "operand": 0.00005}}})
+        self.assertIsNone(definition_from_filter_set(tiny))
+
+    def test_the_hash_covers_the_normalized_definition_only(self) -> None:
+        a = CANONICAL_DEFINITION.validate_python({"kind": "case_ids", "caseIds": ["B", "A", "A"]})
+        b = CANONICAL_DEFINITION.validate_python({"kind": "case_ids", "caseIds": ["A", "B"]})
+        c = CANONICAL_DEFINITION.validate_python({"kind": "case_ids", "caseIds": ["A", "C"]})
+        self.assertEqual(def_sha256(a), def_sha256(b))
+        self.assertNotEqual(def_sha256(a), def_sha256(c))
+        with self.assertRaises(ValidationError):
+            CANONICAL_DEFINITION.validate_python({"kind": "filter", "clauses": [{"field": "x", "op": "in", "values": ["a", 1]}]})
+        with self.assertRaises(ValidationError):
+            CANONICAL_DEFINITION.validate_python({"kind": "filter", "clauses": [{"field": "x", "op": ">=", "values": [1, 2]}]})
+
+
+class RequestExampleTests(unittest.TestCase):
+    """`fixtures/request-examples.json`: one RunAgentInput per action, each valid."""
+
+    def test_every_example_validates_and_every_action_is_covered(self) -> None:
+        path = FIXTURES / "request-examples.json"
+        if not path.exists():
+            self.skipTest(f"{path} is not mounted")
+        examples: list[dict[str, Any]] = json.loads(path.read_text(encoding="utf-8"))["examples"]
+        actions: set[str] = set()
+        edit_fields: set[str] = set()
+        for example in examples:
+            with self.subTest(example["name"]):
+                action = RunAgentInputModel.model_validate(example["body"]).orion()
+                actions.add(action.action)
+                if action.action == "edit_plan":
+                    edit_fields.add(action.field)
+        self.assertEqual(actions, set(get_args(ActionName)))
+        self.assertEqual(edit_fields, {"scope", "method", "topN", "thresholds", "cohortName"})
+
+
+class ActionModelTests(unittest.TestCase):
+    def test_confirm_rules(self) -> None:
+        saved: JsonValue = {"ref": "kras_wt", "cohortId": "c1", "name": "KRAS not detected (ORION)", "defSha256": "a" * 64, "reused": False}
+        base: dict[str, JsonValue] = {"action": "confirm", "nonce": "b" * 32}
+        ConfirmAction.model_validate({**base, "decision": "create", "saved": [saved], "makeActive": "kras_wt"})
+        bad: list[dict[str, JsonValue]] = [
+            {**base, "decision": "dont_save", "saved": [saved]},
+            {**base, "decision": "dont_save", "saved": [], "makeActive": "kras_wt"},
+            {**base, "decision": "create", "saved": []},
+            {**base, "decision": "create", "saved": [saved], "makeActive": "kras_mut"},
+            {**base, "decision": "create", "saved": [saved, saved]},
+            {**base, "nonce": "B" * 32, "decision": "dont_save", "saved": []},
+        ]
+        for payload in bad:
+            with self.subTest(payload=payload), self.assertRaises(ValidationError):
+                ORION_ACTION.validate_python(payload)
+
+    def test_edit_plan_validates_the_value_for_its_field(self) -> None:
+        ctx = context().model_dump(mode="json")
+        good: list[dict[str, JsonValue]] = [
+            {"field": "scope", "value": {"source": "saved_cohort", "cohortName": "Black patients"}, "cohortContext": ctx},
+            {"field": "method", "value": "limma"},
+            {"field": "topN", "value": 5},
+            {"field": "thresholds", "value": {"pValueCutoff": 0.05, "pValueType": "original", "foldChangeCutoff": 1}},
+            {"field": "cohortName", "value": "Renamed", "ref": "kras_mut"},
+        ]
+        bad: list[dict[str, JsonValue]] = [
+            {"field": "scope", "value": {"source": "all_cases"}},
+            {"field": "method", "value": "deseq2"},
+            {"field": "topN", "value": 0},
+            {"field": "thresholds", "value": {"pValueCutoff": 0, "pValueType": "adjusted", "foldChangeCutoff": 0.3}},
+            {"field": "cohortName", "value": "Renamed"},
+            {"field": "notes", "value": "x"},
+        ]
+        for payload in good:
+            ORION_ACTION.validate_python({"action": "edit_plan", **payload})
+        for payload in bad:
+            with self.subTest(payload=payload), self.assertRaises(ValidationError):
+                ORION_ACTION.validate_python({"action": "edit_plan", **payload})
+        renamed = ORION_ACTION.validate_python({"action": "edit_plan", **good[-1]})
+        self.assertIsInstance(renamed, EditCohortNameAction)
+
+    def test_viz_reports_ride_on_any_action(self) -> None:
+        report = {"runId": new_id(), "vizId": "v1", "mounted": True, "error": None, "pinnedHashVerified": True}
+        action = ORION_ACTION.validate_python({"action": "cancel", "vizReports": [report]})
+        self.assertEqual(len(action.viz_reports), 1)
+        with self.assertRaises(ValidationError):
+            ORION_ACTION.validate_python({"action": "cancel", "vizReports": [{**report, "vizId": "chart"}]})
+
+
+class ViewModelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        if not FIXTURES.exists():
+            self.skipTest(f"{FIXTURES} is not mounted")
+        _, frames = read_stream("j3-save-pause")
+        self.pause = views(frames)[-1]
+
+    def test_pending_must_match_the_status(self) -> None:
+        raw = self.pause.model_dump(mode="json")
+        for change in ({"status": "Executing"}, {"pending": None}, {"status": "Clarifying"}):
+            with self.subTest(change=change), self.assertRaises(ValidationError):
+                RunView.model_validate({**raw, **change})
+
+    def test_pending_cohorts_carry_a_matching_hash(self) -> None:
+        pending = self.pause.pending
+        assert isinstance(pending, ConfirmPending)
+        cohort = pending.cohorts[0].model_dump(mode="json")
+        with self.assertRaises(ValidationError):
+            PendingCohort.model_validate({**cohort, "defSha256": "0" * 64})
+        trimmed = PendingCohort.model_validate({**cohort, "definition": None})
+        self.assertIsNone(trimmed.definition)
+        with self.assertRaises(ValidationError):
+            SaveCohortsArgs.model_validate({**pending.model_dump(mode="json"), "cohorts": [trimmed.model_dump(mode="json")]})
+
+    def test_sentences_tables_and_viz_cohorts_are_consistent(self) -> None:
+        Sentence(segments=[], dropped="V-SEC")
+        with self.assertRaises(ValidationError):
+            Sentence(segments=[Segment(text="x")], dropped="V-NUM")
+        with self.assertRaises(ValidationError):
+            FrozenTable(columns=["a", "b"], rows=[[Segment(text="1")]], note=None)
+        _, frames = read_stream("j3-after-confirm")
+        final = views(frames)[-1].model_dump(mode="json")
+        with self.assertRaises(ValidationError):
+            RunView.model_validate({**final, "cohorts": [c for c in final["cohorts"] if c["ref"] != "kras_mut"]})
+
+
+class RunRecordTests(unittest.TestCase):
+    """`fixtures/run-record.*.json`: the record route's bodies for the finished J1 run and the retried one."""
+
+    def setUp(self) -> None:
+        self.records: dict[str, tuple[dict[str, Any], RunRecord]] = {}
+        for name in RECORDS:
+            path = FIXTURES / name
+            if not path.exists():
+                self.skipTest(f"{path} is not mounted")
+            raw: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+            self.records[name] = (raw, RunRecord.model_validate(raw))
+
+    def test_record_round_trips_and_projects_to_its_stored_view(self) -> None:
+        for name, stream in zip(RECORDS, ("j1-complete", "j1-retry")):
+            raw, record = self.records[name]
+            with self.subTest(name):
+                self.assertEqual(record.model_dump(mode="json"), raw)
+                self.assertEqual(record.schema_, "orion.run-record/v1")
+                self.assertEqual(record.view(), record.run_view)
+                _, frames = read_stream(stream)
+                self.assertEqual(record.run_view, views(frames)[-1])
+                self.assertEqual(record.environment.fingerprint_sha256, record.view().environment.fingerprint_sha256)
+
+    def test_every_fact_and_call_hash_is_consistent(self) -> None:
+        for name, (_, record) in self.records.items():
+            calls = {c.call_id: c for c in record.calls}
+            self.assertEqual(len(calls), len(record.calls), f"{name}: callIds are unique")
+            for call in record.calls:
+                with self.subTest(name, call=call.call_id):
+                    self.assertEqual(call.request_sha256, sha256_hex(canonical_json(call.request, portable=False)))
+                    expected = None if call.observed is None else sha256_hex(canonical_json(call.observed, portable=False))
+                    self.assertEqual(call.response_sha256, expected)
+                    self.assertTrue(call.call_id.startswith(f"{record.run_id}.v{call.plan_version}.{call.step_id}.c"))
+            for fact in record.facts:
+                with self.subTest(name, fact=fact.id):
+                    call = calls[fact.call_id]
+                    self.assertEqual(call.status, "ok")
+                    self.assertEqual((fact.step_id, fact.request_sha256, fact.response_sha256), (call.step_id, call.request_sha256, call.response_sha256))
+                    pointer = fact.json_pointer.removeprefix("/observed")
+                    value: Any = call.observed
+                    for part in [p for p in pointer.split("/") if p]:
+                        value = value[int(part)] if isinstance(value, list) else value[part]
+                    self.assertEqual(value, fact.value)
+            self.assertEqual({p.version for p in record.plan_history}, {p.version for p in record.plan_versions})
+            for model in record.model_calls:
+                TypeAdapter(ModelCallId).validate_python(model.call_id)
+
+    def test_a_retried_step_numbers_every_attempt(self) -> None:
+        _, record = self.records["run-record.j1-retry.json"]
+        s4 = [(c.call_id.rsplit(".", 1)[1], c.attempt, c.status) for c in record.calls if c.step_id == "s4"]
+        self.assertEqual(s4, [("c1", 1, "error"), ("c2", 2, "error"), ("c3", 1, "ok")])
+        self.assertEqual([a.action for a in record.actions], ["ask", "retry_step"])
+
+    def test_the_cited_requests_derive_the_pinned_inputs(self) -> None:
+        for name, (_, record) in self.records.items():
+            for spec in record.answer.viz_specs:
+                with self.subTest(name, viz=spec.viz_id):
+                    call = next(c for c in reversed(record.calls) if c.step_id == spec.cites_steps[0] and c.status == "ok")
+                    assert isinstance(call.request, dict)
+                    derived = derive_request_pinned(spec.launcher, call.request, call.observed)
+                    self.assertEqual(pinned_hash(derived), spec.request_pinned_hash)
+
+    def test_the_fingerprint_is_the_hash_of_s1s_document(self) -> None:
+        for name, (_, record) in self.records.items():
+            s1 = next(c for c in record.calls if c.step_id == "s1")
+            assert isinstance(s1.observed, dict) and isinstance(s1.observed["document"], dict)
+            self.assertEqual(fingerprint_sha256(s1.observed["document"]), record.environment.fingerprint_sha256, name)
+
+
+class ScenarioFixtureTests(unittest.TestCase):
+    """The paths builders most need to agree on (contract "Fixtures")."""
+
+    def setUp(self) -> None:
+        if not FIXTURES.exists():
+            self.skipTest(f"{FIXTURES} is not mounted")
+
+    def test_edit_at_the_pause_reuses_finished_steps_and_pauses_again_with_a_new_nonce(self) -> None:
+        _, pause_frames = read_stream("j3-save-pause")
+        _, frames = read_stream("j3-edit-at-pause")
+        paused = views(pause_frames)[-1]
+        first, last = views(frames)[0], views(frames)[-1]
+        assert first.plan is not None and last.plan is not None and paused.plan is not None
+        self.assertEqual((first.status, first.plan.version, first.pending), ("Executing", 2, None))
+        self.assertEqual([(s.plan_version, s.status, s.had_answer) for s in first.superseded], [(1, "AwaitingConfirmation", False)])
+        self.assertNotEqual(first.plan.signature, paused.plan.signature, "a cohort name is an argument of the write step and of de_run")
+        reused = {s.id: s for s in first.steps if s.status == "Reused"}
+        self.assertEqual(sorted(reused, key=lambda sid: int(sid[1:])), [f"s{i}" for i in range(1, 8)])
+        self.assertTrue(all(s.reused_from is not None and (s.reused_from.plan_version, s.reused_from.step_id) == (1, s.id) for s in reused.values()))
+        self.assertEqual([f.id for f in first.facts], [f.id for f in paused.facts], "facts carry over with the reused steps")
+        pending, old = last.pending, paused.pending
+        assert isinstance(pending, ConfirmPending) and isinstance(old, ConfirmPending)
+        self.assertNotEqual(pending.nonce, old.nonce)
+        self.assertEqual((pending.plan_version, pending.plan_signature), (2, last.plan.signature))
+        self.assertEqual([c.name for c in pending.cohorts if c.ref == "kras_wt"], ["KRAS wild-type (ORION)"])
+        self.assertFalse(any(isinstance(f, (StepStartedFrame, StepFinishedFrame)) for f in frames), "no step runs: s8 waits again")
+
+    def test_dont_save_skips_the_write_and_runs_on_the_proposed_names(self) -> None:
+        _, frames = read_stream("j3-dont-save")
+        first, final = views(frames)[0], views(frames)[-1]
+        self.assertEqual([(s.status, s.code) for s in first.steps if s.id == "s8"], [("Skipped", "WRITE_SKIPPED")])
+        self.assertEqual({c.ref: c.save for c in final.cohorts if c.role == "planned" and c.ref != "tested"}, {"kras_wt": "skipped", "kras_mut": "skipped"})
+        self.assertIn("WRITE_SKIPPED", [item.code for item in final.limitations])
+        spec = final.viz_specs[0]
+        assert isinstance(spec.pinned, DeDirectPinned)
+        self.assertEqual([g.name for g in spec.pinned.groups], ["KRAS not detected (ORION)", "KRAS mutated (ORION)"])
+        self.assertTrue(all(c.cohort_id is None for c in final.cohorts), "hand-off has no saved cohort to open")
+
+    def test_partial_then_retry_step(self) -> None:
+        _, partial = read_stream("j1-partial")
+        statuses = [s.status for v in views(partial) for s in v.steps if s.id == "s4"]
+        self.assertIn("Retrying", statuses)
+        ended = views(partial)[-1]
+        self.assertEqual([(s.id, s.status, s.code) for s in ended.steps[3:]], [("s4", "Failed", "TOOL_FAILED"), ("s5", "Skipped", None)])
+        self.assertEqual((ended.withheld_reason, ended.interpretation, ended.viz_specs), ("a step failed", None, []))
+        _, retried = read_stream("j1-retry")
+        first, final = views(retried)[0], views(retried)[-1]
+        self.assertEqual([s.status for s in first.steps[3:]], ["Queued", "Queued"])
+        self.assertNotIn("TOOL_FAILED", [item.code for item in final.limitations])
+        self.assertEqual(final.status, "Complete")
+
+    def test_stop_shows_stopping_then_ends_cancelled_with_finished_steps_kept(self) -> None:
+        _, frames = read_stream("j1-stop")
+        statuses = [v.status for v in views(frames)]
+        self.assertEqual((statuses[0], statuses[-1]), ("Stopping", "Cancelled"))
+        final = views(frames)[-1]
+        self.assertEqual([s.status for s in final.steps], ["Done", "Done", "Done", "Skipped", "Skipped"])
+        self.assertTrue(all(s.output_summary == "Not run: stopped" for s in final.steps[3:]))
+        self.assertEqual((final.code, final.withheld_reason), (None, "you stopped the run"))
+        self.assertTrue(final.observed, "finished steps keep their Observed")
+        self.assertFalse(any(isinstance(f, (StepStartedFrame, StepFinishedFrame)) for f in frames), "a joining stream drops the step it did not see start")
+
+    def test_one_stream_can_report_an_earlier_run_first(self) -> None:
+        for name, status in (("interrupted", "Interrupted"), ("cancel-waiting", "Cancelled")):
+            with self.subTest(name):
+                _, frames = read_stream(name)
+                started, report = frames[0], frames[1]
+                assert isinstance(started, RunStartedFrame) and isinstance(report, StateSnapshotFrame)
+                self.assertNotEqual(report.snapshot.run_id, started.run_id)
+                self.assertEqual((report.snapshot.status, report.snapshot.pending), (status, None))
+                self.assertTrue(all(f.snapshot.run_id == started.run_id for f in frames[2:] if isinstance(f, StateSnapshotFrame)))
+        _, frames = read_stream("interrupted")
+        old = views(frames)[0]
+        self.assertEqual(old.code, "RUN_INTERRUPTED")
+        self.assertEqual([(s.status, s.code) for s in old.steps[3:]], [("Failed", "RUN_INTERRUPTED"), ("Skipped", None)])
+
+    def test_a_trimmed_snapshot_drops_pinned_inputs_but_keeps_their_hashes(self) -> None:
+        _, frames = read_stream("j3-deinput")
+        specs = [spec for v in views(frames) for spec in v.viz_specs]
+        self.assertTrue(specs and all(spec.launcher == "deInput" and spec.pinned is None for spec in specs))
+        self.assertTrue(all(spec.pinned_hash == spec.request_pinned_hash for spec in specs))
+        with self.assertRaises(ValidationError):
+            AnswerRecord(viz_specs=specs[:1])
+
+    def test_the_oncomatrix_card_pins_its_genes_in_display_order(self) -> None:
+        _, frames = read_stream("oncomatrix")
+        spec = views(frames)[-1].viz_specs[0]
+        assert isinstance(spec.pinned, OncomatrixPinned)
+        self.assertEqual(spec.pinned.genes, ["KRAS", "NRAS", "DIS3"])
+        self.assertEqual(spec.cohort_refs, ["high"])
+
+    def test_counts_on_the_confirmation_card_are_facts(self) -> None:
+        _, frames = read_stream("j3-save-pause")
+        pause = views(frames)[-1]
+        pending = pause.pending
+        assert isinstance(pending, ConfirmPending)
+        facts = {f.id: f for f in pause.facts}
+        for cohort in pending.cohorts:
+            assert cohort.case_count_fact_id is not None and cohort.eligible_count_fact_id is not None
+            self.assertEqual((facts[cohort.case_count_fact_id].value, facts[cohort.eligible_count_fact_id].value), (cohort.case_count, cohort.eligible_count))
+        base = next(c for c in pause.cohorts if c.ref == "base")
+        self.assertEqual((base.case_count, base.case_count_fact_id, base.cohort_id), (1000, "f.s1.cases", None))
+        self.assertEqual(pause.environment.fingerprint_sha256, fingerprint_sha256(fingerprint_document(
+            {"status": "OK", "synthetic": True, "cases": 1000}, {"version": "1.0.3"},
+            {"versionInfo": {"pkgver": "2.216.0-20261003.02:08", "codedate": "20261003.02:08"}},
+            [{"gene": g, "cases": n} for g, n in (("KRAS", 480), ("NRAS", 355), ("TP53", 301), ("DIS3", 288), ("BRAF", 97), ("MYC", 64))],
+        )))
+
+
+class VectorTests(unittest.TestCase):
+    """The small vector files both sides reproduce: fact formats, fingerprints, request-pinned derivation."""
+
+    def _vectors(self, name: str) -> list[dict[str, Any]]:
+        path = FIXTURES / name
+        if not path.exists():
+            self.skipTest(f"{path} is not mounted")
+        vectors: list[dict[str, Any]] = json.loads(path.read_text(encoding="utf-8"))["vectors"]
+        return vectors
+
+    def test_fact_format_vectors(self) -> None:
+        vectors = self._vectors("fact-format-vectors.json")
+        for vector in vectors:
+            with self.subTest(vector=vector):
+                self.assertEqual(format_fact(vector["value"], vector["unit"]), vector["text"])
+        texts = {(v["value"], v["unit"]): v["text"] for v in vectors}
+        self.assertEqual((texts[(1095, "days")], texts[(7.1e-60, "p")], texts[(-0.87, "log2FC")]), ("1,095", "7.1e-60", "-0.87"))
+        self.assertEqual((texts[(0.125, "log2FC")], texts[(9.96e-05, "p")]), ("0.13", "1.0e-4"), "half away from zero; mantissa carries")
+
+    def test_fingerprint_vectors(self) -> None:
+        vectors = self._vectors("fingerprint-vectors.json")
+        for vector in vectors:
+            with self.subTest(vector["name"]):
+                src = vector["sources"]
+                document = fingerprint_document(src["sandboxStatus"], src["analysisVersion"], src["healthcheck"], src["ranking"])
+                self.assertEqual(document, vector["document"])
+                self.assertEqual(canonical_json(document), vector["canonical"])
+                self.assertEqual(fingerprint_sha256(document), vector["sha256"])
+        self.assertEqual(vectors[0]["sha256"], vectors[1]["sha256"], "a restart keeps the fingerprint")
+        self.assertNotEqual(vectors[0]["sha256"], vectors[2]["sha256"])
+
+    def test_request_pinned_vectors(self) -> None:
+        vectors = self._vectors("request-pinned-vectors.json")
+        self.assertEqual({v["launcher"] for v in vectors}, set(get_args(PinnedKind)))
+        for vector in vectors:
+            with self.subTest(vector["name"]):
+                derived = derive_request_pinned(vector["launcher"], vector["request"], vector.get("observed"))
+                self.assertEqual(derived.model_dump(mode="json"), vector["pinned"])
+                self.assertEqual(pinned_hash(derived), vector["requestPinnedHash"])
+        de_input = next(v for v in vectors if v["launcher"] == "deInput")
+        self.assertIsInstance(PINNED.validate_python(de_input["pinned"]), DeInputPinned)
+
+
+class SizeBudgetTests(unittest.TestCase):
+    """The largest view the contract allows still fits one 32 KB frame (contract "Size: 32 KB")."""
+
+    def setUp(self) -> None:
+        if not (FIXTURES / "build_fixtures.py").exists():
+            self.skipTest(f"{FIXTURES} is not mounted")
+        self.builder = load_builder()
+
+    def _fit(self, view: RunView) -> RunView:
+        frame = events.encode(events.state_snapshot(view))
+        self.assertLessEqual(len(frame.encode()), SNAPSHOT_LIMIT_BYTES)
+        return StateSnapshotFrame.model_validate_json(frame[len("data: "):]).snapshot
+
+    def test_top_n_at_its_maximum_with_four_thousand_samples_fits(self) -> None:
+        view: RunView = self.builder.largest_complete_view()
+        fitted = self._fit(view)
+        self.assertEqual([f.id for f in fitted.facts], [f.id for f in view.facts], "facts are never trimmed")
+        self.assertEqual(fitted.observed, view.observed)
+        self.assertEqual((fitted.interpretation, fitted.hypotheses, fitted.follow_ups), (view.interpretation, view.hypotheses, view.follow_ups))
+        ranked = [f for f in fitted.facts if ".top." in f.id and f.id.endswith(".gene")]
+        self.assertEqual(len(ranked), VIEW_RANK_CAP)
+        spec = fitted.viz_specs[0]
+        self.assertIsNone(spec.pinned, "4,000 sample ids are read from the view route")
+        self.assertEqual((spec.pinned_hash, spec.request_pinned_hash), (view.viz_specs[0].pinned_hash, view.viz_specs[0].request_pinned_hash))
+        assert spec.frozen is not None
+        self.assertEqual(len(spec.frozen.rows), FROZEN_ROWS_CAP)
+
+    def test_six_pending_cohorts_of_ten_thousand_ids_fit(self) -> None:
+        view: RunView = self.builder.largest_pause_view()
+        fitted = self._fit(view)
+        pending, original = fitted.pending, view.pending
+        assert isinstance(pending, ConfirmPending) and isinstance(original, ConfirmPending)
+        self.assertEqual([c.definition for c in pending.cohorts if c.ref.startswith("group_")], [None] * 6)
+        self.assertEqual([c.def_sha256 for c in pending.cohorts], [c.def_sha256 for c in original.cohorts], "hashes are never trimmed")
+
+
+class ContractModelTests(unittest.TestCase):
+    def test_stopping_holds_a_short_lease_that_is_never_renewed(self) -> None:
+        self.assertIn("Stopping", LEASED_STATUSES)
+        self.assertNotIn("Stopping", RENEWED_STATUSES)
+        self.assertLess(STOP_LEASE_S, 180)
+
+    def test_call_ids_name_the_version_step_and_attempt(self) -> None:
+        good: TypeAdapter[str] = TypeAdapter(CallId)
+        run = new_id()
+        good.validate_python(f"{run}.v2.s10.c3")
+        for bad in (f"{run[:8]}.s2.1", f"{run}.s2.c1", f"{run}.v0.s2.c1", f"{run}.v1.s2.1"):
+            with self.subTest(bad), self.assertRaises(ValidationError):
+                good.validate_python(bad)
+        TypeAdapter(ModelCallId).validate_python(f"{run}.planner.c2")
+        TypeAdapter(ModelCallId).validate_python(f"{run}.v3.composer.c1")
+
+    def test_reused_steps_name_their_origin(self) -> None:
+        step: dict[str, JsonValue] = {"id": "s3", "row": 1, "tool": "t", "kind": "server", "folded": False, "inputSummary": "x",
+                                      "status": "Reused", "outputSummary": "y", "durationMs": 1, "code": None, "reusedFrom": None}
+        with self.assertRaises(ValidationError):
+            StepView.model_validate(step)
+        StepView.model_validate({**step, "reusedFrom": {"planVersion": 1, "stepId": "s3"}})
+        with self.assertRaises(ValidationError):
+            StepView.model_validate({**step, "status": "Done", "reusedFrom": {"planVersion": 1, "stepId": "s3"}})
+
+    def test_top_n_editables_carry_their_maximum(self) -> None:
+        EditableTopN(field="topN", label="Top N", value=50, max=50)
+        with self.assertRaises(ValidationError):
+            EditableTopN(field="topN", label="Top N", value=51, max=50)
+
+    def test_fault_injection_is_for_test_runs_only(self) -> None:
+        self.assertEqual(parse_faults("de_run:timeout, planner:refuse,cohort_count:empty"),
+                         {"de_run": "timeout", "planner": "refuse", "cohort_count": "empty"})
+        for bad in ("de_run:refuse", "planner:timeout", "nope:timeout", "de_run:timeout,de_run:error"):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                parse_faults(bad)
+        self.assertEqual(Settings.model_validate({"faults": "composer:refuse"}).faults, {"composer": "refuse"})
+        with self.assertRaises(ValidationError):
+            Settings.model_validate({"mode": "A", "faults": "de_run:timeout"})
+        Settings.model_validate({"mode": "A", "test_runtime": True, "faults": "de_run:timeout"})
+
+
+class ExpiredLeaseContractTests(ControllerCase):
+    """Check 4 and the view route's expired-lease rule, as the controller records it."""
+
+    async def _orphan(self, thread_id: str, status: RunStatus) -> tuple[str, Lease]:
+        store = RunStore(self.run_dir)
+        run_id, now = new_id(), utc_now()
+        lease = Lease(owner="dead:1", renewed_at=iso_utc(now - timedelta(seconds=60)), expires_at=iso_utc(now - timedelta(seconds=30)))
+        statuses: tuple[tuple[int, StepStatus], ...] = ((1, "Done"), (2, "Running"), (3, "Queued"))
+        record = RunRecord(
+            thread_id=thread_id, run_id=run_id, revision=5, status=status, question="old", created_at=iso_utc(now - timedelta(seconds=90)),
+            updated_at=iso_utc(now - timedelta(seconds=60)), environment=Environment(mode="A", planner="stub", executor="stub", agent_version="test"),
+            lease=lease, request=AskAction(action="ask", question="old", cohort_context=context()),
+            steps=[
+                StepView(id=f"s{i}", row=1, tool="cohort_count", kind="server", folded=False, input_summary="x",
+                         status=step, output_summary=None, duration_ms=None, code=None)
+                for i, step in statuses
+            ],
+        )
+        await store.save_run(record)
+        await store.save_thread(ThreadIndex(thread_id=thread_id, run_ids=[run_id], active_run_id=run_id))
+        return run_id, lease
+
+    async def test_an_expired_stopping_run_ends_cancelled_not_interrupted(self) -> None:
+        _, app = self.make()
+        thread_id = new_id()
+        old, lease = await self._orphan(thread_id, "Stopping")
+        body = action_body(thread_id, old, {"action": "cancel"})
+        frames = check_stream(self, (await asgi_call(app, "POST", "/invocations", body)).text, expect_run_id=old)
+        view = snapshots(frames)[0].snapshot
+        self.assertEqual((view.status, view.code, view.revision, view.updated_at), ("Cancelled", None, 6, lease.expires_at))
+        self.assertEqual([(s.status, s.output_summary) for s in view.steps], [("Done", None), ("Skipped", "Not run: stopped"), ("Skipped", "Not run: stopped")])
+        last = frames[-1]
+        assert isinstance(last, RunFinishedFrame)
+        self.assertEqual(last.result.status, "Cancelled")
+        record = self.read_json(self.run_dir / "runs" / f"{old}.json")
+        self.assertEqual((record["status"], record["lease"], record["updatedAt"]), ("Cancelled", None, lease.expires_at))
+
+    async def test_the_controller_records_an_interruption_as_of_the_lease_expiry(self) -> None:
+        _, app = self.make()
+        thread_id = new_id()
+        old, lease = await self._orphan(thread_id, "Executing")
+        frames = check_stream(self, (await asgi_call(app, "POST", "/invocations", ask_body(thread_id, new_id()))).text)
+        report = snapshots(frames)[0].snapshot
+        self.assertEqual((report.run_id, report.status, report.updated_at), (old, "Interrupted", lease.expires_at))
 
 
 class LimitationTests(unittest.TestCase):
@@ -165,7 +1035,10 @@ class PinnedHashTests(unittest.TestCase):
             with self.subTest(pinned=pinned), self.assertRaises(ValidationError):
                 PINNED.validate_python(pinned)
         absent_hash = pinned_hash(PINNED.validate_python(de))
-        spec = {"vizId": "v1", "appId": "DE", "launcher": "deDirect", "citesSteps": ["s1"]}
+        spec: dict[str, JsonValue] = {
+            "vizId": "v1", "appId": "DE", "launcher": "deDirect", "citesSteps": ["s1"], "title": "DE", "caption": None,
+            "requestPinnedHash": absent_hash, "frozen": None, "cohortRefs": [],
+        }
         VizSpec.model_validate({**spec, "pinned": de, "pinnedHash": absent_hash})
         with self.assertRaises(ValidationError):
             VizSpec.model_validate({**spec, "pinned": {**de, "volcano": None}, "pinnedHash": absent_hash})
@@ -197,23 +1070,24 @@ class LiveAppStreamTests(ControllerCase):
         self.assertEqual(response.status, 200)
         self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
         frames = check_stream(self, response.text, expect_run_id=run_id)
-        views = [f.snapshot for f in snapshots(frames)]
-        self.assertEqual([v.status for v in views[:2]], ["Planning", "Executing"])
-        self.assertIsNone(views[0].plan)
-        plan = views[1].plan
+        views_ = [f.snapshot for f in snapshots(frames)]
+        self.assertEqual([v.status for v in views_[:2]], ["Planning", "Executing"])
+        self.assertIsNone(views_[0].plan)
+        plan = views_[1].plan
         assert plan is not None
         fixture_plan = self._fixture_plan()
         self.assertEqual(plan.model_dump(exclude={"signature"}), fixture_plan.model_dump(exclude={"signature"}))
         self.assertEqual(
-            [s.model_dump(include={"id", "row", "tool", "kind", "folded", "input_summary"}) for s in views[1].steps],
+            [s.model_dump(include={"id", "row", "tool", "kind", "folded", "input_summary"}) for s in views_[1].steps],
             [s.model_dump(include={"id", "row", "tool", "kind", "folded", "input_summary"}) for s in self._fixture_steps()],
         )
-        final = views[-1]
+        final = views_[-1]
         self.assertEqual((final.status, final.code), ("Limited", "NOT_IMPLEMENTED"))
         self.assertTrue(all(s.status == "Skipped" and s.code == "NOT_IMPLEMENTED" for s in final.steps))
         self.assertTrue(all(s.output_summary == STUB_SKIP_REASON for s in final.steps))
         self.assertEqual((final.facts, final.observed, final.viz_specs), ([], [], []))
         self.assertEqual([lim.code for lim in final.limitations], ["NOT_IMPLEMENTED"])
+        self.assertEqual((final.pending, final.follow_ups, final.notice), (None, [], SYNTHETIC_NOTICE))
         last = frames[-1]
         assert isinstance(last, RunFinishedFrame)
         self.assertEqual((last.result.status, last.result.code), ("Limited", "NOT_IMPLEMENTED"))
@@ -222,6 +1096,8 @@ class LiveAppStreamTests(ControllerCase):
         self.assertEqual(record["schema"], "orion.run-record/v1")
         self.assertEqual((record["status"], record["revision"], record["lease"]), ("Limited", final.revision, None))
         self.assertEqual(record["question"], J1_QUESTION)
+        # The record keeps the view the BFF view route serves, as of the last transition.
+        self.assertEqual(RunView.model_validate(record["runView"]), final)
         index = self.read_json(self.run_dir / "threads" / f"{thread_id}.json")
         self.assertEqual((index["runIds"], index["activeRunId"]), ([run_id], None))
 

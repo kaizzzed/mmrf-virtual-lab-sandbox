@@ -158,9 +158,10 @@ async def asgi_call(
 def check_stream(case: unittest.TestCase, text: str, expect_run_id: str | None = None) -> list[WireEvent]:
     """The contract's invariants for one invocation's stream with valid ids.
 
-    Snapshots belong to the invocation's run, except that an ask may first report an earlier run
-    of the same thread that it found with an expired lease (A2 "Disconnects"). A rejection
-    touches no run, so its RUN_ERROR comes right after RUN_STARTED.
+    Snapshots belong to the invocation's run, except that a turn may first report an earlier run
+    of the same thread: one it found with an expired lease (Interrupted, or Cancelled when it was
+    Stopping; A2 "Disconnects") or the paused run an ask's cancelWaiting ended (Cancelled). A
+    rejection touches no run, so its RUN_ERROR comes right after RUN_STARTED.
     """
     raw = list(iter_sse_data(text))
     frames = [parse_frame(data) for data in raw]
@@ -194,7 +195,7 @@ def check_stream(case: unittest.TestCase, text: str, expect_run_id: str | None =
             limitations = json.loads(data)["snapshot"]["limitations"]
             case.assertTrue(all("nearestApps" in item for item in limitations), "every limitation carries nearestApps")
             if frame.snapshot.run_id != first.run_id:
-                case.assertEqual(frame.snapshot.status, "Interrupted", "only an interrupted earlier run is reported")
+                case.assertIn(frame.snapshot.status, ("Interrupted", "Cancelled"), "only an ended earlier run is reported")
                 case.assertFalse(revisions, "an earlier run is reported before this run's own snapshots")
                 continue
             revisions.append(frame.snapshot.revision)

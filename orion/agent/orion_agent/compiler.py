@@ -9,23 +9,26 @@ import json
 from dataclasses import dataclass, field
 from typing import Final
 
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from pydantic.alias_generators import to_camel
 
 from . import ir
-from .catalog import ANALYSIS_APPS, TOOL_REASONS
+from .catalog import ANALYSIS_APPS, TOOL_REASONS, AnalysisKind
 from .models import (
     Assumption,
     CohortContext,
     Code,
+    Editable,
     FilterSet,
     HexId,
     Limitation,
     NearestApp,
     PlanRow,
     PlanView,
+    RunStatus,
     SavedCohort,
     Scope,
+    ScopeChoice,
     ScopeSource,
     StepKind,
     StepView,
@@ -93,6 +96,11 @@ class CompiledPlan(CompiledModel):
     limitations: list[Limitation]
     writes: bool
     paraphrase: str
+    # v1.2 (contract): the second scope a follow-up names after a cohort switch, and the editable settings.
+    alt_scope: ResolvedScope | None = None
+    # The scope edit value that switches to alt_scope (the plan card's switch chip); set with it.
+    alt_scope_choice: ScopeChoice | None = None
+    editable: list[Editable] = Field(default_factory=list)
 
     def view(self) -> PlanView:
         return PlanView(
@@ -103,6 +111,9 @@ class CompiledPlan(CompiledModel):
             assumptions=self.assumptions,
             writes=self.writes,
             paraphrase=self.paraphrase,
+            alt_scope=None if self.alt_scope is None else self.alt_scope.view(),
+            alt_scope_choice=self.alt_scope_choice,
+            editable=self.editable,
         )
 
 
@@ -117,16 +128,26 @@ class LedgerCohort(CompiledModel):
     ref: str
     name: str
     clauses: list[ir.Clause]
+    # v1.2 (contract types for the ledger builder): the saved cohort, when the run saved or reused one.
+    cohort_id: str | None = None
+    def_sha256: str | None = None
+    case_count: int | None = None
 
 
 class LedgerRun(CompiledModel):
     run_id: HexId
     scope: ResolvedScope
     cohorts: list[LedgerCohort]
+    # v1.2: what the planner sees of an earlier run (A2 SessionLedger: questions, signatures, fact labels).
+    question: str = ""
+    signature: str | None = None
+    status: RunStatus | None = None
+    analyses: list[AnalysisKind] = Field(default_factory=list)
+    fact_labels: list[str] = Field(default_factory=list)
 
 
 class SessionLedger(CompiledModel):
-    """The thread's earlier runs, as far as scope precedence needs them (the full ledger lands Day 2)."""
+    """The thread's earlier runs, oldest first, derived from their run records."""
 
     runs: list[LedgerRun]
 

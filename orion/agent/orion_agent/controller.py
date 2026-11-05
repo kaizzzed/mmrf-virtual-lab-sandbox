@@ -8,20 +8,28 @@ a client disconnect, the run keeps going and finishes in its record. One run is 
 import asyncio
 import logging
 import threading
-from functools import partial
 from collections import defaultdict
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
+from datetime import datetime
+from functools import partial
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from typing import Protocol, cast
+from typing import cast
 
 from ag_ui.core import BaseEvent, RunAgentInput, RunErrorEvent, RunFinishedEvent, StepFinishedEvent, StepStartedEvent
 from pydantic import ValidationError
 
 from . import AGENT_VERSION, events, ir
-from .compiler import CompiledPlan, Compiler, CompileStop, SessionLedger
+from .compiler import Compiler, CompileStop
 from .events import iso_utc, utc_now
 from .ids import is_valid_id
+
+# Re-exported: the run controller's collaborators are defined in interfaces.py.
+from .interfaces import ExecutionResult as ExecutionResult
+from .interfaces import Executor as Executor
+from .interfaces import Planner as Planner
+from .interfaces import ResumeState as ResumeState
+from .interfaces import StepSession as StepSession
 from .lease import is_expired, keep_renewed, owner_id
 from .models import (
     END_STATUSES,
@@ -29,54 +37,34 @@ from .models import (
     RESERVED_ACTIONS,
     WAITING_STATUSES,
     AskAction,
+    CallRecord,
     CancelAction,
-    CohortContext,
     Code,
+    CohortRef,
+    ConfirmationRecord,
+    ConfirmPending,
+    FactRecord,
     FinishStatus,
     Limitation,
     NearestApp,
     RunStatus,
     RunView,
+    StepOrigin,
     StepStatus,
     WarmupAction,
 )
 from .run_store import Environment, RunRecord, RunStore, RunWriter, ThreadIndex
-from .settings import Settings
+from .settings import Settings, fault_list
 
 log = logging.getLogger("orion.controller")
 
 TERMINAL_EVENTS = (RunFinishedEvent, RunErrorEvent)
 STOPPED_SUMMARY = "Not run: stopped"
 FAILED_SUMMARY = "Not run: the run failed"
+INTERRUPTED_SUMMARY = "Not run: interrupted"
+STOPPED_WITHHELD = "you stopped the run"
+INTERRUPTED_WITHHELD = "the run was interrupted"
 INTERNAL_MESSAGE = "ORION hit an internal error; the run record keeps every finished step."
-
-
-class Planner(Protocol):
-    async def plan(self, question: str, context: CohortContext, ledger: SessionLedger | None) -> ir.PlannerOutput: ...
-
-
-@dataclass(frozen=True)
-class ExecutionResult:
-    status: RunStatus
-    code: Code | None
-    limitations: list[Limitation]
-
-
-class StepSession(Protocol):
-    @property
-    def stop_requested(self) -> bool: ...
-
-    async def start_step(self, step_id: str) -> None: ...
-
-    async def finish_step(
-        self, step_id: str, status: StepStatus, output_summary: str | None, duration_ms: int | None, code: Code | None
-    ) -> None: ...
-
-    async def skip_step(self, step_id: str, code: Code | None, reason: str) -> None: ...
-
-
-class Executor(Protocol):
-    async def execute(self, plan: CompiledPlan, session: StepSession) -> ExecutionResult: ...
 
 
 class _InputError(Exception):
@@ -163,9 +151,32 @@ def _set_step(record: RunRecord, step_id: str, **update: object) -> None:
     record.steps = [s.model_copy(update=update) if s.id == step_id else s for s in record.steps]
 
 
+def _keep_step_outputs(
+    record: RunRecord, facts: Sequence[FactRecord], calls: Sequence[CallRecord], cohorts: Sequence[CohortRef]
+) -> None:
+    record.calls.extend(calls)
+    record.facts.extend(facts)
+    for cohort in cohorts:
+        record.cohorts = [cohort if c.ref == cohort.ref else c for c in record.cohorts]
+        if all(c.ref != cohort.ref for c in record.cohorts):
+            record.cohorts.append(cohort)
+
+
+def _carried_facts(record: RunRecord, step_id: str, row: int, origin: StepOrigin) -> list[FactRecord]:
+    """The origin step's facts for a Reused step, renamed to its id and row; values and hashes unchanged."""
+    sources = [record.facts, *(version.facts for version in record.superseded)]
+    found = [f for facts in sources for f in facts if f.plan_version == origin.plan_version and f.step_id == origin.step_id]
+    prefix, renamed = f"f.{origin.step_id}.", f"f.{step_id}."
+    return [
+        f.model_copy(update={"id": renamed + f.id.removeprefix(prefix), "step_id": step_id, "row": row})
+        for f in {f.id: f for f in found}.values()
+    ]
+
+
 class _Session:
-    def __init__(self, handle: RunHandle) -> None:
+    def __init__(self, handle: RunHandle, resume: ResumeState | None = None) -> None:
         self._handle = handle
+        self._resume = resume
 
     @property
     def _writer(self) -> RunWriter:
@@ -176,22 +187,85 @@ class _Session:
     def stop_requested(self) -> bool:
         return self._handle.stop.is_set()
 
+    @property
+    def resume(self) -> ResumeState | None:
+        return self._resume
+
+    async def wait_stop(self) -> None:
+        await self._handle.stop.wait()
+
     async def start_step(self, step_id: str) -> None:
         self._handle.publish(events.step_started(step_id))
         self._handle.open_steps.append(step_id)
         await self._writer.transition(lambda r: _set_step(r, step_id, status="Running"))
 
+    async def retrying(self, step_id: str, *, attempt: int, backoff_ms: int) -> None:
+        log.info("step %s retrying: attempt %d after %d ms", step_id, attempt, backoff_ms)
+        await self._writer.transition(lambda r: _set_step(r, step_id, status="Retrying"))
+
     async def finish_step(
-        self, step_id: str, status: StepStatus, output_summary: str | None, duration_ms: int | None, code: Code | None
+        self,
+        step_id: str,
+        status: StepStatus,
+        output_summary: str | None,
+        duration_ms: int | None,
+        code: Code | None,
+        *,
+        facts: Sequence[FactRecord] = (),
+        calls: Sequence[CallRecord] = (),
+        cohorts: Sequence[CohortRef] = (),
+        limitations: Sequence[Limitation] = (),
     ) -> None:
         self._handle.open_steps.remove(step_id)
         self._handle.publish(events.step_finished(step_id))
-        await self._writer.transition(
-            lambda r: _set_step(r, step_id, status=status, output_summary=output_summary, duration_ms=duration_ms, code=code)
-        )
 
-    async def skip_step(self, step_id: str, code: Code | None, reason: str) -> None:
-        await self._writer.transition(lambda r: _set_step(r, step_id, status="Skipped", output_summary=reason, code=code))
+        def finish(r: RunRecord) -> None:
+            _set_step(r, step_id, status=status, output_summary=output_summary, duration_ms=duration_ms, code=code)
+            _keep_step_outputs(r, facts, calls, cohorts)
+            r.answer.limitations.extend(item for item in limitations if item not in r.answer.limitations)
+
+        await self._writer.transition(finish)
+
+    async def skip_step(
+        self, step_id: str, code: Code | None, reason: str, *, calls: Sequence[CallRecord] = ()
+    ) -> None:
+        if step_id in self._handle.open_steps:
+            self._handle.open_steps.remove(step_id)
+            self._handle.publish(events.step_finished(step_id))
+
+        def skip(r: RunRecord) -> None:
+            _set_step(r, step_id, status="Skipped", output_summary=reason, code=code)
+            r.calls.extend(calls)
+
+        await self._writer.transition(skip)
+
+    async def reuse_step(self, step_id: str, *, origin: StepOrigin) -> None:
+        def reuse(r: RunRecord) -> None:
+            row = next(s.row for s in r.steps if s.id == step_id)
+            _set_step(r, step_id, status="Reused", reused_from=origin)
+            r.facts.extend(_carried_facts(r, step_id, row, origin))
+
+        await self._writer.transition(reuse)
+
+
+def _cancel_mark(r: RunRecord) -> None:
+    """End a paused or expired-Stopping run Cancelled: open steps Skipped, a pending nonce voided."""
+    r.status, r.code = "Cancelled", None
+    r.steps = [
+        s.model_copy(update={"status": "Skipped", "output_summary": STOPPED_SUMMARY})
+        if s.status in ("Queued", "AwaitingUser", "Running", "Retrying")
+        else s
+        for s in r.steps
+    ]
+    if isinstance(r.pending, ConfirmPending):
+        r.confirmations.append(
+            ConfirmationRecord(
+                nonce=r.pending.nonce, decision=None, saved=[], make_active=None, at=iso_utc(utc_now()), outcome="voided"
+            )
+        )
+    r.pending = None
+    if r.answer.observed and r.answer.withheld_reason is None:
+        r.answer.withheld_reason = STOPPED_WITHHELD
 
 
 class Controller:
@@ -237,12 +311,16 @@ class Controller:
         if isinstance(action, str) and action in RESERVED_ACTIONS:
             raise _InputError("NOT_IMPLEMENTED", f"The {action} action is not implemented yet.")
         try:
-            return ORION_ACTION.validate_python(orion)
+            request = ORION_ACTION.validate_python(orion)
         except ValidationError as error:
             details = "; ".join(
                 f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in error.errors(include_input=False, include_url=False)[:3]
             )
             raise _InputError("INVALID_INPUT", f"Invalid forwardedProps.orion: {details}") from None
+        if not isinstance(request, (AskAction, WarmupAction, CancelAction)):
+            # Unreachable while RESERVED_ACTIONS names every other action.
+            raise _InputError("NOT_IMPLEMENTED", f"The {request.action} action is not implemented yet.")
+        return request
 
     async def _dispatch(self, run_input: RunAgentInput) -> AsyncGenerator[BaseEvent, None]:
         thread_id, run_id = run_input.thread_id, run_input.run_id
@@ -322,20 +400,29 @@ class Controller:
         if record is not None and record.status not in END_STATUSES:
             if not is_expired(record.lease, utc_now()):
                 return True
-            reports.append(events.state_snapshot(await self._interrupt(record)))
+            reports.append(events.state_snapshot(await self._expire(record)))
         index.active_run_id = None
         await self.store.save_thread(index)
         return False
 
-    async def _interrupt(self, record: RunRecord) -> RunView:
+    async def _expire(self, record: RunRecord) -> RunView:
+        """Record a run whose lease lapsed: a Stopping run ends Cancelled, any other ends Interrupted.
+
+        updatedAt is the lease's expiry (or the record's updatedAt without a lease), so the record
+        equals what the BFF view route showed for it (contract "Expired-lease rule").
+        """
+        at = datetime.fromisoformat((record.lease.expires_at if record.lease else record.updated_at).replace("Z", "+00:00"))
         writer = RunWriter(self.store, record, self.owner, self.settings.lease_ttl_s)
+        if record.status == "Stopping":
+            log.info("run %s cancelled: its Stopping lease expired", record.run_id)
+            return await writer.transition(_cancel_mark, at=at)
 
         def mark(r: RunRecord) -> None:
             r.status, r.code = "Interrupted", "RUN_INTERRUPTED"
             r.steps = [
                 s.model_copy(update={"status": "Failed", "code": "RUN_INTERRUPTED"})
                 if s.status in ("Running", "Retrying")
-                else s.model_copy(update={"status": "Skipped", "output_summary": "Not run: interrupted"})
+                else s.model_copy(update={"status": "Skipped", "output_summary": INTERRUPTED_SUMMARY})
                 if s.status == "Queued"
                 else s
                 for s in r.steps
@@ -347,9 +434,12 @@ class Controller:
                     unblock="Ask again.",
                 )
             )
+            if r.answer.observed and r.answer.withheld_reason is None:
+                r.answer.withheld_reason = INTERRUPTED_WITHHELD
+            r.pending = None
 
         log.info("run %s interrupted: lease expired", record.run_id)
-        return await writer.transition(mark)
+        return await writer.transition(mark, at=at)
 
     def _launch(
         self, thread_id: str, run_id: str, ask: AskAction, preface: list[BaseEvent]
@@ -369,7 +459,11 @@ class Controller:
             created_at=now,
             updated_at=now,
             environment=Environment(
-                mode="L", planner=self.settings.planner, executor=self.settings.executor, agent_version=AGENT_VERSION
+                mode=self.settings.mode,
+                planner=self.settings.planner,
+                executor=self.settings.executor,
+                agent_version=AGENT_VERSION,
+                faults=fault_list(self.settings.faults),
             ),
             request=ask,
         )
@@ -419,10 +513,18 @@ class Controller:
         assert handle.writer is not None
         writer = handle.writer
         ask = writer.record.request
-        output = await self.planner.plan(ask.question, ask.cohort_context, None)
-        await writer.stage(lambda r: setattr(r, "planner_output", output))
+        result = await self.planner.plan(ask.question, ask.cohort_context, None)
+        output = result.output
+
+        def keep_plan_call(r: RunRecord) -> None:
+            r.planner_output = output
+            r.model_calls.extend(result.model_calls)
+
+        await writer.stage(keep_plan_call)
         if handle.stop.is_set():
             return await self._finish(handle, "Cancelled", None)
+        if output is None:
+            return await self._finish(handle, "Failed", "PLANNER_DECLINED")
         if isinstance(output, ir.Unsupported):
             return await self._finish(handle, "Unsupported", output.reason, [self._unsupported_limitation(output)])
         if isinstance(output, ir.Clarify):
@@ -440,11 +542,11 @@ class Controller:
                 r.status = "Executing"
 
         await writer.transition(show_plan)
-        result = await self.executor.execute(compiled, _Session(handle))
+        executed = await self.executor.execute(compiled, _Session(handle))
         if handle.stop.is_set():
             await self._skip_queued(handle, STOPPED_SUMMARY)
             return await self._finish(handle, "Cancelled", None)
-        await self._finish(handle, result.status, result.code, result.limitations)
+        await self._finish(handle, executed.status, executed.code, executed.limitations)
 
     def _unsupported_limitation(self, output: ir.Unsupported) -> Limitation:
         texts = {
@@ -518,7 +620,11 @@ class Controller:
             if record is None or record.thread_id != thread_id:
                 replies.append(events.run_error("RUN_NOT_FOUND", "No run with this runId exists in this thread."))
             elif handle is not None and handle.status not in END_STATUSES:
+                already = handle.status == "Stopping"
                 follow = (handle, handle.subscribe())
+                if already and handle.last_snapshot is not None:
+                    # A joining invocation first sends the run's current snapshot.
+                    follow[1].put_nowait(handle.last_snapshot)
             else:
                 replies = await self._cancel_at_rest(record)
         if follow is not None:
@@ -549,9 +655,9 @@ class Controller:
             return [events.state_snapshot(record.view()), terminal_for(record)]
         writer = RunWriter(self.store, record, self.owner, self.settings.lease_ttl_s)
         if record.status in WAITING_STATUSES:
-            view = await writer.transition(lambda r: setattr(r, "status", "Cancelled"))
+            view = await writer.transition(_cancel_mark)
         elif is_expired(record.lease, utc_now()):
-            view = await self._interrupt(record)
+            view = await self._expire(record)
         else:
             return [events.run_error("RUN_BUSY", "This run is owned by another controller; try again shortly.")]
         index = await self.store.load_thread(record.thread_id)

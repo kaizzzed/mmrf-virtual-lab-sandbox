@@ -9,7 +9,7 @@ from typing import Final
 from . import ir
 from .catalog import NamedToolName
 from .compiler import CompiledPlan, SessionLedger
-from .controller import ExecutionResult, StepSession
+from .interfaces import Clarification, ExecutionResult, PlannerResult, StepSession
 from .models import CohortContext, Limitation
 
 CGS_RISK: Final = "cgs_risk_key_criteria.cgs_risk_category"
@@ -42,7 +42,19 @@ def j1_plan(named_tools: list[NamedToolName] | None = None) -> ir.Plan:
 
 
 class StubPlanner:
-    async def plan(self, question: str, context: CohortContext, ledger: SessionLedger | None) -> ir.PlannerOutput:
+    async def plan(
+        self,
+        question: str,
+        cohort_context: CohortContext,
+        ledger: SessionLedger | None,
+        *,
+        clarification: Clarification | None = None,
+    ) -> PlannerResult:
+        return PlannerResult(
+            output=self._output(question), model_calls=[], serving_model="stub", declined=False, decline_reason=None, repaired=False
+        )
+
+    def _output(self, question: str) -> ir.PlannerOutput:
         text = question.casefold()
         if "venn" in text:
             # Design eval E18: no analysis kind draws a Venn diagram; Set Operations is the nearest app.

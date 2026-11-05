@@ -1,0 +1,1599 @@
+{
+  "schema": "orion.run-record/v1",
+  "threadId": "eb3893e3ec4b61d471d1cba4abfd912a",
+  "runId": "725ff3c629bddfbbadaad7e5513f479b",
+  "revision": 9,
+  "status": "Complete",
+  "code": null,
+  "question": "Compare survival of CGS high-risk vs. CGS standard-risk patients",
+  "createdAt": "2026-11-04T15:00:00.100Z",
+  "updatedAt": "2026-11-04T15:00:09.800Z",
+  "environment": {
+    "mode": "L",
+    "planner": "bedrock",
+    "executor": "engine",
+    "agentVersion": "0.2.0",
+    "toolTransport": "in_process",
+    "fingerprintSha256": "0f27e0bdbb28a9357689a6137a8db7a9419dc59e5ec6a2a0e09b826bade7d71d",
+    "faults": []
+  },
+  "lease": null,
+  "request": {
+    "vizReports": [],
+    "action": "ask",
+    "question": "Compare survival of CGS high-risk vs. CGS standard-risk patients",
+    "cohortContext": {
+      "active": {
+        "id": null,
+        "name": "All cases",
+        "filters": {
+          "mode": "and",
+          "root": {}
+        },
+        "caseCount": 1000
+      },
+      "saved": []
+    },
+    "cancelWaiting": null
+  },
+  "plannerOutput": {
+    "kind": "plan",
+    "base_cohort": null,
+    "follows": null,
+    "cohorts": [],
+    "analyses": [
+      {
+        "kind": "survival_compare",
+        "split_term": "cgs_risk_key_criteria.cgs_risk_category",
+        "split_values": [
+          "high risk",
+          "standard risk"
+        ],
+        "groups": null
+      }
+    ],
+    "named_tools": []
+  },
+  "planVersions": [
+    {
+      "version": 1,
+      "signature": "3c1f0e7a9b5d2c4e6f8a0b1c3d5e7f9a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e",
+      "scope": {
+        "source": "active_cohort",
+        "name": "All cases",
+        "caseCount": 1000,
+        "clauses": []
+      },
+      "rows": [
+        {
+          "row": 1,
+          "label": "Count both CGS risk groups",
+          "tool": "cohort_count",
+          "reason": "Cohort Builder counts filter cohorts",
+          "stepIds": [
+            "s1",
+            "s2",
+            "s3"
+          ]
+        },
+        {
+          "row": 2,
+          "label": "Compare survival: Kaplan–Meier, split by CGS risk category",
+          "tool": "survival_compare",
+          "reason": "Correlation Plot runs survival comparisons",
+          "stepIds": [
+            "s4",
+            "s5"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "id": "s1",
+          "row": 1,
+          "tool": "fixture_fingerprint",
+          "kind": "server",
+          "folded": true,
+          "inputSummary": "sandbox status, versions, ranking",
+          "args": {},
+          "dependsOn": []
+        },
+        {
+          "id": "s2",
+          "row": 1,
+          "tool": "cohort_count",
+          "kind": "server",
+          "folded": false,
+          "inputSummary": "CGS risk category = High risk",
+          "args": {
+            "filter": {
+              "and": [
+                {
+                  "in": {
+                    "cgs_risk_key_criteria.cgs_risk_category": [
+                      "High risk"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          "dependsOn": []
+        },
+        {
+          "id": "s3",
+          "row": 1,
+          "tool": "cohort_count",
+          "kind": "server",
+          "folded": false,
+          "inputSummary": "CGS risk category = Standard risk",
+          "args": {
+            "filter": {
+              "and": [
+                {
+                  "in": {
+                    "cgs_risk_key_criteria.cgs_risk_category": [
+                      "Standard risk"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          "dependsOn": []
+        },
+        {
+          "id": "s4",
+          "row": 2,
+          "tool": "survival_compare",
+          "kind": "server",
+          "folded": false,
+          "inputSummary": "2 groups, Kaplan–Meier",
+          "args": {
+            "scope": null,
+            "term": "overall_survival",
+            "split": {
+              "field": "cgs_risk_key_criteria.cgs_risk_category",
+              "overlay": "cgs_risk_category"
+            },
+            "groups": [
+              {
+                "label": "High risk",
+                "filter": {
+                  "and": [
+                    {
+                      "in": {
+                        "cgs_risk_key_criteria.cgs_risk_category": [
+                          "High risk"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "label": "Standard risk",
+                "filter": {
+                  "and": [
+                    {
+                      "in": {
+                        "cgs_risk_key_criteria.cgs_risk_category": [
+                          "Standard risk"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "dependsOn": [
+            "s2",
+            "s3"
+          ]
+        },
+        {
+          "id": "s5",
+          "row": 2,
+          "tool": "derive_km_median",
+          "kind": "exec",
+          "folded": false,
+          "inputSummary": "2 curves",
+          "args": {
+            "curves": "s4"
+          },
+          "dependsOn": [
+            "s4"
+          ]
+        }
+      ],
+      "assumptions": [
+        {
+          "code": "DEFAULT_SCOPE_ACTIVE",
+          "text": "No cohort named: using the active cohort, All cases"
+        },
+        {
+          "code": "SPLIT_CGS_RISK",
+          "text": "High risk vs. Standard risk from CGS risk category"
+        }
+      ],
+      "limitations": [],
+      "writes": false,
+      "paraphrase": "Compare overall survival between CGS High risk and Standard risk cases in All cases.",
+      "altScope": null,
+      "altScopeChoice": null,
+      "editable": [
+        {
+          "field": "scope",
+          "label": "Scope",
+          "value": {
+            "source": "active_cohort"
+          }
+        }
+      ]
+    }
+  ],
+  "planHistory": [
+    {
+      "version": 1,
+      "cause": "ask",
+      "at": "2026-11-04T15:00:02.600Z",
+      "ir": {
+        "kind": "plan",
+        "base_cohort": null,
+        "follows": null,
+        "cohorts": [],
+        "analyses": [
+          {
+            "kind": "survival_compare",
+            "split_term": "cgs_risk_key_criteria.cgs_risk_category",
+            "split_values": [
+              "high risk",
+              "standard risk"
+            ],
+            "groups": null
+          }
+        ],
+        "named_tools": []
+      },
+      "edit": null
+    }
+  ],
+  "modelCalls": [
+    {
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.planner.c1",
+      "role": "planner",
+      "model": "anthropic.claude-opus-5-5",
+      "fallback": false,
+      "effort": "low",
+      "attempt": 1,
+      "startedAt": "2026-11-04T15:00:00.200Z",
+      "elapsedMs": 2310,
+      "outcome": "ok",
+      "stopReason": "end_turn",
+      "inputTokens": 7840,
+      "outputTokens": 412,
+      "cacheReadTokens": 7120,
+      "cacheWriteTokens": 0
+    },
+    {
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.composer.c1",
+      "role": "composer",
+      "model": "anthropic.claude-opus-5-5",
+      "fallback": false,
+      "effort": "medium",
+      "attempt": 1,
+      "startedAt": "2026-11-04T15:00:06.500Z",
+      "elapsedMs": 3240,
+      "outcome": "ok",
+      "stopReason": "end_turn",
+      "inputTokens": 8215,
+      "outputTokens": 655,
+      "cacheReadTokens": 7120,
+      "cacheWriteTokens": 0
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "row": 1,
+      "tool": "fixture_fingerprint",
+      "kind": "server",
+      "folded": true,
+      "inputSummary": "sandbox status, versions, ranking",
+      "status": "Done",
+      "outputSummary": "fingerprint 0f27…",
+      "durationMs": 412,
+      "code": null,
+      "reusedFrom": null
+    },
+    {
+      "id": "s2",
+      "row": 1,
+      "tool": "cohort_count",
+      "kind": "server",
+      "folded": false,
+      "inputSummary": "CGS risk category = High risk",
+      "status": "Done",
+      "outputSummary": "339 cases",
+      "durationMs": 188,
+      "code": null,
+      "reusedFrom": null
+    },
+    {
+      "id": "s3",
+      "row": 1,
+      "tool": "cohort_count",
+      "kind": "server",
+      "folded": false,
+      "inputSummary": "CGS risk category = Standard risk",
+      "status": "Done",
+      "outputSummary": "661 cases",
+      "durationMs": 171,
+      "code": null,
+      "reusedFrom": null
+    },
+    {
+      "id": "s4",
+      "row": 2,
+      "tool": "survival_compare",
+      "kind": "server",
+      "folded": false,
+      "inputSummary": "2 groups, Kaplan–Meier",
+      "status": "Done",
+      "outputSummary": "2 curves, log-rank p reported",
+      "durationMs": 1290,
+      "code": null,
+      "reusedFrom": null
+    },
+    {
+      "id": "s5",
+      "row": 2,
+      "tool": "derive_km_median",
+      "kind": "exec",
+      "folded": false,
+      "inputSummary": "2 curves",
+      "status": "Done",
+      "outputSummary": "2 medians",
+      "durationMs": 3,
+      "code": null,
+      "reusedFrom": null
+    }
+  ],
+  "calls": [
+    {
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s1.c1",
+      "planVersion": 1,
+      "stepId": "s1",
+      "tool": "fixture_fingerprint",
+      "transport": "in_process",
+      "attempt": 1,
+      "startedAt": "2026-11-04T15:00:02.600Z",
+      "request": {},
+      "requestSha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "httpStatus": 200,
+      "responseSha256": "a3fcac36a10751bdcdd650b03e69ffb1a30415f940649882091ffd7afbdc35fa",
+      "elapsedMs": 412,
+      "status": "ok",
+      "observed": {
+        "document": {
+          "schema": "orion.fixture-fingerprint/v1",
+          "sandbox": {
+            "status": "OK",
+            "synthetic": true,
+            "cases": 1000
+          },
+          "analysis": {
+            "version": "1.0.3"
+          },
+          "proteinpaint": {
+            "pkgver": "2.216.0-20261003.02:08",
+            "codedate": "20261003.02:08"
+          },
+          "ranking": [
+            {
+              "gene": "KRAS",
+              "cases": 480
+            },
+            {
+              "gene": "NRAS",
+              "cases": 355
+            },
+            {
+              "gene": "TP53",
+              "cases": 301
+            },
+            {
+              "gene": "DIS3",
+              "cases": 288
+            },
+            {
+              "gene": "BRAF",
+              "cases": 97
+            },
+            {
+              "gene": "MYC",
+              "cases": 64
+            }
+          ]
+        },
+        "fingerprintSha256": "0f27e0bdbb28a9357689a6137a8db7a9419dc59e5ec6a2a0e09b826bade7d71d"
+      },
+      "warnings": [],
+      "limitation": null,
+      "error": null,
+      "provenance": [
+        {
+          "method": "GET",
+          "path": "/sandbox/status",
+          "requestSha256": "2367e983ba0a45f1e0e4f7064aadd738619010924b6fe49ddc1755cb8b2dd9a6",
+          "httpStatus": 200,
+          "responseSha256": "396fb1820682ef1aac53dea4b4cd8be666a465aea66925ffae6363d1ed86f3a9",
+          "elapsedMs": 21
+        },
+        {
+          "method": "GET",
+          "path": "/analysis/v0/_version",
+          "requestSha256": "b51783d47539c854020ea79292cc38a8bbb11cee6175b4bed5e7e6fca45c9bf8",
+          "httpStatus": 200,
+          "responseSha256": "324546dfeafb751a3b832f6138812dd000ab741b2e4ec1ee9b3f1392f5fc6c4d",
+          "elapsedMs": 18
+        },
+        {
+          "method": "GET",
+          "path": "/protein-paint/healthcheck",
+          "requestSha256": "729520f824f0129bc81e4271712e6c46bf63fd138a8d6da85ea456d7296264aa",
+          "httpStatus": 200,
+          "responseSha256": "e987c8cedba6343963ee326a332a4f4b9af3f007b880d70e044fc0446f8b1132",
+          "elapsedMs": 25
+        },
+        {
+          "method": "POST",
+          "path": "/protein-paint/termdb/topMutatedGenes",
+          "requestSha256": "bd60815cf2fbbb10781609f70ebbc0296f9c82cde874d08aec597edd510d574b",
+          "httpStatus": 200,
+          "responseSha256": "630e9da75cc490f084a1bbff795bed95f42f46874bf7867c9249f88aa902f949",
+          "elapsedMs": 330
+        }
+      ]
+    },
+    {
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s2.c1",
+      "planVersion": 1,
+      "stepId": "s2",
+      "tool": "cohort_count",
+      "transport": "in_process",
+      "attempt": 1,
+      "startedAt": "2026-11-04T15:00:03.200Z",
+      "request": {
+        "filter": {
+          "and": [
+            {
+              "in": {
+                "cgs_risk_key_criteria.cgs_risk_category": [
+                  "High risk"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "requestSha256": "f7f42f07e768187e2decb7367ff9634c01a35edfeefbdffc1f5ed65f952d0f1d",
+      "httpStatus": 200,
+      "responseSha256": "de2d38b63aee5f572c5126dfbb22c07a5140998f8bcce2610cc200059e5b2635",
+      "elapsedMs": 188,
+      "status": "ok",
+      "observed": {
+        "count": 339
+      },
+      "warnings": [],
+      "limitation": null,
+      "error": null,
+      "provenance": [
+        {
+          "method": "POST",
+          "path": "/guppy/graphql",
+          "requestSha256": "1b43b76aa3d136a62409f000c0e6a072821b9b7bb4ad50e99791c7073daa3e2d",
+          "httpStatus": 200,
+          "responseSha256": "e4b9a7a45cd219831f0d8ae3c4dab4ee69bd065c0e6c10f352ff574b8bbea69d",
+          "elapsedMs": 180
+        }
+      ]
+    },
+    {
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s3.c1",
+      "planVersion": 1,
+      "stepId": "s3",
+      "tool": "cohort_count",
+      "transport": "in_process",
+      "attempt": 1,
+      "startedAt": "2026-11-04T15:00:03.700Z",
+      "request": {
+        "filter": {
+          "and": [
+            {
+              "in": {
+                "cgs_risk_key_criteria.cgs_risk_category": [
+                  "Standard risk"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "requestSha256": "362a6369ea45d536d12da40680ce64b8e11eade29e85e6b1bb305d0b42b9a1eb",
+      "httpStatus": 200,
+      "responseSha256": "7094dc23de209903890284caab32c63366c2decea8d8a2607b494488e1718c46",
+      "elapsedMs": 171,
+      "status": "ok",
+      "observed": {
+        "count": 661
+      },
+      "warnings": [],
+      "limitation": null,
+      "error": null,
+      "provenance": [
+        {
+          "method": "POST",
+          "path": "/guppy/graphql",
+          "requestSha256": "b04bf189d0063e34f3f0fced4539dd2e1dd365eb24d5b5bb34a8326e75daf95e",
+          "httpStatus": 200,
+          "responseSha256": "9dd78b401b185513564b17043896e9521b2030481cd9f0fc108901f8fdf2da01",
+          "elapsedMs": 165
+        }
+      ]
+    },
+    {
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s4.c1",
+      "planVersion": 1,
+      "stepId": "s4",
+      "tool": "survival_compare",
+      "transport": "in_process",
+      "attempt": 1,
+      "startedAt": "2026-11-04T15:00:04.200Z",
+      "request": {
+        "scope": null,
+        "term": "overall_survival",
+        "split": {
+          "field": "cgs_risk_key_criteria.cgs_risk_category",
+          "overlay": "cgs_risk_category"
+        },
+        "groups": [
+          {
+            "label": "High risk",
+            "filter": {
+              "and": [
+                {
+                  "in": {
+                    "cgs_risk_key_criteria.cgs_risk_category": [
+                      "High risk"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "label": "Standard risk",
+            "filter": {
+              "and": [
+                {
+                  "in": {
+                    "cgs_risk_key_criteria.cgs_risk_category": [
+                      "Standard risk"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "requestSha256": "762f8ac51551f49b438deff8659e37d5c32bbb8ea9adf4ecb26b95c226253bea",
+      "httpStatus": 200,
+      "responseSha256": "8662eefb668b0009b734a9e06c30ff1001a71e357ffa30a14f6d44b95e07c198",
+      "elapsedMs": 1290,
+      "status": "ok",
+      "observed": {
+        "groups": [
+          {
+            "label": "High risk",
+            "cases": 339,
+            "events": 299,
+            "curve": [
+              {
+                "time": 0,
+                "survival": 1.0
+              },
+              {
+                "time": 365,
+                "survival": 0.85
+              },
+              {
+                "time": 730,
+                "survival": 0.7
+              },
+              {
+                "time": 1095,
+                "survival": 0.55
+              },
+              {
+                "time": 1460,
+                "survival": 0.4
+              },
+              {
+                "time": 2190,
+                "survival": 0.25
+              }
+            ]
+          },
+          {
+            "label": "Standard risk",
+            "cases": 661,
+            "events": 300,
+            "curve": [
+              {
+                "time": 0,
+                "survival": 1.0
+              },
+              {
+                "time": 365,
+                "survival": 0.92
+              },
+              {
+                "time": 730,
+                "survival": 0.84
+              },
+              {
+                "time": 1095,
+                "survival": 0.76
+              },
+              {
+                "time": 1460,
+                "survival": 0.68
+              },
+              {
+                "time": 2190,
+                "survival": 0.6
+              }
+            ]
+          }
+        ],
+        "pValue": 7.1e-60,
+        "engine": "gen3-analysis@ffa4069"
+      },
+      "warnings": [],
+      "limitation": null,
+      "error": null,
+      "provenance": [
+        {
+          "method": "POST",
+          "path": "/analysis/v0/survival/",
+          "requestSha256": "8c9d304ae18127d8c5af159b10dbca267dd9ce45d6cd34e85b4d91147cbbb46f",
+          "httpStatus": 200,
+          "responseSha256": "298c681356d402a6fe00f131499fe9cc8d994697544387e1c587aa9ad8f789dc",
+          "elapsedMs": 400
+        },
+        {
+          "method": "POST",
+          "path": "/analysis/v0/survival/",
+          "requestSha256": "0b783d4498c7f63d2b6a4973fcbff5f9a4f4fee8a1a80e030b5765d5098dea3b",
+          "httpStatus": 200,
+          "responseSha256": "d13a5b5cf7108abf9036d7f10494c4848689d482b86b82ed2ad216fef10c61da",
+          "elapsedMs": 400
+        },
+        {
+          "method": "POST",
+          "path": "/analysis/v0/survival/",
+          "requestSha256": "b0c241381a94f4090493af8d6be650a2063f4c51f8718f06cea1648144a24dda",
+          "httpStatus": 200,
+          "responseSha256": "1a5c6668d61282a5964fbf9f3fdddf9434fc0a4e46475f43a243d18d4af4f326",
+          "elapsedMs": 400
+        }
+      ]
+    },
+    {
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s5.c1",
+      "planVersion": 1,
+      "stepId": "s5",
+      "tool": "derive_km_median",
+      "transport": "in_process",
+      "attempt": 1,
+      "startedAt": "2026-11-04T15:00:05.500Z",
+      "request": {
+        "curves": "s4"
+      },
+      "requestSha256": "4a8fa5084cbf741bd7ca7c722e7f31f68a3bafa6995c652a673a18b590d68d85",
+      "httpStatus": null,
+      "responseSha256": "b70c7c07411046ad2018b90fa62619d0564c0464a7d4d34b6492e921e0970389",
+      "elapsedMs": 3,
+      "status": "ok",
+      "observed": {
+        "version": "derive_km_median@1",
+        "unit": "days",
+        "groups": [
+          {
+            "label": "High risk",
+            "median": 1095,
+            "reached": true
+          },
+          {
+            "label": "Standard risk",
+            "median": 2190,
+            "reached": true
+          }
+        ]
+      },
+      "warnings": [],
+      "limitation": null,
+      "error": null,
+      "provenance": []
+    }
+  ],
+  "facts": [
+    {
+      "id": "f.s1.cases",
+      "label": "Cases in the sandbox",
+      "value": 1000,
+      "unit": "cases",
+      "stepId": "s1",
+      "row": 1,
+      "tool": "fixture_fingerprint",
+      "jsonPointer": "/observed/document/sandbox/cases",
+      "planVersion": 1,
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s1.c1",
+      "requestSha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "responseSha256": "a3fcac36a10751bdcdd650b03e69ffb1a30415f940649882091ffd7afbdc35fa",
+      "engine": "fixture-fingerprint@1"
+    },
+    {
+      "id": "f.s2.count",
+      "label": "High risk cases",
+      "value": 339,
+      "unit": "cases",
+      "stepId": "s2",
+      "row": 1,
+      "tool": "cohort_count",
+      "jsonPointer": "/observed/count",
+      "planVersion": 1,
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s2.c1",
+      "requestSha256": "f7f42f07e768187e2decb7367ff9634c01a35edfeefbdffc1f5ed65f952d0f1d",
+      "responseSha256": "de2d38b63aee5f572c5126dfbb22c07a5140998f8bcce2610cc200059e5b2635",
+      "engine": "guppy@e318cf6"
+    },
+    {
+      "id": "f.s3.count",
+      "label": "Standard risk cases",
+      "value": 661,
+      "unit": "cases",
+      "stepId": "s3",
+      "row": 1,
+      "tool": "cohort_count",
+      "jsonPointer": "/observed/count",
+      "planVersion": 1,
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s3.c1",
+      "requestSha256": "362a6369ea45d536d12da40680ce64b8e11eade29e85e6b1bb305d0b42b9a1eb",
+      "responseSha256": "7094dc23de209903890284caab32c63366c2decea8d8a2607b494488e1718c46",
+      "engine": "guppy@e318cf6"
+    },
+    {
+      "id": "f.s4.events.high",
+      "label": "High risk events",
+      "value": 299,
+      "unit": "events",
+      "stepId": "s4",
+      "row": 2,
+      "tool": "survival_compare",
+      "jsonPointer": "/observed/groups/0/events",
+      "planVersion": 1,
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s4.c1",
+      "requestSha256": "762f8ac51551f49b438deff8659e37d5c32bbb8ea9adf4ecb26b95c226253bea",
+      "responseSha256": "8662eefb668b0009b734a9e06c30ff1001a71e357ffa30a14f6d44b95e07c198",
+      "engine": "gen3-analysis@ffa4069"
+    },
+    {
+      "id": "f.s4.events.standard",
+      "label": "Standard risk events",
+      "value": 300,
+      "unit": "events",
+      "stepId": "s4",
+      "row": 2,
+      "tool": "survival_compare",
+      "jsonPointer": "/observed/groups/1/events",
+      "planVersion": 1,
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s4.c1",
+      "requestSha256": "762f8ac51551f49b438deff8659e37d5c32bbb8ea9adf4ecb26b95c226253bea",
+      "responseSha256": "8662eefb668b0009b734a9e06c30ff1001a71e357ffa30a14f6d44b95e07c198",
+      "engine": "gen3-analysis@ffa4069"
+    },
+    {
+      "id": "f.s4.p",
+      "label": "Log-rank p",
+      "value": 7.1e-60,
+      "unit": "p",
+      "stepId": "s4",
+      "row": 2,
+      "tool": "survival_compare",
+      "jsonPointer": "/observed/pValue",
+      "planVersion": 1,
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s4.c1",
+      "requestSha256": "762f8ac51551f49b438deff8659e37d5c32bbb8ea9adf4ecb26b95c226253bea",
+      "responseSha256": "8662eefb668b0009b734a9e06c30ff1001a71e357ffa30a14f6d44b95e07c198",
+      "engine": "gen3-analysis@ffa4069"
+    },
+    {
+      "id": "f.s5.median.high",
+      "label": "High risk median overall survival",
+      "value": 1095,
+      "unit": "days",
+      "stepId": "s5",
+      "row": 2,
+      "tool": "derive_km_median",
+      "jsonPointer": "/observed/groups/0/median",
+      "planVersion": 1,
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s5.c1",
+      "requestSha256": "4a8fa5084cbf741bd7ca7c722e7f31f68a3bafa6995c652a673a18b590d68d85",
+      "responseSha256": "b70c7c07411046ad2018b90fa62619d0564c0464a7d4d34b6492e921e0970389",
+      "engine": null
+    },
+    {
+      "id": "f.s5.median.standard",
+      "label": "Standard risk median overall survival",
+      "value": 2190,
+      "unit": "days",
+      "stepId": "s5",
+      "row": 2,
+      "tool": "derive_km_median",
+      "jsonPointer": "/observed/groups/1/median",
+      "planVersion": 1,
+      "callId": "725ff3c629bddfbbadaad7e5513f479b.v1.s5.c1",
+      "requestSha256": "4a8fa5084cbf741bd7ca7c722e7f31f68a3bafa6995c652a673a18b590d68d85",
+      "responseSha256": "b70c7c07411046ad2018b90fa62619d0564c0464a7d4d34b6492e921e0970389",
+      "engine": null
+    }
+  ],
+  "cohorts": [
+    {
+      "ref": "base",
+      "role": "scope",
+      "source": "active_cohort",
+      "name": "All cases",
+      "definitionText": "All cases, no filters",
+      "defSha256": "f097e778dab3c3e78da06d54d2730bd31eae4bd430b0090d67e9abf0177f27be",
+      "caseCount": 1000,
+      "save": "none",
+      "cohortId": null,
+      "savedName": null,
+      "caseCountFactId": "f.s1.cases",
+      "definition": {
+        "kind": "filter",
+        "clauses": []
+      }
+    }
+  ],
+  "pending": null,
+  "confirmations": [],
+  "vizReports": [],
+  "actions": [
+    {
+      "at": "2026-11-04T15:00:00.000Z",
+      "action": "ask",
+      "outcome": "accepted",
+      "code": null
+    }
+  ],
+  "ledger": {
+    "follows": null,
+    "refs": []
+  },
+  "answer": {
+    "observed": [
+      {
+        "segments": [
+          {
+            "text": "High risk: "
+          },
+          {
+            "text": "339",
+            "factId": "f.s2.count"
+          },
+          {
+            "text": " cases, "
+          },
+          {
+            "text": "299",
+            "factId": "f.s4.events.high"
+          },
+          {
+            "text": " events."
+          }
+        ]
+      },
+      {
+        "segments": [
+          {
+            "text": "Standard risk: "
+          },
+          {
+            "text": "661",
+            "factId": "f.s3.count"
+          },
+          {
+            "text": " cases, "
+          },
+          {
+            "text": "300",
+            "factId": "f.s4.events.standard"
+          },
+          {
+            "text": " events."
+          }
+        ]
+      },
+      {
+        "segments": [
+          {
+            "text": "Log-rank p = "
+          },
+          {
+            "text": "7.1e-60",
+            "factId": "f.s4.p"
+          },
+          {
+            "text": " (Gen3 Analysis)."
+          }
+        ]
+      },
+      {
+        "segments": [
+          {
+            "text": "Median overall survival: High risk "
+          },
+          {
+            "text": "1,095",
+            "factId": "f.s5.median.high"
+          },
+          {
+            "text": " days; Standard risk "
+          },
+          {
+            "text": "2,190",
+            "factId": "f.s5.median.standard"
+          },
+          {
+            "text": " days (Kaplan–Meier median derived by ORION from the engine's curves)."
+          }
+        ]
+      }
+    ],
+    "limitations": [
+      {
+        "code": "VIEWER_P_ROUNDED",
+        "text": "The survival chart shows this p-value as p = 0; the value above comes from Gen3 Analysis.",
+        "unblock": null,
+        "nearestApps": []
+      },
+      {
+        "code": "STAT_UNAVAILABLE",
+        "text": "The platform reports no hazard ratio for this comparison, so the answer gives none.",
+        "unblock": null,
+        "nearestApps": []
+      }
+    ],
+    "interpretation": [
+      {
+        "segments": [
+          {
+            "text": "In this synthetic cohort, the high-risk group's survival curve falls below the standard-risk group's, and the log-rank test gives p = "
+          },
+          {
+            "text": "7.1e-60",
+            "factId": "f.s4.p"
+          },
+          {
+            "text": "."
+          }
+        ],
+        "cites": [
+          "f.s4.p",
+          "f.s5.median.high",
+          "f.s5.median.standard"
+        ]
+      },
+      {
+        "segments": [
+          {
+            "text": "This compares the risk groups only and carries no clinical meaning."
+          }
+        ],
+        "cites": [
+          "f.s2.count",
+          "f.s3.count"
+        ]
+      }
+    ],
+    "hypotheses": [
+      {
+        "segments": [
+          {
+            "text": "Does the gap remain within each ISS stage?"
+          }
+        ],
+        "cites": [
+          "f.s4.p"
+        ]
+      }
+    ],
+    "withheldReason": null,
+    "vizSpecs": [
+      {
+        "vizId": "v1",
+        "appId": "Correlation",
+        "launcher": "survival",
+        "citesSteps": [
+          "s4"
+        ],
+        "pinned": {
+          "kind": "survival",
+          "filter0": null,
+          "term": "overall_survival",
+          "overlay": "cgs_risk_category"
+        },
+        "pinnedHash": "660a67ada3be378c148e83443173994dccfad7e7bb579eaac5a4f1f1f3d7f5de",
+        "title": "Overall survival by CGS risk category",
+        "caption": "The chart's log-rank table shows p = 0; the answer's p-value comes from Gen3 Analysis.",
+        "requestPinnedHash": "660a67ada3be378c148e83443173994dccfad7e7bb579eaac5a4f1f1f3d7f5de",
+        "frozen": {
+          "columns": [
+            "Group",
+            "Cases",
+            "Events",
+            "Median (days)"
+          ],
+          "rows": [
+            [
+              {
+                "text": "High risk"
+              },
+              {
+                "text": "339",
+                "factId": "f.s2.count"
+              },
+              {
+                "text": "299",
+                "factId": "f.s4.events.high"
+              },
+              {
+                "text": "1,095",
+                "factId": "f.s5.median.high"
+              }
+            ],
+            [
+              {
+                "text": "Standard risk"
+              },
+              {
+                "text": "661",
+                "factId": "f.s3.count"
+              },
+              {
+                "text": "300",
+                "factId": "f.s4.events.standard"
+              },
+              {
+                "text": "2,190",
+                "factId": "f.s5.median.standard"
+              }
+            ]
+          ],
+          "note": [
+            {
+              "text": "Log-rank p = "
+            },
+            {
+              "text": "7.1e-60",
+              "factId": "f.s4.p"
+            },
+            {
+              "text": " (Gen3 Analysis)"
+            }
+          ]
+        },
+        "cohortRefs": [
+          "base"
+        ]
+      }
+    ],
+    "followUps": [
+      {
+        "label": "Survival by ISS stage",
+        "question": "Compare survival by ISS stage",
+        "kind": "survival_compare"
+      },
+      {
+        "label": "Top mutated genes in high-risk cases",
+        "question": "Top 3 most frequently mutated genes in CGS high-risk patients",
+        "kind": "top_mutated_genes"
+      }
+    ],
+    "openLinks": [
+      {
+        "appId": "CohortComparison",
+        "title": "Cohort Comparison"
+      }
+    ],
+    "notice": "Synthetic sandbox — all data is fabricated and has no clinical meaning."
+  },
+  "superseded": [],
+  "runView": {
+    "schema": "orion.run-view/v1",
+    "threadId": "eb3893e3ec4b61d471d1cba4abfd912a",
+    "runId": "725ff3c629bddfbbadaad7e5513f479b",
+    "revision": 9,
+    "status": "Complete",
+    "code": null,
+    "question": "Compare survival of CGS high-risk vs. CGS standard-risk patients",
+    "updatedAt": "2026-11-04T15:00:09.800Z",
+    "plan": {
+      "version": 1,
+      "signature": "3c1f0e7a9b5d2c4e6f8a0b1c3d5e7f9a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e",
+      "scope": {
+        "source": "active_cohort",
+        "name": "All cases",
+        "caseCount": 1000
+      },
+      "rows": [
+        {
+          "row": 1,
+          "label": "Count both CGS risk groups",
+          "tool": "cohort_count",
+          "reason": "Cohort Builder counts filter cohorts",
+          "stepIds": [
+            "s1",
+            "s2",
+            "s3"
+          ]
+        },
+        {
+          "row": 2,
+          "label": "Compare survival: Kaplan–Meier, split by CGS risk category",
+          "tool": "survival_compare",
+          "reason": "Correlation Plot runs survival comparisons",
+          "stepIds": [
+            "s4",
+            "s5"
+          ]
+        }
+      ],
+      "assumptions": [
+        {
+          "code": "DEFAULT_SCOPE_ACTIVE",
+          "text": "No cohort named: using the active cohort, All cases"
+        },
+        {
+          "code": "SPLIT_CGS_RISK",
+          "text": "High risk vs. Standard risk from CGS risk category"
+        }
+      ],
+      "writes": false,
+      "paraphrase": "Compare overall survival between CGS High risk and Standard risk cases in All cases.",
+      "altScope": null,
+      "altScopeChoice": null,
+      "editable": [
+        {
+          "field": "scope",
+          "label": "Scope",
+          "value": {
+            "source": "active_cohort"
+          }
+        }
+      ]
+    },
+    "steps": [
+      {
+        "id": "s1",
+        "row": 1,
+        "tool": "fixture_fingerprint",
+        "kind": "server",
+        "folded": true,
+        "inputSummary": "sandbox status, versions, ranking",
+        "status": "Done",
+        "outputSummary": "fingerprint 0f27…",
+        "durationMs": 412,
+        "code": null,
+        "reusedFrom": null
+      },
+      {
+        "id": "s2",
+        "row": 1,
+        "tool": "cohort_count",
+        "kind": "server",
+        "folded": false,
+        "inputSummary": "CGS risk category = High risk",
+        "status": "Done",
+        "outputSummary": "339 cases",
+        "durationMs": 188,
+        "code": null,
+        "reusedFrom": null
+      },
+      {
+        "id": "s3",
+        "row": 1,
+        "tool": "cohort_count",
+        "kind": "server",
+        "folded": false,
+        "inputSummary": "CGS risk category = Standard risk",
+        "status": "Done",
+        "outputSummary": "661 cases",
+        "durationMs": 171,
+        "code": null,
+        "reusedFrom": null
+      },
+      {
+        "id": "s4",
+        "row": 2,
+        "tool": "survival_compare",
+        "kind": "server",
+        "folded": false,
+        "inputSummary": "2 groups, Kaplan–Meier",
+        "status": "Done",
+        "outputSummary": "2 curves, log-rank p reported",
+        "durationMs": 1290,
+        "code": null,
+        "reusedFrom": null
+      },
+      {
+        "id": "s5",
+        "row": 2,
+        "tool": "derive_km_median",
+        "kind": "exec",
+        "folded": false,
+        "inputSummary": "2 curves",
+        "status": "Done",
+        "outputSummary": "2 medians",
+        "durationMs": 3,
+        "code": null,
+        "reusedFrom": null
+      }
+    ],
+    "facts": [
+      {
+        "id": "f.s1.cases",
+        "label": "Cases in the sandbox",
+        "value": 1000,
+        "unit": "cases",
+        "stepId": "s1",
+        "row": 1,
+        "tool": "fixture_fingerprint",
+        "jsonPointer": "/observed/document/sandbox/cases"
+      },
+      {
+        "id": "f.s2.count",
+        "label": "High risk cases",
+        "value": 339,
+        "unit": "cases",
+        "stepId": "s2",
+        "row": 1,
+        "tool": "cohort_count",
+        "jsonPointer": "/observed/count"
+      },
+      {
+        "id": "f.s3.count",
+        "label": "Standard risk cases",
+        "value": 661,
+        "unit": "cases",
+        "stepId": "s3",
+        "row": 1,
+        "tool": "cohort_count",
+        "jsonPointer": "/observed/count"
+      },
+      {
+        "id": "f.s4.events.high",
+        "label": "High risk events",
+        "value": 299,
+        "unit": "events",
+        "stepId": "s4",
+        "row": 2,
+        "tool": "survival_compare",
+        "jsonPointer": "/observed/groups/0/events"
+      },
+      {
+        "id": "f.s4.events.standard",
+        "label": "Standard risk events",
+        "value": 300,
+        "unit": "events",
+        "stepId": "s4",
+        "row": 2,
+        "tool": "survival_compare",
+        "jsonPointer": "/observed/groups/1/events"
+      },
+      {
+        "id": "f.s4.p",
+        "label": "Log-rank p",
+        "value": 7.1e-60,
+        "unit": "p",
+        "stepId": "s4",
+        "row": 2,
+        "tool": "survival_compare",
+        "jsonPointer": "/observed/pValue"
+      },
+      {
+        "id": "f.s5.median.high",
+        "label": "High risk median overall survival",
+        "value": 1095,
+        "unit": "days",
+        "stepId": "s5",
+        "row": 2,
+        "tool": "derive_km_median",
+        "jsonPointer": "/observed/groups/0/median"
+      },
+      {
+        "id": "f.s5.median.standard",
+        "label": "Standard risk median overall survival",
+        "value": 2190,
+        "unit": "days",
+        "stepId": "s5",
+        "row": 2,
+        "tool": "derive_km_median",
+        "jsonPointer": "/observed/groups/1/median"
+      }
+    ],
+    "observed": [
+      {
+        "segments": [
+          {
+            "text": "High risk: "
+          },
+          {
+            "text": "339",
+            "factId": "f.s2.count"
+          },
+          {
+            "text": " cases, "
+          },
+          {
+            "text": "299",
+            "factId": "f.s4.events.high"
+          },
+          {
+            "text": " events."
+          }
+        ]
+      },
+      {
+        "segments": [
+          {
+            "text": "Standard risk: "
+          },
+          {
+            "text": "661",
+            "factId": "f.s3.count"
+          },
+          {
+            "text": " cases, "
+          },
+          {
+            "text": "300",
+            "factId": "f.s4.events.standard"
+          },
+          {
+            "text": " events."
+          }
+        ]
+      },
+      {
+        "segments": [
+          {
+            "text": "Log-rank p = "
+          },
+          {
+            "text": "7.1e-60",
+            "factId": "f.s4.p"
+          },
+          {
+            "text": " (Gen3 Analysis)."
+          }
+        ]
+      },
+      {
+        "segments": [
+          {
+            "text": "Median overall survival: High risk "
+          },
+          {
+            "text": "1,095",
+            "factId": "f.s5.median.high"
+          },
+          {
+            "text": " days; Standard risk "
+          },
+          {
+            "text": "2,190",
+            "factId": "f.s5.median.standard"
+          },
+          {
+            "text": " days (Kaplan–Meier median derived by ORION from the engine's curves)."
+          }
+        ]
+      }
+    ],
+    "limitations": [
+      {
+        "code": "VIEWER_P_ROUNDED",
+        "text": "The survival chart shows this p-value as p = 0; the value above comes from Gen3 Analysis.",
+        "unblock": null,
+        "nearestApps": []
+      },
+      {
+        "code": "STAT_UNAVAILABLE",
+        "text": "The platform reports no hazard ratio for this comparison, so the answer gives none.",
+        "unblock": null,
+        "nearestApps": []
+      }
+    ],
+    "interpretation": [
+      {
+        "segments": [
+          {
+            "text": "In this synthetic cohort, the high-risk group's survival curve falls below the standard-risk group's, and the log-rank test gives p = "
+          },
+          {
+            "text": "7.1e-60",
+            "factId": "f.s4.p"
+          },
+          {
+            "text": "."
+          }
+        ],
+        "cites": [
+          "f.s4.p",
+          "f.s5.median.high",
+          "f.s5.median.standard"
+        ]
+      },
+      {
+        "segments": [
+          {
+            "text": "This compares the risk groups only and carries no clinical meaning."
+          }
+        ],
+        "cites": [
+          "f.s2.count",
+          "f.s3.count"
+        ]
+      }
+    ],
+    "hypotheses": [
+      {
+        "segments": [
+          {
+            "text": "Does the gap remain within each ISS stage?"
+          }
+        ],
+        "cites": [
+          "f.s4.p"
+        ]
+      }
+    ],
+    "withheldReason": null,
+    "vizSpecs": [
+      {
+        "vizId": "v1",
+        "appId": "Correlation",
+        "launcher": "survival",
+        "citesSteps": [
+          "s4"
+        ],
+        "pinned": {
+          "kind": "survival",
+          "filter0": null,
+          "term": "overall_survival",
+          "overlay": "cgs_risk_category"
+        },
+        "pinnedHash": "660a67ada3be378c148e83443173994dccfad7e7bb579eaac5a4f1f1f3d7f5de",
+        "title": "Overall survival by CGS risk category",
+        "caption": "The chart's log-rank table shows p = 0; the answer's p-value comes from Gen3 Analysis.",
+        "requestPinnedHash": "660a67ada3be378c148e83443173994dccfad7e7bb579eaac5a4f1f1f3d7f5de",
+        "frozen": {
+          "columns": [
+            "Group",
+            "Cases",
+            "Events",
+            "Median (days)"
+          ],
+          "rows": [
+            [
+              {
+                "text": "High risk"
+              },
+              {
+                "text": "339",
+                "factId": "f.s2.count"
+              },
+              {
+                "text": "299",
+                "factId": "f.s4.events.high"
+              },
+              {
+                "text": "1,095",
+                "factId": "f.s5.median.high"
+              }
+            ],
+            [
+              {
+                "text": "Standard risk"
+              },
+              {
+                "text": "661",
+                "factId": "f.s3.count"
+              },
+              {
+                "text": "300",
+                "factId": "f.s4.events.standard"
+              },
+              {
+                "text": "2,190",
+                "factId": "f.s5.median.standard"
+              }
+            ]
+          ],
+          "note": [
+            {
+              "text": "Log-rank p = "
+            },
+            {
+              "text": "7.1e-60",
+              "factId": "f.s4.p"
+            },
+            {
+              "text": " (Gen3 Analysis)"
+            }
+          ]
+        },
+        "cohortRefs": [
+          "base"
+        ]
+      }
+    ],
+    "pending": null,
+    "cohorts": [
+      {
+        "ref": "base",
+        "role": "scope",
+        "source": "active_cohort",
+        "name": "All cases",
+        "definitionText": "All cases, no filters",
+        "defSha256": "f097e778dab3c3e78da06d54d2730bd31eae4bd430b0090d67e9abf0177f27be",
+        "caseCount": 1000,
+        "save": "none",
+        "cohortId": null,
+        "savedName": null,
+        "caseCountFactId": "f.s1.cases"
+      }
+    ],
+    "followUps": [
+      {
+        "label": "Survival by ISS stage",
+        "question": "Compare survival by ISS stage",
+        "kind": "survival_compare"
+      },
+      {
+        "label": "Top mutated genes in high-risk cases",
+        "question": "Top 3 most frequently mutated genes in CGS high-risk patients",
+        "kind": "top_mutated_genes"
+      }
+    ],
+    "openLinks": [
+      {
+        "appId": "CohortComparison",
+        "title": "Cohort Comparison"
+      }
+    ],
+    "superseded": [],
+    "notice": "Synthetic sandbox — all data is fabricated and has no clinical meaning.",
+    "environment": {
+      "mode": "L",
+      "fingerprintSha256": "0f27e0bdbb28a9357689a6137a8db7a9419dc59e5ec6a2a0e09b826bade7d71d"
+    }
+  }
+}

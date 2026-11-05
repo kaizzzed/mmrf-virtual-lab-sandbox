@@ -1,0 +1,299 @@
+{
+  "schema": "orion.fixture-fingerprint-vectors/v1",
+  "vectors": [
+    {
+      "name": "the local stack",
+      "sources": {
+        "sandboxStatus": {
+          "status": "OK",
+          "synthetic": true,
+          "cases": 1000,
+          "csrf": "synthetic-only"
+        },
+        "analysisVersion": {
+          "version": "1.0.3"
+        },
+        "healthcheck": {
+          "status": "ok",
+          "versionInfo": {
+            "pkgver": "2.216.0-20261003.02:08",
+            "codedate": "20261003.02:08",
+            "launchdate": "Wed Nov 04 2026 20:24:31"
+          },
+          "dsSummary": {
+            "total": 1,
+            "done": 1,
+            "nonblocking": 0,
+            "retrying": 0,
+            "failed": 0
+          }
+        },
+        "ranking": [
+          {
+            "gene": "KRAS",
+            "cases": 480
+          },
+          {
+            "gene": "NRAS",
+            "cases": 355
+          },
+          {
+            "gene": "TP53",
+            "cases": 301
+          },
+          {
+            "gene": "DIS3",
+            "cases": 288
+          },
+          {
+            "gene": "BRAF",
+            "cases": 97
+          },
+          {
+            "gene": "MYC",
+            "cases": 64
+          }
+        ]
+      },
+      "document": {
+        "schema": "orion.fixture-fingerprint/v1",
+        "sandbox": {
+          "status": "OK",
+          "synthetic": true,
+          "cases": 1000
+        },
+        "analysis": {
+          "version": "1.0.3"
+        },
+        "proteinpaint": {
+          "pkgver": "2.216.0-20261003.02:08",
+          "codedate": "20261003.02:08"
+        },
+        "ranking": [
+          {
+            "gene": "KRAS",
+            "cases": 480
+          },
+          {
+            "gene": "NRAS",
+            "cases": 355
+          },
+          {
+            "gene": "TP53",
+            "cases": 301
+          },
+          {
+            "gene": "DIS3",
+            "cases": 288
+          },
+          {
+            "gene": "BRAF",
+            "cases": 97
+          },
+          {
+            "gene": "MYC",
+            "cases": 64
+          }
+        ]
+      },
+      "canonical": "{\"analysis\":{\"version\":\"1.0.3\"},\"proteinpaint\":{\"codedate\":\"20261003.02:08\",\"pkgver\":\"2.216.0-20261003.02:08\"},\"ranking\":[{\"cases\":480,\"gene\":\"KRAS\"},{\"cases\":355,\"gene\":\"NRAS\"},{\"cases\":301,\"gene\":\"TP53\"},{\"cases\":288,\"gene\":\"DIS3\"},{\"cases\":97,\"gene\":\"BRAF\"},{\"cases\":64,\"gene\":\"MYC\"}],\"sandbox\":{\"cases\":1000,\"status\":\"OK\",\"synthetic\":true},\"schema\":\"orion.fixture-fingerprint/v1\"}",
+      "sha256": "0f27e0bdbb28a9357689a6137a8db7a9419dc59e5ec6a2a0e09b826bade7d71d"
+    },
+    {
+      "name": "a restart (new launchdate, same csrf) does not change the fingerprint",
+      "sources": {
+        "sandboxStatus": {
+          "status": "OK",
+          "synthetic": true,
+          "cases": 1000,
+          "csrf": "rotated"
+        },
+        "analysisVersion": {
+          "version": "1.0.3"
+        },
+        "healthcheck": {
+          "status": "ok",
+          "versionInfo": {
+            "pkgver": "2.216.0-20261003.02:08",
+            "codedate": "20261003.02:08",
+            "launchdate": "Thu Nov 05 2026 08:00:00"
+          },
+          "dsSummary": {
+            "total": 1,
+            "done": 1,
+            "nonblocking": 0,
+            "retrying": 0,
+            "failed": 0
+          }
+        },
+        "ranking": [
+          {
+            "gene": "KRAS",
+            "cases": 480
+          },
+          {
+            "gene": "NRAS",
+            "cases": 355
+          },
+          {
+            "gene": "TP53",
+            "cases": 301
+          },
+          {
+            "gene": "DIS3",
+            "cases": 288
+          },
+          {
+            "gene": "BRAF",
+            "cases": 97
+          },
+          {
+            "gene": "MYC",
+            "cases": 64
+          }
+        ]
+      },
+      "document": {
+        "schema": "orion.fixture-fingerprint/v1",
+        "sandbox": {
+          "status": "OK",
+          "synthetic": true,
+          "cases": 1000
+        },
+        "analysis": {
+          "version": "1.0.3"
+        },
+        "proteinpaint": {
+          "pkgver": "2.216.0-20261003.02:08",
+          "codedate": "20261003.02:08"
+        },
+        "ranking": [
+          {
+            "gene": "KRAS",
+            "cases": 480
+          },
+          {
+            "gene": "NRAS",
+            "cases": 355
+          },
+          {
+            "gene": "TP53",
+            "cases": 301
+          },
+          {
+            "gene": "DIS3",
+            "cases": 288
+          },
+          {
+            "gene": "BRAF",
+            "cases": 97
+          },
+          {
+            "gene": "MYC",
+            "cases": 64
+          }
+        ]
+      },
+      "canonical": "{\"analysis\":{\"version\":\"1.0.3\"},\"proteinpaint\":{\"codedate\":\"20261003.02:08\",\"pkgver\":\"2.216.0-20261003.02:08\"},\"ranking\":[{\"cases\":480,\"gene\":\"KRAS\"},{\"cases\":355,\"gene\":\"NRAS\"},{\"cases\":301,\"gene\":\"TP53\"},{\"cases\":288,\"gene\":\"DIS3\"},{\"cases\":97,\"gene\":\"BRAF\"},{\"cases\":64,\"gene\":\"MYC\"}],\"sandbox\":{\"cases\":1000,\"status\":\"OK\",\"synthetic\":true},\"schema\":\"orion.fixture-fingerprint/v1\"}",
+      "sha256": "0f27e0bdbb28a9357689a6137a8db7a9419dc59e5ec6a2a0e09b826bade7d71d"
+    },
+    {
+      "name": "one count off in the ranking changes it",
+      "sources": {
+        "sandboxStatus": {
+          "status": "OK",
+          "synthetic": true,
+          "cases": 1000,
+          "csrf": "synthetic-only"
+        },
+        "analysisVersion": {
+          "version": "1.0.3"
+        },
+        "healthcheck": {
+          "status": "ok",
+          "versionInfo": {
+            "pkgver": "2.216.0-20261003.02:08",
+            "codedate": "20261003.02:08",
+            "launchdate": "Wed Nov 04 2026 20:24:31"
+          },
+          "dsSummary": {
+            "total": 1,
+            "done": 1,
+            "nonblocking": 0,
+            "retrying": 0,
+            "failed": 0
+          }
+        },
+        "ranking": [
+          {
+            "gene": "KRAS",
+            "cases": 479
+          },
+          {
+            "gene": "NRAS",
+            "cases": 355
+          },
+          {
+            "gene": "TP53",
+            "cases": 301
+          },
+          {
+            "gene": "DIS3",
+            "cases": 288
+          },
+          {
+            "gene": "BRAF",
+            "cases": 97
+          },
+          {
+            "gene": "MYC",
+            "cases": 64
+          }
+        ]
+      },
+      "document": {
+        "schema": "orion.fixture-fingerprint/v1",
+        "sandbox": {
+          "status": "OK",
+          "synthetic": true,
+          "cases": 1000
+        },
+        "analysis": {
+          "version": "1.0.3"
+        },
+        "proteinpaint": {
+          "pkgver": "2.216.0-20261003.02:08",
+          "codedate": "20261003.02:08"
+        },
+        "ranking": [
+          {
+            "gene": "KRAS",
+            "cases": 479
+          },
+          {
+            "gene": "NRAS",
+            "cases": 355
+          },
+          {
+            "gene": "TP53",
+            "cases": 301
+          },
+          {
+            "gene": "DIS3",
+            "cases": 288
+          },
+          {
+            "gene": "BRAF",
+            "cases": 97
+          },
+          {
+            "gene": "MYC",
+            "cases": 64
+          }
+        ]
+      },
+      "canonical": "{\"analysis\":{\"version\":\"1.0.3\"},\"proteinpaint\":{\"codedate\":\"20261003.02:08\",\"pkgver\":\"2.216.0-20261003.02:08\"},\"ranking\":[{\"cases\":479,\"gene\":\"KRAS\"},{\"cases\":355,\"gene\":\"NRAS\"},{\"cases\":301,\"gene\":\"TP53\"},{\"cases\":288,\"gene\":\"DIS3\"},{\"cases\":97,\"gene\":\"BRAF\"},{\"cases\":64,\"gene\":\"MYC\"}],\"sandbox\":{\"cases\":1000,\"status\":\"OK\",\"synthetic\":true},\"schema\":\"orion.fixture-fingerprint/v1\"}",
+      "sha256": "a3e64f617b3b669bdde0219230d25837de906adfbaae6d1c642c75f7e7afd0f8"
+    }
+  ]
+}

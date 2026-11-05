@@ -1,5 +1,6 @@
 """Builders for the AG-UI events ORION emits, over the ag_ui.core 1.0.0 classes."""
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 from ag_ui.core import (
@@ -15,7 +16,7 @@ from ag_ui.core import (
 from ag_ui.encoder import EventEncoder
 from pydantic import JsonValue
 
-from .models import SNAPSHOT_LIMIT_BYTES, Code, FinishStatus, RunView
+from .models import SNAPSHOT_LIMIT_BYTES, Code, ConfirmPending, FinishStatus, RunView
 
 HEARTBEAT_NAME = "orion.heartbeat"
 _ENCODER = EventEncoder()
@@ -106,13 +107,56 @@ def _frame_bytes(snapshot: dict[str, JsonValue]) -> int:
     return len(encode(StateSnapshotEvent(snapshot=snapshot)).encode("utf-8"))
 
 
-def fit_view(view: RunView) -> dict[str, JsonValue]:
-    """Serialize the view so its whole SSE frame stays within 32 KB, trimming summaries first.
+def _json_size(value: object) -> int:
+    return 0 if value is None else len(str(value))
 
-    The run record keeps the untrimmed text; the snapshot is only what fits on screen.
+
+def _candidates(view: RunView) -> Iterator[RunView]:
+    """The contract's trim order ("Size: 32 KB"), each candidate trimming a little more than the last.
+
+    Step summaries (clipped to 240, 80, 24, then 0 characters); then a pending confirm cohort's
+    definition, set to null, largest first; then a viz spec's pinned inputs, set to null, largest
+    first; then the question, paraphrase, row labels and reasons, assumption and limitation texts
+    (200, then 60 characters); last, fact labels, set to "". Nothing else is ever trimmed.
     """
-    attempts: tuple[tuple[int, int | None], ...] = ((240, None), (80, None), (24, None), (0, None), (0, 200), (0, 60))
-    for candidate in (view, *(_trimmed(view, summary, text) for summary, text in attempts)):
+    yield view
+    for cap in (240, 80, 24, 0):
+        yield _trimmed(view, cap, None)
+    current = _trimmed(view, 0, None)
+    confirm = current.pending
+    if isinstance(confirm, ConfirmPending):
+        sizes = [_json_size(c.definition.model_dump_json() if c.definition else None) for c in confirm.cohorts]
+        for index in sorted(range(len(sizes)), key=lambda i: -sizes[i]):
+            if confirm.cohorts[index].definition is None:
+                continue
+            cohorts = list(confirm.cohorts)
+            cohorts[index] = cohorts[index].model_copy(update={"definition": None})
+            confirm = confirm.model_copy(update={"cohorts": cohorts})
+            current = current.model_copy(update={"pending": confirm})
+            yield current
+    sizes = [_json_size(s.pinned.model_dump_json() if s.pinned else None) for s in current.viz_specs]
+    for index in sorted(range(len(sizes)), key=lambda i: -sizes[i]):
+        if current.viz_specs[index].pinned is None:
+            continue
+        specs = list(current.viz_specs)
+        specs[index] = specs[index].model_copy(update={"pinned": None})
+        current = current.model_copy(update={"viz_specs": specs})
+        yield current
+    last = current
+    for text in (200, 60):
+        last = _trimmed(current, 0, text)
+        yield last
+    yield last.model_copy(update={"facts": [f.model_copy(update={"label": ""}) for f in last.facts]})
+
+
+def fit_view(view: RunView) -> dict[str, JsonValue]:
+    """Serialize the view so its whole SSE frame stays within 32 KB, trimming in the contract's order.
+
+    The run record keeps the untrimmed view (the BFF view route serves it); the snapshot is only
+    what fits. A null pending definition is read from the save_cohorts args or the view route, a
+    null `pinned` from the view route.
+    """
+    for candidate in _candidates(view):
         snapshot: dict[str, JsonValue] = candidate.model_dump(mode="json")
         if _frame_bytes(snapshot) <= SNAPSHOT_LIMIT_BYTES:
             return snapshot
