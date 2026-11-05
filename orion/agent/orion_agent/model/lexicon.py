@@ -41,7 +41,8 @@ ORION_SUFFIX: Final = " (ORION)"
 _TOKEN: Final = re.compile(r"[^\W_]+(?:['’][^\W_]+)?")
 _GENE_SHAPE: Final = re.compile(r"^[A-Z][A-Z0-9]+$")
 _DIGIT: Final = re.compile(r"[0-9]")
-_INTEGER: Final = re.compile(r"(?<![A-Za-z0-9.])([0-9]+)(?![A-Za-z0-9.])")
+# A whole number: not part of a word or a decimal. A full stop after it ends the sentence ("the top 6.").
+_INTEGER: Final = re.compile(r"(?<![A-Za-z0-9.])([0-9]+)(?![A-Za-z0-9]|\.[0-9])")
 _LETTER: Final = re.compile(r"[A-Za-z]")
 GENE_FIELDS: Final = frozenset({"gene.symbol", "gene.gene_id"})
 _MODEL_NAMES: Final[dict[str, str]] = {

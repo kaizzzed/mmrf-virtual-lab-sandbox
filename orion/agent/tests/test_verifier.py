@@ -63,6 +63,15 @@ def verify_j3(out: ComposerOutput, *, attempt: int = 1, ledger: SessionLedger | 
     )
 
 
+def verify_named(out: ComposerOutput, scope_name: str) -> VerifierResult:
+    """J3 with its scope named `scope_name`: a run that itself names a vocabulary value (a regimen cohort)."""
+    verifier, view = CodeVerifier(), last_view(J3)
+    plan = j3_plan()
+    plan = plan.model_copy(update={"scope": plan.scope.model_copy(update={"name": scope_name})})
+    allow = verifier.allow_list(vocabulary(), None, plan)
+    return verifier.verify(out, view_facts(view), None, vocabulary(), plan=plan, observed=view_observed(view), attempt=1, allow_list=allow)
+
+
 def dropped(result: VerifierResult, part: str = "interpretation") -> list[str | None]:
     sentences: list[Sentence] = getattr(result, part)
     return [s.dropped for s in sentences]
@@ -109,6 +118,16 @@ class VNumTest(unittest.TestCase):
 
     def test_vocabulary_terms_with_numerals_are_allowed(self) -> None:
         self.assertEqual(dropped(verify_j3(output([statement("A split by ISS stage, such as Stage II, may differ.")]))), [None])
+
+    def test_a_vocabulary_term_with_a_digit_passes_only_when_the_run_names_it(self) -> None:
+        """Seen live on Bedrock: "del(17p) and/or TP53 mutation" in a J3 hypothesis, a whole vocabulary value
+        that the run does not name. The contract allows a digit outside a fact chip only in the run's own words."""
+        text = "Check whether the t(4;14): Present cases differ."
+        self.assertEqual(dropped(verify_j3(output([statement(text)]))), ["V-NUM"])
+        verifier = CodeVerifier()
+        self.assertNotIn("t(4;14): Present", verifier.allow_list(vocabulary(), None, j3_plan()))
+        named = j3_plan().model_copy(update={"scope": j3_plan().scope.model_copy(update={"name": "t(4;14): Present"})})
+        self.assertIn("t(4;14): Present", verifier.allow_list(vocabulary(), None, named))
 
     def test_fold_words_unicode_digits_fractions_and_lower_case_panel_genes_fail(self) -> None:
         for text in ("The cohort shows a twofold higher rate.", "The groups show a tenfold difference.",
@@ -187,12 +206,47 @@ class VSecTest(unittest.TestCase):
                 cites = ("f.s10.top.1.gene",) if "{{" in text else ()
                 self.assertEqual(dropped(verify_j3(output([statement(text, *cites)]))), ["V-SEC"])
 
-    def test_research_wording_and_regimen_names_from_the_vocabulary_pass(self) -> None:
-        for text in ("These genes are candidates for further study.",
-                     "Survival may differ between the Bortezomib, lenalidomide, dexamethasone and VRd groups.",
-                     "Cases whose reason for discontinuation is Completed planned therapy may differ."):
+    def test_research_wording_passes(self) -> None:
+        self.assertEqual(dropped(verify_j3(output([statement("These genes are candidates for further study.")]))), [None])
+
+    def test_a_vocabulary_name_with_a_clinical_word_passes_only_when_the_run_names_it(self) -> None:
+        """A regimen value is a name in a run that uses it (a regimen-defined cohort), and clinical wording in
+        any other run: J3 does not use the regimen field (security-vsec-regimen-exemption)."""
+        cases = (
+            ("Survival may differ between the Bortezomib, lenalidomide, dexamethasone and VRd groups.",
+             "Bortezomib, lenalidomide, dexamethasone"),
+            ("Cases whose reason for discontinuation is Completed planned therapy may differ.", "Completed planned therapy"),
+        )
+        for text, name in cases:
             with self.subTest(text=text):
-                self.assertEqual(dropped(verify_j3(output([statement(text)]))), [None])
+                self.assertEqual(dropped(verify_j3(output([statement(text)]))), ["V-SEC"])
+                self.assertEqual(dropped(verify_named(output([statement(text)]), name)), [None])
+
+    def test_a_treatment_suggestion_naming_a_regimen_fails_in_any_run(self) -> None:
+        """'Consider <regimen> for <cohort>' is advice whether or not the run names the regimen (G-5)."""
+        regimen = "Daratumumab, lenalidomide, dexamethasone"
+        suggestions = [
+            ComposerHypothesis(text="Consider daratumumab, lenalidomide, dexamethasone for KRAS mutated (ORION).",
+                               cites=["f.s10.top.1.gene"], form="action"),
+            ComposerHypothesis(text="Consider daratumumab, lenalidomide, dexamethasone for the mutated group.",
+                               cites=["f.s10.top.1.gene"], form="action"),
+            ComposerHypothesis(text="Should the mutated group get daratumumab, lenalidomide, dexamethasone?",
+                               cites=["f.s10.top.1.gene"], form="question"),
+        ]
+        statements = [statement("These cases may do well on daratumumab, lenalidomide, dexamethasone."),
+                      statement("Daratumumab, lenalidomide, dexamethasone may suit the mutated group.")]
+        research = [statement("Survival may differ between the Daratumumab, lenalidomide, dexamethasone cases and the others."),
+                    statement("Consider the Daratumumab, lenalidomide, dexamethasone group separately.")]
+        for result in (verify_j3(output(statements, suggestions)), verify_named(output(statements, suggestions), regimen)):
+            self.assertEqual(dropped(result), ["V-SEC", "V-SEC"])
+            self.assertEqual(dropped(result, "hypotheses"), ["V-SEC", "V-SEC", "V-SEC"])
+        self.assertEqual(dropped(verify_named(output(research), regimen)), [None, None])
+        self.assertEqual(dropped(verify_j3(output(research))), ["V-SEC", "V-SEC"])
+        chip = ComposerFollowUp(kind="survival_compare", label="Regimen for the mutated group",
+                                question="Should KRAS mutated cases get daratumumab, lenalidomide, dexamethasone?")
+        plain = ComposerFollowUp(kind="survival_compare", label="Survival by regimen",
+                                 question="Compare survival of Daratumumab, lenalidomide, dexamethasone cases by gender")
+        self.assertEqual([f.label for f in verify_named(output(follow_ups=[chip, plain]), regimen).follow_ups], ["Survival by regimen"])
 
     def test_hypotheses_are_questions_or_hedged_actions(self) -> None:
         questions = [
@@ -211,6 +265,27 @@ class VSecTest(unittest.TestCase):
         follow = [ComposerFollowUp(kind="cohort_size", label="Treatment options", question="Which therapy suits these cases?")]
         self.assertEqual(verify_j3(output(follow_ups=follow)).follow_ups, [])
 
+    def test_a_causal_or_certain_follow_up_is_dropped(self) -> None:
+        """Follow-up labels and questions take V-SEC's causal and certainty check too (security-followup-no-causal-check)."""
+        follow = [
+            ComposerFollowUp(kind="top_mutated_genes", label="Genes that drive survival", question="Which genes are mutated most often?"),
+            ComposerFollowUp(kind="survival_compare", label="Survival by KRAS status",
+                             question="Does a KRAS mutation cause shorter survival?"),
+            ComposerFollowUp(kind="survival_compare", label="Survival by KRAS status", question="KRAS clearly shortens survival; compare it"),
+        ]
+        result = verify_j3(output(follow_ups=follow))
+        self.assertEqual(result.follow_ups, [])
+        failed = [(f.index, f.rule) for f in result.findings if f.part == "follow_ups" and not f.passed]
+        self.assertEqual(failed, [(0, "V-SEC"), (1, "V-SEC"), (2, "V-SEC")])
+        self.assertTrue(result.retry)
+        kept = [
+            ComposerFollowUp(kind="survival_compare", label="Survival by ISS stage", question="Compare survival by ISS stage"),
+            ComposerFollowUp(kind="survival_compare", label="Survival by gender",
+                             question="Compare survival by gender, to determine whether it differs"),
+            ComposerFollowUp(kind="top_mutated_genes", label="No driver role shown", question="Which genes are not shown to drive survival?"),
+        ]
+        self.assertEqual([f.label for f in verify_j3(output(follow_ups=kept)).follow_ups], [f.label for f in kept])
+
 
 class FollowUpTest(unittest.TestCase):
     def test_one_top_n_is_allowed_only_for_ranking_kinds(self) -> None:
@@ -224,6 +299,16 @@ class FollowUpTest(unittest.TestCase):
             ComposerFollowUp(kind="top_mutated_genes", label="Top three genes", question="Show the top three genes"),
         ]
         self.assertEqual([f.label for f in verify_j3(output(follow_ups=kept)).follow_ups], ["Show the top 20"])
+        self.assertEqual(verify_j3(output(follow_ups=refused)).follow_ups, [])
+
+    def test_a_top_n_that_ends_the_sentence_is_still_the_one_top_n(self) -> None:
+        """Seen live on Bedrock: "Show the top 6." was refused because the full stop read as a decimal point."""
+        kept = [ComposerFollowUp(kind="top_mutated_genes", label="Top mutated genes", question="Which genes are mutated most often? Show the top 6.")]
+        refused = [
+            ComposerFollowUp(kind="top_mutated_genes", label="Top 6.5 genes", question="Show the top 6.5 genes."),
+            ComposerFollowUp(kind="differential_expression", label="Top genes", question="Show the top 10. Then the top 20."),
+        ]
+        self.assertEqual([f.question for f in verify_j3(output(follow_ups=kept)).follow_ups], [kept[0].question])
         self.assertEqual(verify_j3(output(follow_ups=refused)).follow_ups, [])
 
     def test_gene_placeholders_resolve_to_plain_text_and_numbers_are_refused(self) -> None:

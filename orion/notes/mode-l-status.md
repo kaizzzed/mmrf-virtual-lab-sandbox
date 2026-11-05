@@ -271,7 +271,8 @@ up first (above).
   installed. Screenshots and `summary.json` (every check, plus the last UI timeline on a failure)
   go to `orion/notes/screenshots/e2e/` (gitignored). Each scenario uses a fresh browser profile.
   The runs and the saved cohorts stay in the agent's run volume; the cohorts live only in the
-  throwaway profile.
+  throwaway profile. Against the Bedrock agent (stage 2) run it with `ORION_E2E_MODEL=bedrock`:
+  `bedrock-status.md` lists what that mode checks and its results.
 - **Evals:** each command takes about 6 minutes, most of it E20's 300 s pause.
   - `orion/scripts/evals-mode-l.sh agent` runs agent direct, with the E11 fault agents started
     and removed for you.

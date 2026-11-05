@@ -53,6 +53,23 @@ reads records from its routes; `evals-mode-l.sh e20-lease` runs E20 with its liv
 harness and its own agent share one container, so `--restart-cmd` can kill the controller). Extra
 arguments go to `run`. The results and their meaning are in `orion/notes/mode-l-status.md`.
 
+**Stage 2, Bedrock, in one command:** `orion/scripts/evals-bedrock.sh` rebuilds and recreates the
+Compose `orion-agent` with the planner and composer on Bedrock (`orion-local.sh up --bedrock`), runs
+E1–E24 against it (5 repeats, E22's held-out paraphrases included), sums the run records' model calls
+and tokens (`usage`) and measures NFR-01 timings (`timings --mode warm`). `evals-bedrock.sh evals
+--repeats 1` is the cheap pass; `timings --mode cold` and `--mode cold-warmup` idle past the cache
+TTL before each ask. Results: `orion/notes/bedrock-evals.md`. Every ask calls Bedrock.
+
+- `python -m orion_evals timings` drives the agent like the browser (`orion_evals/timings.py`) and
+  reports per ask the plan-visible time (the gate's firstPlanS), the "Writing interpretation" wait
+  (first snapshot with Observed to the first with Interpretation) and each model call's time, tokens
+  and cache use, from the run record. `--mode warm|cold|cold-warmup`, `--rounds`, `--journeys
+  J1:open-ended,J3:tool-named`, `--idle-s` (default 330, past the 5-minute TTL). Writes
+  `reports/timings-<mode>-<time>.json`.
+- `python -m orion_evals usage reports/orion-evals-<time>.json` sums the `modelCalls` of every run
+  the report drove (each run once): calls per role, later calls (repairs, plans after a
+  clarification, re-composes), outcomes, models, efforts, times and tokens.
+
 **The evals, mode L, by hand** (mode L is up with `orion/scripts/orion-local.sh up`). The agent's run volume is mounted read-only so record-based
 checks can run:
 
@@ -174,4 +191,5 @@ ones the agent's exclusion list lacks (it reads that file with `ast`, never impo
 | `orion_evals/checks.py`, `extract.py`, `evalchecks.py` | Check primitives, journey values read from chips, the check function of each eval |
 | `orion_evals/scenarios.py`, `evals.py` | Drivers, and E1–E24 as data plus a run function each |
 | `orion_evals/runner.py`, `report.py`, `cli.py` | Running, gates, environment, reports, the command line |
+| `orion_evals/timings.py` | Stage 2: NFR-01 timings through the agent, and a report's model calls and tokens |
 | `tests/` | Unit tests (fixture replay, fake agent, local HTTP server, fake gateway) and the live oracle test |

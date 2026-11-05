@@ -15,6 +15,7 @@ models decline (code MODEL_DECLINED and a limitation naming the models), when th
 (the error's plain reason), or when no Interpretation sentence survives verification.
 """
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Final, Literal
@@ -26,6 +27,7 @@ from ..vocab import Vocabulary
 from .errors import ModelRoleError
 from .verifier import check_observed, model_text_feedback
 
+log = logging.getLogger("orion.model")
 WITHHELD_UNVERIFIED: Final = "no interpretation sentence passed verification"
 WITHHELD_UNSCHEMA: Final = "the interpretation did not match its schema"
 
@@ -136,9 +138,20 @@ async def write_answer(
     results = [verdict]
     serving = first.serving_model
     if verdict.retry:
-        second = await compose(model_text_feedback(verdict))
+        feedback = model_text_feedback(verdict)
+        log.info("re-compose after %s", finding_summary(feedback))
+        second = await compose(feedback)
         if isinstance(second, ComposerResult) and not second.declined and second.output is not None:
             verdict = verify(second, 2)
             results.append(verdict)
             serving = second.serving_model
+            if failed := model_text_feedback(verdict):
+                log.info("dropped after the re-compose: %s", finding_summary(failed))
     return _from_verdict(verdict, calls, results, serving)
+
+
+def finding_summary(findings: Sequence[RuleFinding], *, detail_chars: int = 160) -> str:
+    """Failed findings for a log line: rule, part and index, and the start of the detail."""
+    return "; ".join(
+        f"{f.rule} {f.part}[{'' if f.index is None else f.index}]: {f.detail[:detail_chars]}" for f in findings if not f.passed
+    )

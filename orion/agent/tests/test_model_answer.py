@@ -14,7 +14,7 @@ from orion_agent.model.verifier import CodeVerifier
 from orion_agent.models import FactRecord
 from support import vocabulary
 from test_model_fixtures import fixture_model_output, j3_plan, last_view, placeholder_text, view_facts, view_observed
-from test_model_mock import run
+from test_model_mock import FALLBACK, HAS_SDK, PRIMARY, RUN_ID, SKIP_REASON, ScriptedBedrock, config, refusal, run
 from test_verifier import output, statement
 
 J3 = "j3-after-confirm.events.jsonl"
@@ -86,6 +86,17 @@ class WriteAnswerTest(unittest.TestCase):
         self.assertEqual(outcome.status, "Complete")
         self.assertEqual([s.dropped for s in outcome.interpretation], ["V-NUM", None])
 
+    def test_a_re_compose_and_a_drop_are_logged_with_their_rules(self) -> None:
+        """The run record keeps no verifier finding, so the log names why a re-compose ran (Open question 10)."""
+        mixed = output([statement("The two groups differ."), statement("{{f.s10.top.1.gene}} ranks first.")])
+        with self.assertLogs("orion.model", "INFO") as logs:
+            answer(ScriptedComposer(BAD, mixed))
+        self.assertEqual(len(logs.records), 2, logs.output)
+        self.assertTrue(logs.output[0].startswith("INFO:orion.model:re-compose after V-NUM interpretation[0]: the number word 'two'"), logs.output)
+        self.assertTrue(logs.output[1].startswith("INFO:orion.model:dropped after the re-compose: V-NUM interpretation[0]: "), logs.output)
+        with self.assertNoLogs("orion.model", "INFO"):
+            answer(ScriptedComposer(GOOD))
+
     def test_a_declined_re_compose_keeps_the_first_verdict(self) -> None:
         mixed = output([statement("The two groups differ."), statement("{{f.s10.top.1.gene}} ranks first.")])
         outcome = answer(ScriptedComposer(mixed, "both models declined"))
@@ -114,6 +125,56 @@ class WriteAnswerTest(unittest.TestCase):
         outcome = answer(RefusingComposer(), observed)
         self.assertEqual(len(outcome.inserted_observed), 1)
         self.assertEqual([lim.code for lim in outcome.inserted_limitations], ["PANEL_COVERAGE", "MODEL_DECLINED"])
+
+
+@unittest.skipUnless(HAS_SDK, SKIP_REASON)
+class BedrockAnswerTest(unittest.TestCase):
+    """write_answer with the Bedrock composer over a scripted Bedrock, inside the run's model call scope."""
+
+    def answer(self, composer: Any) -> Any:
+        from orion_agent.model.calls import model_call_scope
+
+        view = last_view(J3)
+
+        async def go() -> Any:
+            with model_call_scope(RUN_ID):
+                return await write_answer(
+                    composer, CodeVerifier(), question=view.question, facts=view_facts(view), plan=j3_plan(),
+                    observed=view_observed(view), ledger=None, vocab=vocabulary(),
+                )
+
+        return run(go())
+
+    def test_a_refusal_whose_fallback_call_fails_is_model_declined(self) -> None:
+        from orion_agent.model.composer import BedrockComposer
+
+        bedrock = ScriptedBedrock({PRIMARY: [refusal(PRIMARY)], FALLBACK: [403]})
+        outcome = self.answer(BedrockComposer(bedrock.client(), config()))
+        reason = "Claude Opus 5.5 declined to interpret these results, and the fallback model could not be reached"
+        self.assertEqual((outcome.status, outcome.code, outcome.withheld_reason), ("ObservedOnly", "MODEL_DECLINED", reason))
+        self.assertEqual([lim.code for lim in outcome.inserted_limitations if lim.code == "MODEL_DECLINED"], ["MODEL_DECLINED"])
+        self.assertEqual([(c.model, c.outcome) for c in outcome.model_calls], [(PRIMARY, "refused"), (FALLBACK, "error")])
+
+    def test_unresolved_aws_credentials_leave_observed_only(self) -> None:
+        """sdk-3: a RuntimeError from request signing is a composer failure (A3: Observed only), not a run failure."""
+        from unittest import mock
+
+        import httpx2
+        from anthropic import DefaultAsyncHttpxClient
+
+        from orion_agent.model.client import ModelClient
+        from orion_agent.model.composer import BedrockComposer
+        from orion_agent.model.config import ModelConfig
+
+        bedrock = ScriptedBedrock({})
+        client = ModelClient(region="us-east-1", fallback_model="us.anthropic.claude-opus-5", max_retries=1, base_url="http://runtime.invalid",
+                             http_client=DefaultAsyncHttpxClient(transport=httpx2.MockTransport(bedrock.handle)))
+        with mock.patch("boto3.Session.get_credentials", return_value=None):
+            outcome = self.answer(BedrockComposer(client, ModelConfig(composer="bedrock")))
+        self.assertEqual((outcome.status, outcome.code), ("ObservedOnly", None))
+        self.assertEqual(outcome.withheld_reason, "no AWS credentials were available for the composer model call")
+        self.assertEqual([(c.call_id, c.outcome) for c in outcome.model_calls], [(f"{RUN_ID}.v1.composer.c1", "error")])
+        self.assertEqual(bedrock.requests, [])
 
 
 if __name__ == "__main__":

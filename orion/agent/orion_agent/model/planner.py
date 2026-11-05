@@ -8,11 +8,14 @@ vocabulary, catalog and examples. Then code:
   allows one repair call when it fails (A2);
 - keeps only what the question states (C-12): a DE method, a ranking or a top N the question
   does not name is dropped, so the compiler's defaults and assumptions apply and both phrasings
-  of a journey sign the same plan;
+  of a journey sign the same plan; so is a cohort name the question does not state, so code
+  templates name the cohort and the model writes no display text (A2: the planner returns codes
+  and ids; a Rename on the confirmation card is the other way a name enters, without the planner);
 - holds a clarification's answer fixed: a survival split the researcher picked is the split.
 
-Both models declining gives `declined` (the run ends Failed, PLANNER_DECLINED: "Could not plan").
-Any other failure raises ModelRoleError (INTERNAL_ERROR) carrying every call made.
+Both models declining, or a refusal whose fallback call then fails, gives `declined` (the run ends
+Failed, PLANNER_DECLINED: "Could not plan"). Any other failure raises ModelRoleError
+(INTERNAL_ERROR) carrying every call made.
 """
 
 import json
@@ -24,6 +27,7 @@ from pydantic import JsonValue
 
 from .. import ir
 from ..compiler import SessionLedger
+from ..compiler import _norm_text as norm_text
 from ..interfaces import Clarification, PlannerResult
 from ..models import CohortContext, ModelCallRecord
 from ..vocab import Vocabulary
@@ -32,7 +36,7 @@ from .config import WARMUP_MAX_TOKENS, ModelConfig
 from .errors import ModelRoleError
 from .lexicon import NUMBER_WORDS, model_display_name
 from .prompts import RepairNote, planner_system_prefix, planner_user_message
-from .schema import PLANNER_OUTPUT_KEY, planner_output_schema
+from .schema import PLANNER_OUTPUT_KEY, planner_output_schema, planner_wire
 from .warmup import WarmUpResult, warm_up_result
 
 _METHOD_WORDS: Final[dict[str, tuple[str, ...]]] = {
@@ -59,10 +63,23 @@ def _mentions(question: str, words: tuple[str, ...]) -> bool:
     return any(word in folded for word in words)
 
 
+def states_name(question: str, name: str) -> bool:
+    """The question states the name: its words appear in the question as a whole, normalized as the
+    compiler compares text (case, dashes, slashes and spacing)."""
+    wanted = norm_text(name)
+    return bool(wanted) and re.search(rf"(?<!\w){re.escape(wanted)}(?!\w)", norm_text(question)) is not None
+
+
 def keep_stated(output: ir.PlannerOutput, question: str) -> ir.PlannerOutput:
-    """C-12: drop settings the question does not state, so the compiler's defaults apply."""
+    """C-12: drop settings the question does not state, so the compiler's defaults apply. A cohort
+    name the question does not state is dropped too: the compiler names the cohort from code
+    templates (or a saved or earlier cohort's own name), never from model text."""
     if not isinstance(output, ir.Plan):
         return output
+    cohorts = [
+        cohort.model_copy(update={"name": None}) if cohort.name is not None and not states_name(question, cohort.name) else cohort
+        for cohort in output.cohorts
+    ]
     analyses: list[ir.SurvivalCompare | ir.TopMutatedGenes | ir.DifferentialExpression | ir.CohortSize] = []
     numbered = _states_a_number(question)
     for analysis in output.analyses:
@@ -79,7 +96,7 @@ def keep_stated(output: ir.PlannerOutput, question: str) -> ir.PlannerOutput:
             analyses.append(analysis.model_copy(update={"n": None}))
         else:
             analyses.append(analysis)
-    return output.model_copy(update={"analyses": analyses})
+    return output.model_copy(update={"analyses": analyses, "cohorts": cohorts})
 
 
 def hold_clarification(output: ir.PlannerOutput, clarification: Clarification | None) -> ir.PlannerOutput:
@@ -97,7 +114,8 @@ def hold_clarification(output: ir.PlannerOutput, clarification: Clarification | 
 
 
 def parse_planner_reply(text: str) -> ir.PlannerOutput:
-    data = json.loads(text)
+    """The reply in the wire encoding (schema.py), decoded to the IR's shape and validated as the full IR."""
+    data = planner_wire().decode(json.loads(text))
     if not isinstance(data, dict) or PLANNER_OUTPUT_KEY not in data:
         raise ValueError(f"the reply is not an object with {PLANNER_OUTPUT_KEY!r}")
     payload: JsonValue = data[PLANNER_OUTPUT_KEY]

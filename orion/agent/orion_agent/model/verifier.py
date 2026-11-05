@@ -11,7 +11,11 @@ that fails names the drop:
   Roman numeral and no gene symbol. A follow-up may carry one integer from 1 to 100 when its kind
   takes a top N, and may name a known gene in plain text (it is asked as a new question).
 - V-SEC: no causal or certainty word unless negated ("does not show a driver role"), no clinical
-  or treatment advice; a hypothesis is a question ending in "?" or a hedged action.
+  or treatment advice; a hypothesis is a question ending in "?" or a hedged action. Follow-up
+  labels and questions take the same causal and clinical checks. A clinical word inside a name
+  the run itself uses (a regimen-defined cohort, a regimen value the plan filters on) is read as
+  a name, unless the text frames that name as advice ("Consider <regimen> for …"); a vocabulary
+  value the run does not use is checked like any other text.
 
 Observed and Limitations are code-written, so only V-COMP and V-LIM apply to them, and code fixes
 what they find: V-COMP inserts the journey's missing template sentence (J1 groups and log-rank p,
@@ -27,7 +31,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final, get_args
 
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue
 
 from ..catalog import APPS, AnalysisKind
 from ..compiler import CompiledPlan, SessionLedger, StepSpec
@@ -110,6 +114,24 @@ _CLINICAL: Final = re.compile(
     r"\w+metinib|\w+rasib)\b",
     re.IGNORECASE,
 )
+# Advice framing around a run's own name that carries a clinical word (G-5): the name is the run's, but
+# "Consider <regimen> for …", "… get <regimen>?" or "may do well on <regimen>" recommend it.
+_ADVICE_BEFORE: Final = re.compile(
+    r"\b(?:consider(?:ing)?|giv(?:e|ing)|start(?:ing)?|offer(?:ing)?|add(?:ing)?|try(?:ing)?|prefer(?:ring)?|"
+    r"receiv(?:e|ing)|get(?:ting)?|tak(?:e|ing)|(?:switch(?:ing)?|mov(?:e|ing)|escalat(?:e|ing)) to|"
+    r"continu(?:e|ing) (?:on|with)|stay(?:ing)? on|put on|"
+    r"(?:do|does|doing|fare|fares|faring) (?:well|better|worse|poorly|best) on)\s+(?:(?:the|a|an)\s+)?$",
+    re.IGNORECASE,
+)
+_ADVICE_AFTER: Final = re.compile(
+    r"^\s*(?:(?:regimens?|therap(?:y|ies))\s+)?(?:for\b|(?:may|might|could|would|should|will|can)\s+"
+    r"(?:suit|help|work|be (?:better|best|preferred|suitable|an option|the option|considered|tried|given|offered))\b|"
+    r"(?:is|are)\s+(?:the\s+|a\s+|an\s+)?(?:better|best|preferred|suitable|recommended|right|ideal)\b|suits?\b)",
+    re.IGNORECASE,
+)
+_GROUP_WORDS: Final = r"(?:cases?|patients?|groups?|cohorts?|subgroups?|arms?|samples?)"
+_ENDS_IN_GROUP: Final = re.compile(rf"(?:\b{_GROUP_WORDS}|\(ORION\))\s*$", re.IGNORECASE)
+_STARTS_WITH_GROUP: Final = re.compile(rf"^\s+{_GROUP_WORDS}\b", re.IGNORECASE)
 _ACTION_VERBS: Final = frozenset(
     {"compare", "check", "test", "look", "explore", "ask", "examine", "assess", "see", "review", "rank", "count", "split",
      "repeat", "run", "open", "plot", "measure", "evaluate", "investigate", "consider", "inspect", "contrast", "restrict"}
@@ -132,8 +154,9 @@ class _Context:
     findings: list[RuleFinding] = field(default_factory=list)
     # The six-gene panel: a symbol of it in any case ("kras") still needs a placeholder outside follow-ups.
     panel: frozenset[str] = frozenset({"KRAS", "NRAS", "TP53", "BRAF", "DIS3", "MYC"})
-    # Known names (cohorts, vocabulary labels and values, apps) with a clinical word in them, such as the regimen
-    # value "Bortezomib, lenalidomide, dexamethasone": V-SEC reads them as names, not advice.
+    # Names this run uses (its cohorts, the ledger's, apps, and vocabulary values its scope, cohorts or settings
+    # name) with a clinical word in them, such as a cohort defined by the regimen "Bortezomib, lenalidomide,
+    # dexamethasone": V-SEC reads them as names, not advice, unless the text frames them as advice.
     clinical_names: tuple[str, ...] = ()
 
 
@@ -279,15 +302,35 @@ def _causal(text: str) -> str | None:
     return None
 
 
-def _clinical(text: str, ctx: _Context) -> re.Match[str] | None:
-    """V-SEC's clinical or treatment wording, outside the run's own names (a regimen-defined cohort is not advice)."""
-    return _CLINICAL.search(remove_terms(text, ctx.clinical_names) if ctx.clinical_names else text)
+def _advised_name(text: str, names: Sequence[str]) -> str | None:
+    """A run's clinical-word name that the text offers as advice: "Consider <name> for …", "get <name>",
+    "<name> may suit …". A name read as a group ("<name> cases", a cohort's whole name) is not offered."""
+    for name in sorted(names, key=len, reverse=True):
+        for match in re.finditer(rf"(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", text, re.IGNORECASE):
+            after = text[match.end() :]
+            if _ENDS_IN_GROUP.search(name) or _STARTS_WITH_GROUP.match(after):
+                continue
+            if _ADVICE_BEFORE.search(text[: match.start()]) or _ADVICE_AFTER.match(after):
+                return match.group(0)
+    return None
+
+
+def _clinical(text: str, ctx: _Context) -> str | None:
+    """V-SEC's clinical or treatment wording (the term found), outside the run's own names (a regimen-defined
+    cohort is not advice) unless the text frames such a name as advice."""
+    if ctx.clinical_names:
+        advised = _advised_name(text, ctx.clinical_names)
+        if advised:
+            return advised
+        text = remove_terms(text, ctx.clinical_names)
+    match = _CLINICAL.search(text)
+    return match.group(1) if match else None
 
 
 def _check_sec(text: str, form: str | None, ctx: _Context) -> str | None:
     clinical = _clinical(text, ctx)
     if clinical:
-        return f"{clinical.group(1)!r} reads as clinical or treatment advice"
+        return f"{clinical!r} reads as clinical or treatment advice"
     term = _causal(text)
     if term:
         return f"{term!r} states a causal or certain claim; hedge it"
@@ -369,7 +412,7 @@ def _follow_up_failure(item: ComposerFollowUp, ctx: _Context) -> tuple[VerifierR
     for text in stripped:
         rest = text
         for n in allowed:
-            rest = re.sub(rf"(?<![A-Za-z0-9.]){n}(?![A-Za-z0-9.])", " ", rest)
+            rest = re.sub(rf"(?<![A-Za-z0-9.]){n}(?![A-Za-z0-9]|\.[0-9])", " ", rest)
         if has_digit(rest):
             return "V-NUM", "a follow-up carries a number other than one top N from 1 to 100"
         words = number_words(rest)
@@ -381,7 +424,11 @@ def _follow_up_failure(item: ComposerFollowUp, ctx: _Context) -> tuple[VerifierR
     for text in texts:
         clinical = _clinical(text, ctx)
         if clinical:
-            return "V-SEC", f"{clinical.group(1)!r} reads as clinical or treatment advice"
+            return "V-SEC", f"{clinical!r} reads as clinical or treatment advice"
+    for text in texts:
+        term = _causal(text)
+        if term:
+            return "V-SEC", f"{term!r} states a causal or certain claim; hedge it"
     return None
 
 
@@ -699,6 +746,17 @@ def check_observed(facts: Sequence[FactRecord], plan: CompiledPlan, observed: Ob
     return o.findings, o.sentences, o.limitations
 
 
+def _run_words(plan: CompiledPlan, ledger: SessionLedger | None) -> str:
+    """The run's own words, case-folded: its scope, its and the ledger's cohort names, and the plan's settings."""
+    texts = [plan.scope.name, *plan_cohort_names(plan), *ledger_cohort_names(ledger)]
+    for editable in plan.editable:
+        value: object = editable.value
+        if isinstance(value, BaseModel):
+            value = value.model_dump(mode="json")
+        texts += [str(v) for v in value.values()] if isinstance(value, dict) else [str(value)]
+    return "\n".join(texts).casefold()
+
+
 # --- The verifier ---------------------------------------------------------------------------------
 
 
@@ -707,12 +765,16 @@ class CodeVerifier:
 
     def allow_list(self, vocab: Vocabulary, ledger: SessionLedger | None, plan: CompiledPlan) -> list[str]:
         """Terms model text may write outside placeholders (V-NUM): ORION's terms with digits
-        (log2FC, Gen3 Analysis, six-gene panel), app names, the vocabulary's terms with digits,
-        numerals or upper-case codes ("Stage II"), and the run's and the ledger's cohort names."""
+        (log2FC, Gen3 Analysis, six-gene panel), app names, the vocabulary's terms with numerals or
+        upper-case codes ("Stage II"), and the run's and the ledger's cohort names. A vocabulary term
+        with a digit ("t(4;14): Present") only when the run itself names it, in its scope, a cohort
+        name or a plan setting: the contract ("Numbers on screen") allows a digit outside a fact chip
+        only in the run's own words, and the evals' cited-numbers gate counts any other one."""
+        named = _run_words(plan, ledger)
         terms = [
             *FIXED_TERMS,
             *app_titles(),
-            *vocabulary_terms(vocab),
+            *(term for term in vocabulary_terms(vocab) if not has_digit(term) or term.casefold() in named),
             *sorted(vocabulary_acronyms(vocab)),
             *_with_labels(plan_cohort_names(plan)),
             *_with_labels(ledger_cohort_names(ledger)),
@@ -733,21 +795,26 @@ class CodeVerifier:
         by_id = {f.id: f for f in facts}
         viz = _with_labels(_viz_names(observed))
         terms = [*allow_list, *viz]
-        names = {
+        own = {
             *(n.casefold() for n in _with_labels(plan_cohort_names(plan))),
             *(n.casefold() for n in _with_labels(ledger_cohort_names(ledger))),
             *(n.casefold() for n in viz),
             *(t.casefold() for t in app_titles()),
         }
+        names = set(own)
         for spec in vocabulary_fields(vocab):
             names.add(spec.label.casefold())
             names.update(str(v).casefold() for v in spec.values or ())
+        # A clinical word is exempt only inside a name this run uses: its own names, or a vocabulary label or
+        # value its scope, cohorts or settings name (as the allow-list admits a digit term), never every value.
+        named = _run_words(plan, ledger)
+        clinical_names = tuple(sorted(n for n in names if _CLINICAL.search(n) and (n in own or n in named)))
         gene_facts = {str(f.value) for f in facts if f.unit == "gene" and isinstance(f.value, str)}
         name_genes = {t for n in [*plan_cohort_names(plan), *ledger_cohort_names(ledger), *viz] for t in gene_like_tokens(n)}
         genes = frozenset({*panel_genes(vocab), *gene_facts, *name_genes})
         return _Context(
             facts=by_id, terms=terms, acronyms=ACRONYMS | vocabulary_acronyms(vocab), names=frozenset(names), genes=genes,
-            panel=frozenset(panel_genes(vocab)), clinical_names=tuple(sorted(n for n in names if _CLINICAL.search(n))),
+            panel=frozenset(panel_genes(vocab)), clinical_names=clinical_names,
         )
 
     def verify(
