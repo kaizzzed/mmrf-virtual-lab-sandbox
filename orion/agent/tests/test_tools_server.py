@@ -299,6 +299,25 @@ class NormalisationTests(unittest.TestCase):
         result, sent = invoke("de_run", many)
         self.assertEqual((result.limitation, sent.sent), ("REQUEST_TOO_LARGE", []))
 
+    def test_de_run_past_the_dot_cap_keeps_the_5000_dots_and_says_so(self) -> None:
+        # Live: original p < 0.9 and no fold-change cutoff passed 6,859 genes; ProteinPaint returned 5,000 dots.
+        request = {"groups": [{"name": "a", "sampleIds": [1]}, {"name": "b", "sampleIds": [2]}], "method": "wilcoxon"}
+        body = de_body(["a", "b"], [1, 1])
+        dot = body["data"]["dots"][0]
+        body["data"]["dots"] = [{**dot, "index": i, "gene_name": f"G{i}"} for i in range(5000)]
+        body["data"].update({"totalSignificantRows": 6859, "totalSignificantUp": 3000, "totalSignificantDown": 3859})
+        transport = fake_stack()
+        transport.routes["/protein-paint/termdb/DE"] = fixed(200, body)
+        result, _ = invoke("de_run", request, transport)
+        self.assertEqual(result.status, "ok", result.error)
+        observed = obj(result.observed)
+        self.assertEqual((observed["totals"]["significant"], len(observed["genes"]), observed["capped"]), (6859, 5000, True))
+        result, _ = invoke("de_run", request)
+        self.assertNotIn("capped", obj(result.observed), "absent below the cap")
+        body["data"]["dots"] = body["data"]["dots"][:4999]
+        transport.routes["/protein-paint/termdb/DE"] = fixed(200, body)
+        self.assertEqual(error_code(invoke("de_run", request, transport)[0]), "UPSTREAM_SHAPE")
+
     def test_kg_query_is_not_connected_and_makes_no_call(self) -> None:
         result, transport = invoke("kg_query", {"question": "What is known about KRAS?", "genes": ["KRAS"]})
         self.assertEqual((result.status, result.error and result.error.code, result.limitation), ("unavailable", "NOT_CONNECTED", "KG_NOT_CONNECTED"))

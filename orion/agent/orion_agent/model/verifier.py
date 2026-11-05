@@ -66,6 +66,7 @@ from .lexicon import (
     integers,
     json_list,
     number_words,
+    panel_gene_mentions,
     panel_genes,
     placeholders,
     remove_terms,
@@ -95,10 +96,18 @@ _CAUSAL: Final = re.compile(
 # An infinitive of purpose ("to determine whether") names a test, not a claim.
 _PURPOSE_VERBS: Final = frozenset({"determine", "confirm", "establish", "demonstrate", "prove"})
 _CLINICAL: Final = re.compile(
-    r"\b(treat(?:s|ed|ing|ment|ments)?|therap(?:y|ies|eutic|eutics)|drugs?|medications?|doses?|dosing|dosage|"
+    r"\b(treat(?:s|ed|ing|ment|ments)?|\w*therap(?:y|ies|eutic|eutics|ist|ists)|chemo\w*|radiation|"
+    r"transplant(?:s|ed|ation|ations)?|drugs?|medications?|doses?|dosing|dosage|"
     r"prescri(?:be|bes|bed|bing|ption|ptions)|recommend(?:s|ed|ing|ation|ations)?|inhibitors?|prognos(?:is|es|tic)|"
+    r"benefit(?:s|ed|ing)? from|(?:good |better |ideal |suitable |poor )?candidates? for(?! (?:further|follow|validation|study|"
+    r"studies|analysis|testing|comparison)\b)|respond(?:s|ed|ing)? (?:well |poorly |better |worse )?to|"
+    r"targetable|clinical trials?|curative|cure[sd]?|"
     r"standard of care|patient care|clinical (?:decision|decisions|care|practice|use|management)|"
-    r"should (?:receive|be given|be treated|take|start|stop|avoid))\b",
+    r"should (?:receive|be given|be treated|take|start|stop|avoid)|"
+    # Myeloma and panel-gene drugs and classes (G-5): proteasome inhibitors, IMiDs, antibodies, CAR-T, KRAS/BRAF/MEK drugs.
+    r"\w+zomib|\w*lidomide|imids?|\w+mab|monoclonal antibod(?:y|ies)|antibody-drug conjugates?|bispecifics?|"
+    r"car[- ]t|cilta-cel|ide-cel|dexamethasone|melphalan|cyclophosphamide|selinexor|venetoclax|\w+tinib|\w+rafenib|"
+    r"\w+metinib|\w+rasib)\b",
     re.IGNORECASE,
 )
 _ACTION_VERBS: Final = frozenset(
@@ -121,6 +130,11 @@ class _Context:
     names: frozenset[str]  # casefolded known names (cohorts, vocabulary, apps)
     genes: frozenset[str]  # genes a follow-up may name in plain text
     findings: list[RuleFinding] = field(default_factory=list)
+    # The six-gene panel: a symbol of it in any case ("kras") still needs a placeholder outside follow-ups.
+    panel: frozenset[str] = frozenset({"KRAS", "NRAS", "TP53", "BRAF", "DIS3", "MYC"})
+    # Known names (cohorts, vocabulary labels and values, apps) with a clinical word in them, such as the regimen
+    # value "Bortezomib, lenalidomide, dexamethasone": V-SEC reads them as names, not advice.
+    clinical_names: tuple[str, ...] = ()
 
 
 def _step_names(step: StepSpec) -> list[str]:
@@ -247,6 +261,9 @@ def _check_num(stripped: str, ctx: _Context) -> str | None:
     genes = gene_like_tokens(stripped, ctx.acronyms)
     if genes:
         return f"{genes[0]} looks like a gene symbol written outside a fact placeholder"
+    mentions = panel_gene_mentions(stripped, ctx.panel)
+    if mentions:
+        return f"{mentions[0]} names a panel gene outside a fact placeholder"
     return None
 
 
@@ -262,8 +279,13 @@ def _causal(text: str) -> str | None:
     return None
 
 
-def _check_sec(text: str, form: str | None) -> str | None:
-    clinical = _CLINICAL.search(text)
+def _clinical(text: str, ctx: _Context) -> re.Match[str] | None:
+    """V-SEC's clinical or treatment wording, outside the run's own names (a regimen-defined cohort is not advice)."""
+    return _CLINICAL.search(remove_terms(text, ctx.clinical_names) if ctx.clinical_names else text)
+
+
+def _check_sec(text: str, form: str | None, ctx: _Context) -> str | None:
+    clinical = _clinical(text, ctx)
     if clinical:
         return f"{clinical.group(1)!r} reads as clinical or treatment advice"
     term = _causal(text)
@@ -290,7 +312,7 @@ def _statement_failure(text: str, cites: Sequence[str] | None, form: str | None,
     detail = _check_num(stripped, ctx)
     if detail:
         return "V-NUM", detail
-    detail = _check_sec(text, form)
+    detail = _check_sec(text, form, ctx)
     if detail:
         return "V-SEC", detail
     return None
@@ -357,7 +379,7 @@ def _follow_up_failure(item: ComposerFollowUp, ctx: _Context) -> tuple[VerifierR
         if numerals:
             return "V-NUM", f"the numeral {numerals[0]!r} is in a follow-up"
     for text in texts:
-        clinical = _CLINICAL.search(text)
+        clinical = _clinical(text, ctx)
         if clinical:
             return "V-SEC", f"{clinical.group(1)!r} reads as clinical or treatment advice"
     return None
@@ -725,6 +747,7 @@ class CodeVerifier:
         genes = frozenset({*panel_genes(vocab), *gene_facts, *name_genes})
         return _Context(
             facts=by_id, terms=terms, acronyms=ACRONYMS | vocabulary_acronyms(vocab), names=frozenset(names), genes=genes,
+            panel=frozenset(panel_genes(vocab)), clinical_names=tuple(sorted(n for n in names if _CLINICAL.search(n))),
         )
 
     def verify(

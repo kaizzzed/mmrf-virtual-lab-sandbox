@@ -6,15 +6,18 @@ lease lapse, and the next turn then ends the run Interrupted.
 """
 
 import asyncio
+import logging
 import os
 import socket
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Final, Protocol
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
 from .events import iso_utc
+
+log = logging.getLogger("orion.lease")
 
 
 class Lease(BaseModel):
@@ -46,8 +49,22 @@ def is_expired(lease: Lease | None, now: datetime) -> bool:
     return datetime.fromisoformat(lease.expires_at.replace("Z", "+00:00")) <= now
 
 
+RETRY_AFTER_FAILURE_S: Final = 5.0
+
+
 async def keep_renewed(writer: Renewable, every_s: float) -> None:
-    """Renew on a fixed cadence that never waits for a step or a model call."""
+    """Renew on a fixed cadence that never waits for a step or a model call.
+
+    A failed renewal (a store write error) is logged and tried again sooner, never the end of the loop:
+    one lost PUT must not let a live run's lease lapse and show it Interrupted.
+    """
+    delay = every_s
     while True:
-        await asyncio.sleep(every_s)
-        await writer.renew_lease()
+        await asyncio.sleep(delay)
+        try:
+            await writer.renew_lease()
+        except Exception as error:
+            log.warning("lease renewal failed; retrying: %r", error)
+            delay = min(every_s, RETRY_AFTER_FAILURE_S)
+        else:
+            delay = every_s

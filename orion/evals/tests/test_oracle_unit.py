@@ -129,6 +129,10 @@ class Helpers(unittest.TestCase):
         self.assertEqual(rank_with_ties(rows, 2, descending=True), ([("KRAS", 5.0), ("DIS3", 3.0), ("NRAS", 3.0)], ["NRAS"]))
         self.assertEqual(rank_with_ties(rows, 10, descending=True)[1], [])
         self.assertEqual(rank_with_ties([("b", 0.1), ("a", 0.1)], 1, descending=False), ([("a", 0.1), ("b", 0.1)], ["b"]))
+        # Ties in ProteinPaint's order (live: KRAS 8, NRAS 4, then BRAF 4): OncoMatrix shows KRAS and NRAS, so BRAF is the tie.
+        rows = [("BRAF", 4.0), ("KRAS", 8.0), ("NRAS", 4.0)]
+        self.assertEqual(rank_with_ties(rows, 2, descending=True, order=["KRAS", "NRAS", "BRAF"]),
+                         ([("KRAS", 8.0), ("NRAS", 4.0), ("BRAF", 4.0)], ["BRAF"]))
 
 
 class Journeys(unittest.TestCase):

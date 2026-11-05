@@ -763,6 +763,9 @@ class Engine:
                 state.status[step.id], state.codes[step.id] = "Skipped", guard_code
                 state.blocked[step.id] = _STOP_REASONS.get(guard_code, "did not run")
                 state.stop_code = state.stop_code or guard_code
+                if guard_code == "CALL_BUDGET" and not any(item.code == "CALL_BUDGET" for item in state.limitations):
+                    # The tool client's own cap stopped the step: say why under Limitations, as the executor's check does.
+                    state.limitations.append(call_budget(self.call_budget))
                 return
             if result.status == "unavailable" or (error is not None and error.code == "NOT_CONNECTED"):
                 missing: Code = result.limitation or "KG_NOT_CONNECTED"

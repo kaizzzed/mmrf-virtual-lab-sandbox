@@ -71,6 +71,8 @@ LimitationCode = Literal[
     "REQUEST_TOO_LARGE",
     "CALL_BUDGET",
     "KG_NOT_CONNECTED",
+    # v1.2: de_run found more genes past the thresholds than ProteinPaint returns as dots (DE_MAX_DOTS).
+    "ROWS_CAPPED",
 ]
 ControllerCode = Literal[
     "INVALID_INPUT", "NOT_IMPLEMENTED", "RUN_BUSY", "RUN_NOT_FOUND", "STALE_ACTION", "INTERNAL_ERROR"
@@ -304,6 +306,20 @@ def _refuse_null(value: object) -> object:
 # None stands for "absent" and is dumped as no key; the browser hashes a null it is sent as null,
 # so accepting one would let a frame carry a hash the browser cannot reproduce.
 _NOT_NULL: Final = BeforeValidator(_refuse_null)
+
+# A viz report's error is the viewer's own text (two joined viewer messages, a holder's textContent), so it
+# can be any length. The agent clips it to VIZ_ERROR_MAX characters, the last one an ellipsis, instead of
+# rejecting the turn it rides on (contract "vizReports": a bad report never refuses a Stop or a confirm).
+VIZ_ERROR_MAX: Final = 500
+
+
+def _clip_viz_error(value: object) -> object:
+    if isinstance(value, str) and len(value) > VIZ_ERROR_MAX:
+        return value[: VIZ_ERROR_MAX - 1] + "…"
+    return value
+
+
+VizError = Annotated[Annotated[str, Field(max_length=VIZ_ERROR_MAX)] | None, BeforeValidator(_clip_viz_error)]
 
 
 # --- RunView parts ---------------------------------------------------------------------
@@ -1198,7 +1214,7 @@ class VizReport(WireModel):
     run_id: HexId
     viz_id: VizId
     mounted: bool
-    error: str | None = Field(max_length=500)
+    error: VizError
     # True when the browser's recomputed pinnedHash equals both pinnedHash and requestPinnedHash; null if not checked.
     pinned_hash_verified: bool | None
 
@@ -1318,7 +1334,7 @@ class VizReportAction(_Action):
     action: Literal["viz_report"]
     viz_id: VizId
     mounted: bool
-    error: str | None = Field(max_length=500)
+    error: VizError
     pinned_hash_verified: bool | None
 
 

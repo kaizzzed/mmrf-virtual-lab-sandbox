@@ -658,6 +658,45 @@ class ActionTests(LiveCase):
                 self.assertEqual(self.transport.requests, [], "a declined substitution makes no data call")
                 self.record(run_id, view)
 
+    async def test_every_follow_up_chip_runs_in_its_thread(self) -> None:
+        """C-06 in mode L: each chip the stub composer offers on J1 and J2, sent verbatim as the click does, plans its own
+        kind and reaches Complete (J1's "Top mutated genes in this cohort", J2's "Survival by <gene> mutation")."""
+        app = self.build()
+        thread_id, run_id = new_id(), new_id()
+        frames = await self.turn(app, self.ask(thread_id, run_id, J1_OPEN), run_id)
+        chips = self.assertComplete(frames, "survival").follow_ups
+        genes_chip = next(f for f in chips if f.kind == "top_mutated_genes")
+        chip_run = new_id()
+        frames = await self.turn(app, self.ask(thread_id, chip_run, genes_chip.question), chip_run)
+        self.assertComplete(frames, "oncomatrix")
+        thread_id, run_id = new_id(), new_id()
+        frames = await self.turn(app, self.ask(thread_id, run_id, J2_OPEN), run_id)
+        frames = await self.turn(app, action_body(thread_id, run_id, self.browser.create(self.pending(frames))), run_id)
+        chips = self.assertComplete(frames, "oncomatrix").follow_ups
+        survival_chip = next(f for f in chips if f.kind == "survival_compare")
+        self.assertRegex(survival_chip.question, r"^Compare survival between [A-Z0-9]+-mutated and other mutation-tested cases$")
+        chip_run = new_id()
+        frames = await self.turn(app, self.ask(thread_id, chip_run, survival_chip.question), chip_run)
+        view = self.view(frames)
+        self.assertEqual((view.status, [s.tool for s in view.steps if s.tool == "survival_compare"]), ("Complete", ["survival_compare"]))
+
+    async def test_a_gene_population_is_never_dropped_and_high_risk_patients_asks_once(self) -> None:
+        """E8's second phrasing ends OUT_OF_PANEL with no data call; FR-04's "High-risk patients" asks one question."""
+        app = self.build()
+        thread_id, run_id = new_id(), new_id()
+        frames = await self.turn(app, self.ask(thread_id, run_id, "Top mutated genes in IDH1-mutated patients"), run_id)
+        view = self.view(frames)
+        self.assertEqual((view.status, view.code, view.facts), ("Limited", "OUT_OF_PANEL", []))
+        self.assertEqual(self.transport.requests, [], "no data call")
+        run_id = new_id()
+        frames = await self.turn(app, self.ask(thread_id, run_id, "High-risk patients"), run_id)
+        view = self.view(frames)
+        assert view.pending is not None and view.pending.kind == "clarify"
+        self.assertEqual([o.field for o in view.pending.options], [CGS, "diagnoses.iss_stage"])
+        self.assertEqual(self.transport.requests, [], "no data call before the answer")
+        frames = await self.turn(app, action_body(thread_id, run_id, {"action": "clarify_answer", "optionId": CGS}), run_id)
+        self.assertEqual(self.view(frames).status, "Complete")
+
     async def test_unsupported_and_out_of_panel_questions_make_no_data_call(self) -> None:
         """E17, E18, E23 end Unsupported and E8 Limited (OUT_OF_PANEL), each with no data call and no number."""
         app = self.build()

@@ -211,6 +211,22 @@ class J3Tests(EngineCase):
         write = next(c for c in record["calls"] if c["stepId"] == "s8")
         self.assertEqual((write["transport"], write["observed"]["decision"]), ("client", "create"))
 
+    async def test_a_de_run_past_the_dot_cap_completes_and_says_the_ranking_covers_the_returned_genes(self) -> None:
+        _, app = self.build([j3_ir()], tools=FakeTools({"de_run": "capped"}))
+        thread_id, run_id = new_id(), new_id()
+        pending = await self.j3_pause(app, thread_id, run_id)
+        frames = await self.turn(app, action_body(thread_id, run_id, self.create(pending)), run_id)
+        final = self.last_view(frames)
+        self.assertEqual(final.status, "Complete")
+        capped = [lim for lim in final.limitations if lim.code == "ROWS_CAPPED"]
+        self.assertEqual(len(capped), 1)
+        assert capped[0].segments is not None
+        self.assertEqual(
+            "".join(s.text for s in capped[0].segments),
+            "ProteinPaint returns at most 5,000 of the 6,859 genes that passed the thresholds, those with the smallest p-values, "
+            "so the ranking covers only those.",
+        )
+
     async def test_a_read_back_mismatch_ends_failed_with_write_verify_failed(self) -> None:
         _, app = self.build([j3_ir()])
         thread_id, run_id = new_id(), new_id()

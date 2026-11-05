@@ -83,6 +83,7 @@ def routes() -> dict[str, Any]:
         f"ask:{REF['J3']['tool-named']}": "j3-save-pause.events.jsonl",
         f"ask:{PROMPTS['edge']['E7']}": "consent.events.jsonl",
         f"ask:{PROMPTS['edge']['E10']}": "clarify.events.jsonl",
+        **{f"ask:{q}": "clarify.events.jsonl" for q in PROMPTS["edgeAlternates"]["E10"]},
         f"ask:{PROMPTS['edge']['E18']}": "interrupted.events.jsonl",
         "confirm": after_confirm,
         "consent": lambda body: declined_stream() if not body["forwardedProps"]["orion"]["accept"] else "j1-complete.events.jsonl",
@@ -165,6 +166,9 @@ class Runner(unittest.TestCase):
         self.assertEqual([c.name for c in results["E7"].checks if c.gate and c.status != "pass"], [])
         self.assertEqual(results["E7"].status, "pass")
         self.assertEqual(results["E10"].status, "pass")
+        # The design's own wording ("High-risk patients") is asked too, with the same checks.
+        alternate = [c for c in results["E10"].checks if c.name.startswith('"High-risk patients": ')]
+        self.assertTrue(alternate and all(c.status == "pass" for c in alternate if c.gate), [(c.name, c.status) for c in alternate])
         e18 = {c.name: c.status for c in results["E18"].checks}
         self.assertEqual(e18["names SetOperations as the nearest app"], "pass")
         self.assertEqual(results["E21"].status, "pass")

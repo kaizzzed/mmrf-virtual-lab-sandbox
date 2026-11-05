@@ -110,6 +110,16 @@ class VNumTest(unittest.TestCase):
     def test_vocabulary_terms_with_numerals_are_allowed(self) -> None:
         self.assertEqual(dropped(verify_j3(output([statement("A split by ISS stage, such as Stage II, may differ.")]))), [None])
 
+    def test_fold_words_unicode_digits_fractions_and_lower_case_panel_genes_fail(self) -> None:
+        for text in ("The cohort shows a twofold higher rate.", "The groups show a tenfold difference.",
+                     "About ５０% of the genes are higher.", "Roughly ½ of the genes rise.", "Expression rises by a factor of 2².",
+                     "In these cases, kras looks more often mutated.", "Braf mutated cases differ."):
+            with self.subTest(text=text):
+                self.assertEqual(dropped(verify_j3(output([statement(text)]))), ["V-NUM"])
+
+    def test_words_that_only_end_in_fold_pass(self) -> None:
+        self.assertEqual(dropped(verify_j3(output([statement("The ranking may unfold differently in a manifold of scopes.")]))), [None])
+
 
 class VRefTest(unittest.TestCase):
     def test_an_unknown_placeholder_fails(self) -> None:
@@ -166,6 +176,23 @@ class VSecTest(unittest.TestCase):
         for text in ("These patients should receive an inhibitor.", "This is no basis for treatment.", "Dosing may differ."):
             with self.subTest(text=text):
                 self.assertEqual(dropped(verify_j3(output([statement(text)]))), ["V-SEC"])
+
+    def test_compound_therapy_words_benefit_and_drug_names_fail(self) -> None:
+        for text in ("Cases with a {{f.s10.top.1.gene}} mutation may benefit from chemotherapy.",
+                     "These cases are good candidates for immunotherapy or a stem cell transplant.",
+                     "These cases may respond to radiotherapy.", "These cases may benefit from a bortezomib-based regimen.",
+                     "Daratumumab could help these cases.", "A cilta-cel approach may suit these cases.",
+                     "{{f.s10.top.1.gene}} may be targetable with sotorasib."):
+            with self.subTest(text=text):
+                cites = ("f.s10.top.1.gene",) if "{{" in text else ()
+                self.assertEqual(dropped(verify_j3(output([statement(text, *cites)]))), ["V-SEC"])
+
+    def test_research_wording_and_regimen_names_from_the_vocabulary_pass(self) -> None:
+        for text in ("These genes are candidates for further study.",
+                     "Survival may differ between the Bortezomib, lenalidomide, dexamethasone and VRd groups.",
+                     "Cases whose reason for discontinuation is Completed planned therapy may differ."):
+            with self.subTest(text=text):
+                self.assertEqual(dropped(verify_j3(output([statement(text)]))), [None])
 
     def test_hypotheses_are_questions_or_hedged_actions(self) -> None:
         questions = [

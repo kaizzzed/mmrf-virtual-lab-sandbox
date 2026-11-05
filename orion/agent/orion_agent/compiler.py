@@ -1683,7 +1683,7 @@ class Compiler:
         genes = builder.add_step(row, "top_mutated_genes", "server", f"{subject}, top {n}", {"filter0": filter0, "geneCount": n})
         builder.add_step(
             row, "rank_top_n", "exec", f"Top {n} by mutated cases, ties disclosed",
-            {"rows": genes, "key": "gene", "rankBy": "cases", "n": n, "ascending": False, "tieBreak": "gene"},
+            {"rows": genes, "key": "gene", "rankBy": "cases", "n": n, "ascending": False, "tieBreak": "source"},
         )
         lead = "List the most frequently mutated gene" if n == 1 else f"List the {n} most frequently mutated genes"
         return f"{lead} {among}."

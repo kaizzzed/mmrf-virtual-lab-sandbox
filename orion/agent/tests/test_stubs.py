@@ -6,6 +6,7 @@ skips every step."""
 import unittest
 from collections.abc import Sequence
 
+from pydantic import JsonValue
 from support import context
 from test_compiler_cases import (
     CGS,
@@ -127,6 +128,56 @@ class EdgeCaseTests(unittest.TestCase):
                 assert isinstance(analysis, ir.SurvivalCompare)
                 self.assertEqual((analysis.split_term, analysis.split_values), (field, None))
 
+    def test_e8_a_gene_population_outside_the_panel_is_never_dropped(self) -> None:
+        for question in ("Top mutated genes in IDH1-mutated patients", "Compare survival between IDH1-mutated and other patients"):
+            with self.subTest(question=question):
+                output = planned(question)
+                self.assertIn("OTHER", [getattr(c.definition, "gene", None) for c in output.cohorts], "the stated population is kept")
+                self.assertEqual(stopped(compile_ir(output)).code, "OUT_OF_PANEL")
+
+    def test_the_ranking_chip_and_its_plain_phrasings_plan_top_mutated_genes_in_the_scope(self) -> None:
+        for question in ("Which genes are most frequently mutated in this cohort?", "Which genes are mutated most often?"):
+            with self.subTest(question=question):
+                output = planned(question)
+                self.assertEqual(output.analyses, [ir.TopMutatedGenes(kind="top_mutated_genes", cohort="base", n=None)])
+                self.assertEqual(output.cohorts, [])
+
+    def test_an_in_panel_gene_population_ranks_within_its_mutated_cases(self) -> None:
+        for gene in ("KRAS", "TP53"):
+            with self.subTest(gene=gene):
+                output = planned(f"Top 3 most frequently mutated genes in {gene}-mutated patients")
+                ref = f"{gene.lower()}_mut"
+                self.assertEqual(output.cohorts, [ir.CohortDef(ref=ref, definition=ir.GeneMutatedDef(kind="gene_mutated", gene=gene, within="base"))])
+                self.assertEqual(output.analyses, [ir.TopMutatedGenes(kind="top_mutated_genes", cohort=ref, n=3)])
+                plan = compiled(compile_ir(output))
+                self.assertEqual([s.tool for s in plan.steps][:3], ["fixture_fingerprint", "gene_cases", "top_mutated_genes"])
+
+    def test_survival_by_a_gene_compares_its_mutated_and_other_tested_cases(self) -> None:
+        for question in ("Compare survival between KRAS-mutated and other mutation-tested cases", "Survival by KRAS status"):
+            with self.subTest(question=question):
+                output = planned(question)
+                self.assertEqual(output.analyses, [ir.SurvivalCompare(kind="survival_compare", groups=["kras_mut", "kras_wt"])])
+                self.assertEqual([c.ref for c in output.cohorts], ["tested", "kras_mut", "kras_wt"])
+                self.assertIn("survival_compare", [s.tool for s in compiled(compile_ir(output)).steps])
+
+    def test_a_split_field_wins_over_a_gene_in_a_saved_cohorts_name(self) -> None:
+        saved: list[dict[str, JsonValue]] = [{"id": "c-kras", "name": "KRAS mutated (ORION)", "filters": {"mode": "and", "root": {}}, "caseCount": 123}]
+        output = planned("Overall survival of my saved KRAS mutated (ORION) cohort by ISS stage", context(saved=saved))
+        analysis = output.analyses[0]
+        assert isinstance(analysis, ir.SurvivalCompare)
+        self.assertEqual((analysis.split_term, analysis.groups), (ISS, None))
+
+    def test_e10_the_design_phrase_high_risk_patients_asks_which_field_then_sizes_the_cohort(self) -> None:
+        output = plan_question("High-risk patients", context())
+        self.assertEqual(output, ir.Clarify(kind="clarify", slot="cohort_field", option_ids=[CGS, ISS]))
+        for field, value in ((CGS, "High risk"), (ISS, "Stage III")):
+            with self.subTest(field=field):
+                answered = planned("High-risk patients", clarification=Clarification(slot="cohort_field", option_id=field, field=field))
+                self.assertEqual(answered.cohorts, [ir.CohortDef(ref="high", definition=ir.FilterDef(kind="filter", clauses=[
+                    ir.Clause(field=field, op="in", values=[value])]))])
+                self.assertEqual(answered.analyses, [ir.CohortSize(kind="cohort_size", cohort="high")])
+                compiled(compile_ir(answered))
+
     def test_e12_an_injected_cohort_name_is_data(self) -> None:
         ctx = context(saved=[{"id": "c-x", "name": E12_NAME, "caseCount": 12, "filters": {"mode": "and", "root": {
             CGS: {"operator": "in", "field": CGS, "operands": ["High risk"]}}}}])
@@ -176,7 +227,7 @@ class EdgeCaseTests(unittest.TestCase):
                                  ir.Unsupported(kind="unsupported", reason="UNSUPPORTED_ANALYSIS", nearest_app_ids=[app]))
 
     def test_questions_no_rule_covers_are_unsupported_with_no_app(self) -> None:
-        for question in ("Which genes are mutated most often?", "What is the weather in Boston?", "Show the top 5 instead"):
+        for question in ("Which pathway is most active here?", "What is the weather in Boston?", "Show the top 5 instead"):
             with self.subTest(question=question):
                 self.assertEqual(plan_question(question, context()),
                                  ir.Unsupported(kind="unsupported", reason="UNSUPPORTED_ANALYSIS", nearest_app_ids=[]))

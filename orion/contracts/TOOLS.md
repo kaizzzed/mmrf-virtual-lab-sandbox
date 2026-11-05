@@ -338,7 +338,13 @@ golden payload is sent unchanged. Tools read goldens from `ORION_GOLDEN_DIR` (de
   `data.totalSignificantRows/Up/Down`, `data.dots` (returned order, without `index`, `pixel_x`,
   `pixel_y`) and `data.cacheId`. `volcanoPng` and `plotExtent` are dropped. `DeGene` is
   `{gene_name, fold_change, original_p_value, adjusted_p_value}`; `fold_change` is
-  log2(case / control). ProteinPaint returns only the genes past the thresholds.
+  log2(case / control). ProteinPaint returns only the genes past the thresholds, and at most
+  `volcanoRender.maxInteractiveDots` (5,000, `DE_MAX_DOTS`) of them: those with the smallest p (of
+  `pValueType`), while `totals.significant` counts them all. So `genes` has
+  `min(totals.significant, 5000)` rows, and `"capped": true` (absent otherwise) marks a run past
+  the cap; the answer then carries `de.dots_capped` (`ROWS_CAPPED`). A gene passes when
+  `-log10(p) > pValueCutoff` as sent (`minus_log10` of the plan's cutoff, so 0.05 -> 1.3, p <
+  0.0501; p = 0 passes) and `|fold_change| > foldChangeCutoff`.
 - **Guards.** pre `samples<=4000` -> `REQUEST_TOO_LARGE`. Retry and 429 back-off as section 1; a
   retry resends the identical body and joins ProteinPaint's in-flight job or reads its cache.
 - **Facts.** `f.sN.tested` (`/observed/totals/tested`, genes, "Genes tested"), `f.sN.significant`
@@ -370,10 +376,14 @@ provenance). Signatures and result models are in `tools/base.py`.
   to 10 of them, and every later use of inner's ids intersects them with outer's (the StepRef
   `intersect`), so the plan uses only cases inside.
 - **`rank_top_n`.** Rows: de_run's `/observed/genes`; top_mutated_genes' `/observed/genes` then its
-  `/observed/nextGene` when present. With `thresholds`, a row passes when its p (adjusted or
-  original, per `pValueType`) is below `pValueCutoff` and `|fold_change|` above `foldChangeCutoff`.
-  `rankBy` is a row field or `abs(<field>)`; rows sort by value (`ascending`), then `tieBreak` in
-  code point order. It keeps the top n plus every row whose value equals the n-th's
+  `/observed/nextGene` when present. With `thresholds`, a row passes by the viewer's own rule (the
+  rule ProteinPaint applied to the dots): `-log10` of its p (adjusted or original, per
+  `pValueType`; p = 0 passes) is above `minus_log10(pValueCutoff)`, the value de_run sends (0.05
+  -> 1.3), and `|fold_change|` is above `foldChangeCutoff`. So the ranking holds exactly the genes
+  the viewer marks significant. `rankBy` is a row field or `abs(<field>)`; rows sort by value
+  (`ascending`), then by `tieBreak`: a row field in code point order, or `source`, the order the
+  source tool returned the rows (`nextGene` last). Top mutated genes break ties by `source`, so
+  the top n are the genes OncoMatrix shows and `tiesAtCutoff` names only genes it leaves out. It keeps the top n plus every row whose value equals the n-th's
   (`tiesAtCutoff` lists their keys); `value` is the ranking value; `row` the source row unchanged;
   `count` = `len(rows)`. Zero rows: status `empty`, `FEWER_THAN_N`.
   | IR `rank_by` | `rankBy` | `ascending` |
@@ -457,7 +467,7 @@ IR: a filter cohort (J2's race cohort) and `top_mutated_genes {cohort, n?}`. Unf
 | s1 | 1 (folded) | `fixture_fingerprint` | `{}` | B | `f.s1.cases` | scope count |
 | s2 | 1 "Find {cohort name} cases" | `cases_query` | `{"filter": gql_filter(cohort clauses), "pageSize": 1000, "maxIds": 10000}` | B | `f.s2.count` | `genes.cohort`, cohort count, card count |
 | s3 | 2 "Rank mutated genes: top {n}" | `top_mutated_genes` | `{"filter0": {"and": [{"in": {"case_id": StepRef(s2)}}]}, "geneCount": n}` | B | none | OncoMatrix card (cites s3) |
-| s4 | 2 | `rank_top_n` | `{"rows": "s3", "key": "gene", "rankBy": "cases", "n": n, "ascending": false, "tieBreak": "gene"}` | B | `top.<pos>.gene`, `top.<pos>.cases` | `genes.top`, `rank.ties_oncomatrix`, `rank.fewer`, `rank.none_genes`, frozen table |
+| s4 | 2 | `rank_top_n` | `{"rows": "s3", "key": "gene", "rankBy": "cases", "n": n, "ascending": false, "tieBreak": "source"}` | B | `top.<pos>.gene`, `top.<pos>.cases` | `genes.top`, `rank.ties_oncomatrix`, `rank.fewer`, `rank.none_genes`, frozen table |
 | s5 | 3 "Save 1 cohort" | `save_cohorts` | `{"cohorts": [{"ref": <cohort>, "name": "<name> (ORION)"}]}` | W | none | `save.skipped_one` on Don't save |
 
 The run pauses at s5 (AwaitingConfirmation, `eligibleCount` null) once s1 to s4 are Done; Observed
@@ -704,6 +714,7 @@ Each carries its code, the plain `text`, `unblock` (code text, `${var}` filled),
 | `de.too_many_samples` | `REQUEST_TOO_LARGE` | The groups have {{samples.control}} and {{samples.case}} samples, more than the 4,000 one differential expression run takes. | Narrow the groups, such as with a smaller scope. | 4,000-sample guard |
 | `samples.too_large` | `REQUEST_TOO_LARGE` | The sample lookup for ${group} would exceed the 8 MiB the gateway accepts. | Narrow the group. | body guard |
 | `filter.not_bridge_safe` | `UNSUPPORTED_FIELD` | ${field} cannot filter ProteinPaint directly, so this step did not run. | Remove that filter, or ask about all cases. | bridge guard |
+| `de.dots_capped` | `ROWS_CAPPED` | ProteinPaint returns at most 5,000 of the {{f.<de>.significant}} genes that passed the thresholds, those with the smallest p-values, so the ranking covers only those. | Tighten the thresholds on the plan. | `de_run` `capped` |
 | `rank.fewer` | `FEWER_THAN_N` | Only {{f.<ranking>.count}} genes ranked, fewer than the ${n} asked for. | none | 0 < rows < n |
 | `rank.none_de` / `rank.none_genes` | `FEWER_THAN_N` | No gene passed the thresholds, so there is no ranking. / No gene in the panel is mutated in this cohort, so there is no ranking. | none | zero rows |
 | `rank.ties` / `rank.ties_oncomatrix` | `TIES_AT_CUTOFF` | ${items} tied with the last gene in the top ${n}, so the list is longer than ${n}. / ...; OncoMatrix shows only the first ${n}. | none | ties at the cutoff (items: the tied genes' gene facts) |

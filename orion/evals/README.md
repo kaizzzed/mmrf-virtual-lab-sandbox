@@ -59,11 +59,16 @@ checks can run:
 ```sh
 docker run --rm --network mmrf-synthetic_default \
   -v $PWD/orion/evals:/evals -v mmrf-synthetic_orion-runs:/data/runs:ro \
-  -v $PWD/.sources/frontend:/fork:ro -v $PWD/orion/agent/tests:/agent-tests:ro \
+  -v $PWD/.sources/frontend:/fork:ro -v $PWD/orion/agent/tests:/agent-tests:ro -v $PWD/orion/scripts:/orion-scripts:ro \
   -w /evals orion-agent:dev python -m orion_evals run \
     --agent-url http://orion-agent:8080/invocations --run-dir /data/runs \
-    --frontend-root /fork --agent-tests-root /agent-tests
+    --frontend-root /fork --agent-tests-root /agent-tests --e2e-script /orion-scripts/e2e-mode-l.mjs
 ```
+
+`--e2e-script` names the browser E2E (`orion/scripts/e2e-mode-l.mjs`): a check only a browser can
+make, such as E3/E4's "a chat-made cohort opens in Cohort Builder", is covered only by the E2E step
+that opens Cohort Builder and reads the cohort's filter and case count (scenario `j2`), never by a
+unit test's name. Without the flag it is "not covered".
 
 Without the Compose service (or to test the working tree), start a throwaway agent from the current
 code on the stack's network and point the harness at it; a bind-mounted run directory doubles as the
@@ -75,9 +80,10 @@ docker run -d --name orion-agent-evals --network mmrf-synthetic_default \
   -v $PWD/orion/agent:/app:ro -v $PWD/config:/config:ro -v $PWD/orion/golden:/golden:ro \
   -v /tmp/orion-runs/main:/data/runs -e ORION_MODE=L -e ORION_VLAB_ORIGIN=http://identity:8080 orion-agent:dev
 docker run --rm --network mmrf-synthetic_default -v $PWD/orion/evals:/evals:ro -v /tmp/orion-runs:/runs:ro \
-  -v $PWD/.sources/frontend:/fork:ro -v $PWD/orion/agent/tests:/agent-tests:ro -w /evals orion-agent:dev \
+  -v $PWD/.sources/frontend:/fork:ro -v $PWD/orion/agent/tests:/agent-tests:ro -v $PWD/orion/scripts:/orion-scripts:ro \
+  -w /evals orion-agent:dev \
   python -m orion_evals run --agent-url http://orion-agent-evals:8080/invocations --run-dir /runs/main \
-    --frontend-root /fork --agent-tests-root /agent-tests
+    --frontend-root /fork --agent-tests-root /agent-tests --e2e-script /orion-scripts/e2e-mode-l.mjs
 docker rm -f orion-agent-evals
 ```
 

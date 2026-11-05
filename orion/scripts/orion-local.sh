@@ -25,7 +25,9 @@
 #   logs    `docker compose logs` for orion-agent by default; extra arguments pass through
 #           (for example: logs -f --since 10m, or logs frontend).
 #   status  Container states, health, and the agent's /ping answer.
-#   config  Validates the merged Compose file and prints the orion-agent and frontend services.
+#   config  Validates the merged Compose file and prints the orion-agent and frontend services
+#           without interpolation (`${VAR}` left as written), so exported AWS credentials are never
+#           printed: the three AWS keys show as null.
 #
 # Environment (all optional):
 #   ORION_AGENT_PORT    Host port for the agent on 127.0.0.1 (default 8081). Never exposed beyond
@@ -175,7 +177,9 @@ cmd_status() {
 
 cmd_config() {
   compose config --quiet
-  compose config orion-agent frontend
+  # --no-interpolate: the AWS keys are listed without a value, so an interpolated print would show
+  # the shell's exported secret key and session token.
+  compose config --no-interpolate orion-agent frontend
 }
 
 main() {

@@ -132,6 +132,26 @@ class StepTests(unittest.TestCase):
         plain = run_function("rank_top_n", args, reader({"s3": {"genes": [{"gene": "KRAS", "cases": 4}, {"gene": "TP53", "cases": 3}]}}))
         self.assertEqual((plain.status, plain.limitation), ("ok", None))
 
+    def test_top_mutated_genes_break_ties_in_proteinpaints_order(self) -> None:
+        # Live: geneCount 2 on SYNTH-CASE-0057..0068 returned KRAS 8, NRAS 4 and nextGene BRAF 4; OncoMatrix shows KRAS and NRAS.
+        read = reader({"s3": {"genes": [{"gene": "KRAS", "cases": 8}, {"gene": "NRAS", "cases": 4}], "nextGene": {"gene": "BRAF", "cases": 4}}})
+        args: dict[str, Any] = {"rows": "s3", "key": "gene", "rankBy": "cases", "n": 2, "ascending": False, "tieBreak": "source"}
+        result = run_function("rank_top_n", args, read)
+        self.assertEqual([(r["rank"], r["key"]) for r in obj(result.observed)["rows"]], [(1, "KRAS"), (2, "NRAS"), (2, "BRAF")])
+        self.assertEqual((result.limitation, obj(result.observed)["tiesAtCutoff"]), ("TIES_AT_CUTOFF", ["BRAF"]))
+        ranked = rank_top_n([{"gene": "B", "cases": 2}, {"gene": "C", "cases": 5}, {"gene": "A", "cases": 2}], key="gene", rank_by="cases",
+                            n=3, ascending=False, tie_break="source")
+        self.assertEqual([r.key for r in ranked.rows], ["C", "B", "A"], "values first, then the returned order")
+
+    def test_thresholds_follow_the_viewers_rounded_cutoff(self) -> None:
+        # Live J3 with original p < 0.05: ProteinPaint marks genes with -log10 p > 1.3 (p < 0.0501), ROBO2 and PITPNM3 among them.
+        genes = [de_row("ROBO2", 0.8, 0.050046, 0.3), de_row("PITPNM3", -0.9, 0.050071, 0.3), de_row("OUT", 1.0, 0.0502, 0.3),
+                 de_row("ZERO", 1.2, 0.0, 0.0)]
+        args: dict[str, Any] = {"rows": "s9", "key": "gene_name", "rankBy": "original_p_value", "n": 10, "ascending": True, "tieBreak": "gene_name",
+                                "thresholds": {"pValueCutoff": 0.05, "pValueType": "original", "foldChangeCutoff": 0}}
+        result = run_function("rank_top_n", args, reader({"s9": {"genes": genes}}))
+        self.assertEqual([r["key"] for r in obj(result.observed)["rows"]], ["ZERO", "ROBO2", "PITPNM3"])
+
     def test_derive_km_median_reads_the_survival_step(self) -> None:
         groups: list[dict[str, Any]] = [
             {"label": "High risk", "cases": 3, "events": 2, "curve": [{"time": 0, "survival": 1.0}, {"time": 100, "survival": 0.4}]},

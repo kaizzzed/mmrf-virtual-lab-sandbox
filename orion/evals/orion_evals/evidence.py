@@ -128,6 +128,7 @@ class EvalContext:
     restart_cmd: Sequence[str] | None = None
     frontend_root: Path | None = None
     agent_tests_root: Path | None = None
+    e2e_script: Path | None = None  # orion/scripts/e2e-mode-l.mjs, for checks only a browser makes
     prompts: JsonObj = field(default_factory=dict)
     cache: dict[str, Any] = field(default_factory=dict)
     log: Callable[[str], None] = lambda message: None

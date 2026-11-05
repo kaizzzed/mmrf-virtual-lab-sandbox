@@ -180,17 +180,34 @@ class BudgetAndIdsTests(unittest.TestCase):
         last = outcomes[-1]
         self.assertEqual((last.result.error and last.result.error.code, last.result.limitation), ("GUARD_FAILED", "CALL_BUDGET"))
         self.assertEqual(len(transport.sent), MAX_TOOL_CALLS_PER_RUN)
-        self.assertEqual(c.budget.used(RUN_ID), MAX_TOOL_CALLS_PER_RUN)
+        self.assertEqual(c.budget.used(RUN_ID, 1), MAX_TOOL_CALLS_PER_RUN)
         other = run(c.call("cohort_count", {"filter": HIGH}, timeout_s=60, run_id="f" * 32, plan_version=1, step_id="s1", first_call=1))
         self.assertEqual(other.result.status, "ok")
 
+    def test_each_plan_version_has_its_own_budget(self) -> None:
+        """An edit is version n+1 of the same run: the executor and the compiler count per version, so does the client."""
+        c = client(fake_stack())
+
+        async def go() -> list[RecordedOutcome]:
+            out: list[RecordedOutcome] = []
+            for version in range(1, 5):
+                for i in range(1, 6):
+                    out.append(await c.call("cohort_count", {"filter": HIGH}, timeout_s=60, run_id=RUN_ID, plan_version=version,
+                                            step_id=f"s{i}", first_call=1))
+            return out
+
+        outcomes = run(go())
+        self.assertTrue(all(o.result.status == "ok" for o in outcomes), "5 calls in each of 4 versions are within budget")
+        self.assertEqual([c.budget.used(RUN_ID, v) for v in range(1, 5)], [5, 5, 5, 5])
+
     def test_the_budget_forgets_old_runs(self) -> None:
         budget = CallBudget(2, remember=2)
-        self.assertTrue(budget.take("a") and budget.take("a"))
-        self.assertFalse(budget.take("a"))
-        budget.take("b")
-        budget.take("c")
-        self.assertEqual(budget.used("a"), 0)
+        self.assertTrue(budget.take("a", 1) and budget.take("a", 1))
+        self.assertFalse(budget.take("a", 1))
+        self.assertTrue(budget.take("a", 2), "a new plan version starts its own count")
+        budget.take("b", 1)
+        budget.take("c", 1)
+        self.assertEqual(budget.used("a", 1), 0)
 
     def test_the_request_is_the_validated_input_with_its_defaults(self) -> None:
         request, digest = resolved_request("cases_query", {"filter": {"and": []}})

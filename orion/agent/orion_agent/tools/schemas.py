@@ -114,6 +114,10 @@ SURVIVAL_TERM: Final = "overall_survival"
 # The ProteinPaint survival server prints a log-rank p below double precision as "0" (it computes
 # 1 - pchisq), so the chart's table shows p = 0 under this floor: VIEWER_P_ROUNDED (Assumption).
 VIEWER_P_FLOOR: Final = 1e-16
+# volcanoRender.maxInteractiveDots in the viewer's DE body (a fixed pointer of DE_RUN_REQUEST). ProteinPaint
+# returns at most this many significant genes as dots, those with the smallest p (of pValueType), and still
+# counts every significant gene in totalSignificantRows; a run past the cap is `capped` (ROWS_CAPPED).
+DE_MAX_DOTS: Final = 5000
 # The largest upstream body a tool reads before it gives up (UPSTREAM_SHAPE). Observed itself stays
 # below MAX_TOOL_RESPONSE_BYTES, Lambda's synchronous limit.
 MAX_UPSTREAM_BYTES: Final = 16 * 1024 * 1024
@@ -539,7 +543,7 @@ class DeTotals(CatalogModel):
     tested: NonNegative
     """data.totalRows: genes tested."""
     significant: NonNegative
-    """data.totalSignificantRows: genes past the thresholds (len(genes))."""
+    """data.totalSignificantRows: genes past the thresholds (len(genes), unless capped at DE_MAX_DOTS)."""
     up: NonNegative
     """data.totalSignificantUp."""
     down: NonNegative
@@ -555,11 +559,16 @@ class DeRunObserved(CatalogModel):
     """data.dots in returned order, without index, pixel_x and pixel_y; volcanoPng and plotExtent are dropped."""
     cache_id: str | None
     """data.cacheId: ProteinPaint's DE cache entry, which the viewer's identical request reads."""
+    capped: bool = Field(default=False, exclude_if=lambda value: value is False)
+    """True when more than DE_MAX_DOTS genes passed: genes are then only the DE_MAX_DOTS with the smallest p
+    (the volcano's dot cap); absent otherwise."""
 
     @model_validator(mode="after")
     def _totals_match(self) -> "DeRunObserved":
-        if self.totals.significant != len(self.genes):
-            raise ValueError("totals.significant is the number of genes returned")
+        if len(self.genes) != min(self.totals.significant, DE_MAX_DOTS):
+            raise ValueError(f"genes are the genes past the thresholds, at most {DE_MAX_DOTS} (totals.significant counts them all)")
+        if self.capped != (self.totals.significant > len(self.genes)):
+            raise ValueError("capped says whether ProteinPaint left genes past its dot cap out")
         return self
 
 
@@ -607,6 +616,9 @@ class CheckSubsetInput(CatalogModel):
 
 RankBy = Literal["adjusted_p_value", "original_p_value", "abs(fold_change)", "cases"]
 RankKey = Literal["gene_name", "gene"]
+# How rank_top_n orders rows with equal values: a row field in code point order, or `source`, the order the
+# source tool returned them (top_mutated_genes: ProteinPaint's order, so the top n are OncoMatrix's genes).
+RankTieBreak = Literal["gene_name", "gene", "source"]
 RankSourceTool = Literal["de_run", "top_mutated_genes"]
 
 
@@ -621,10 +633,12 @@ class RankTopNInput(CatalogModel):
     """Top N (the plan's topN)."""
     ascending: bool
     """True for p-values, false for fold change and case counts."""
-    tie_break: RankKey
-    """Orders rows with equal values (code point order); ties at the cutoff are kept either way."""
+    tie_break: RankTieBreak
+    """Orders rows with equal values: a row field in code point order, or source (the rows' returned order,
+    nextGene last); ties at the cutoff are kept either way."""
     thresholds: DeThresholds | None = Field(default=None, exclude_if=lambda value: value is None)
-    """DE only: rows must pass p < cutoff (of pValueType) and |fold_change| > cutoff before ranking."""
+    """DE only: rows must pass the viewer's rule before ranking: -log10 p (of pValueType; p = 0 passes) above
+    minus_log10(pValueCutoff), the value de_run sends, and |fold_change| above foldChangeCutoff."""
 
 
 class DeriveKmMedianInput(CatalogModel):
@@ -1469,6 +1483,11 @@ TEMPLATES: Final[dict[str, Template]] = {
            "sample_lists pre-guard failed", code="REQUEST_TOO_LARGE", unblock="Narrow the group."),
         _t("filter.not_bridge_safe", "limitation", "${field} cannot filter ProteinPaint directly, so this step did not run.",
            "filter0 named an Elasticsearch-only field", code="UNSUPPORTED_FIELD", unblock="Remove that filter, or ask about all cases."),
+        _t("de.dots_capped", "limitation",
+           "ProteinPaint returns at most 5,000 of the {{f.<de>.significant}} genes that passed the thresholds, those with the "
+           "smallest p-values, so the ranking covers only those.",
+           "de_run capped: more genes passed than the viewer's 5,000-dot cap", code="ROWS_CAPPED",
+           unblock="Tighten the thresholds on the plan."),
         _t("rank.fewer", "limitation", "Only {{f.<ranking>.count}} genes ranked, fewer than the ${n} asked for.",
            "0 < rows < top N", code="FEWER_THAN_N"),
         _t("rank.none_de", "limitation", "No gene passed the thresholds, so there is no ranking.", "DE ranking with zero rows",

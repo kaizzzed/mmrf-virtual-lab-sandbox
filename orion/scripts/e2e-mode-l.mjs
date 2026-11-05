@@ -414,6 +414,12 @@ try {
     await expect(chip).toBeFocused();
     s.pass('Evidence Inspector: opened from the chip on "Row 1 · s2 cohort_count", call and fact shown, export downloads the record, Esc closes and returns focus');
     expect(threadId).toMatch(/^[0-9a-f]{32}$/);
+    // C-06: J1's own chip asks a question the stub planner runs (top mutated genes in the scope), a new run to Complete.
+    await s.answerCard.getByRole('button', {name: 'Top mutated genes in this cohort'}).click();
+    await expect(s.page.locator('[role=log] > article')).toHaveCount(2);
+    await s.waitStatus('Complete');
+    await expect(s.planCard).toContainText('Rank mutated genes');
+    s.pass('follow-up chip "Top mutated genes in this cohort" ran as a second run in the thread, to Complete');
   });
 
   await scenario('j1-named', 'J1, tool-named: the same plan, live steps, card and answer', async s => {
@@ -475,6 +481,23 @@ try {
     await s.waitStatus('Complete');
     await expect(s.answerCard.locator('h4')).toHaveText(ANSWER_PARTS);
     s.pass('browser Back returns to the thread, restored Complete with its answer');
+    // C-06: J2's own chip, "Survival by <top gene> mutation", compares that gene's mutated and other tested cases.
+    await s.answerCard.getByRole('button', {name: /^Survival by [A-Z0-9]+ mutation$/}).click();
+    await expect(s.page.locator('[role=log] > article')).toHaveCount(2);
+    await s.waitStatus('Complete');
+    await expect(s.planCard).toContainText('survival');
+    s.pass('follow-up chip "Survival by <gene> mutation" ran as a second run in the thread, to Complete');
+    // FR-09, E3/E4: the chat-made cohort opens in Cohort Builder (still active since the hand-off) with its filter and size.
+    const size = record.facts.find(f => f.stepId === 's2' && f.unit === 'cases').value;
+    await s.page.getByRole('link', {name: 'Cohort Builder', exact: true}).click();
+    await s.page.waitForURL(/[?&]app=CohortBuilder\b/, {timeout: 30_000});
+    await expect(s.page.locator('input.mantine-Select-input').first()).toHaveValue('Black or African American (ORION)', {timeout: 30_000});
+    const filters = s.page.getByTestId('text-cohort-filters');
+    await expect(filters).toContainText(/race/i, {timeout: 30_000});
+    await expect(filters).toContainText('black or african american');
+    await expect(s.page.getByText(new RegExp(`^${size.toLocaleString('en-US')} cases$`, 'i')).first()).toBeVisible({timeout: 30_000});
+    await s.shot('cohort-builder');
+    s.pass(`opens in Cohort Builder: "Black or African American (ORION)" with Race = black or african american and ${size} cases`);
   });
 
   await scenario('j3', 'J3: plan, pause with eligible counts, Create (two cohorts), DE card with the sort caption, Complete', async s => {

@@ -1,7 +1,8 @@
 # ORION mode L: a Compose override layered on the sandbox's compose.yaml, which it never edits
 # (RFA rev 25, A4 "Deployment"; contract "Where records live"). From the sandbox repo root:
 #
-#   docker compose -f compose.yaml -f orion/compose.orion.yaml config     # check the merge
+#   docker compose -f compose.yaml -f orion/compose.orion.yaml config --quiet   # check the merge
+#   (to print it, add --no-interpolate: an interpolated print shows exported AWS credentials)
 #   orion/scripts/orion-local.sh up                                        # build and start
 #
 # Paths below are relative to the project directory (the repo root, where compose.yaml lives),

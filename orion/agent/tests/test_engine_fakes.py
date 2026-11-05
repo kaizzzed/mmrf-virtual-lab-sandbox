@@ -118,7 +118,7 @@ def compile_plan(plan: ir.Plan, ctx: CohortContext | None = None) -> CompiledPla
 
 # --- the fake tool client -----------------------------------------------------------------------------------
 
-Behaviour = Literal["ok", "timeout", "block", "empty", "error", "small", "ineligible", "too_many", "shape"]
+Behaviour = Literal["ok", "timeout", "block", "empty", "error", "small", "ineligible", "too_many", "shape", "capped", "budget"]
 
 
 def _filter_values(value: JsonValue) -> list[str]:
@@ -191,6 +191,13 @@ class FakeTools:
             return ToolCallOutcome(
                 tool=name, tool_version=f"{name}@1", transport=self._transport, request=input, request_sha256=request_sha, result=result,
                 response_sha256=None, attempts=[attempt(1, "error", error, None), attempt(2, "error", error, None)], elapsed_ms=110,
+            )
+        if behaviour == "budget":  # the tool client's own call cap (tools.client.CallBudget): no request is sent
+            error = ToolError(code="GUARD_FAILED", message="plan version 1 of the run has made its 20 tool calls", retryable=False)
+            result = ToolResult(status="error", observed=None, limitation="CALL_BUDGET", error=error)
+            return ToolCallOutcome(
+                tool=name, tool_version=f"{name}@1", transport=self._transport, request=input, request_sha256=request_sha, result=result,
+                response_sha256=None, attempts=[attempt(1, "error", error, None)], elapsed_ms=0,
             )
         if behaviour in ("error", "shape"):
             code: Any = "HTTP_ERROR" if behaviour == "error" else "UPSTREAM_SHAPE"
@@ -273,10 +280,14 @@ class FakeTools:
                 {"gene_name": g, "fold_change": fc, "original_p_value": p / 10, "adjusted_p_value": p} for g, fc, p in DE_GENES
             ]
             up = sum(1 for _, fc, _ in DE_GENES if fc > 0)
-            return {
+            observed: dict[str, Any] = {
                 "method": data.get("method"), "sampleSizes": {"control": sizes[0], "case": sizes[1]},
                 "totals": {"tested": 7684, "significant": len(genes), "up": up, "down": len(genes) - up}, "genes": genes, "cacheId": "cache-1",
-            }, "ok", None
+            }
+            if behaviour == "capped":  # more genes passed than the 5,000 dots ProteinPaint returns (the rows stand in for them)
+                observed["totals"] = {"tested": 7684, "significant": 6859, "up": 3500, "down": 3359}
+                observed["capped"] = True
+            return observed, "ok", None
         if name == "top_mutated_genes":
             count = int(data.get("geneCount") or 3)
             rows: list[Any] = [{"gene": g, "cases": c} for g, c in TOP_GENES]

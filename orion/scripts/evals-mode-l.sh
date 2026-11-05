@@ -125,7 +125,7 @@ run_harness() {
   local root=$1 target=$2
   shift 2
   local runs="$root/orion/evals/reports/fault-runs"
-  local args=(--frontend-root /fork --agent-tests-root /agent-tests)
+  local args=(--frontend-root /fork --agent-tests-root /agent-tests --e2e-script /orion-scripts/e2e-mode-l.mjs)
   local fault name
   for fault in "${FAULTS[@]}"; do
     name=$(fault_name "$fault")
@@ -140,8 +140,8 @@ run_harness() {
   start_faults "$runs"
   docker run --rm --network "$NETWORK" \
     -v "$root/orion/evals:/evals" -v mmrf-synthetic_orion-runs:/data/runs:ro -v "$runs:/fault-runs:ro" \
-    -v "$root/.sources/frontend:/fork:ro" -v "$root/orion/agent/tests:/agent-tests:ro" -w /evals "$HARNESS_IMAGE" \
-    python -m orion_evals run "${args[@]}" "$@"
+    -v "$root/.sources/frontend:/fork:ro" -v "$root/orion/agent/tests:/agent-tests:ro" -v "$root/orion/scripts:/orion-scripts:ro" \
+    -w /evals "$HARNESS_IMAGE" python -m orion_evals run "${args[@]}" "$@"
 }
 
 run_lease() {

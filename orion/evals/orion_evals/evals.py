@@ -14,7 +14,7 @@ from . import evalchecks as ec
 from . import scenarios as sc
 from .checks import Check, JsonObj, expect, not_run
 from .evidence import EvalContext, RunEvidence
-from .frontend import agent_test_coverage, coverage
+from .frontend import agent_test_coverage, coverage, e2e_coverage
 from .oracle import to_json
 from .session import close_on, step_started, tool_started
 from .wire import new_id
@@ -98,7 +98,7 @@ def _journey(journey: str, phrasing: str, twin: str) -> RunFn:
         if journey == "J1":
             checks.append(coverage("viewer_mounts", ctx.frontend_root))
         if journey == "J2":
-            checks.append(coverage("opens_in_cohort_builder", ctx.frontend_root))
+            checks.append(e2e_coverage("opens_in_cohort_builder", ctx.e2e_script))
             if phrasing == "open-ended" and runs and runs[0].store is not None and oracle:
                 checks += _j2_reuse(ctx, runs[0])
         return checks, runs, None if oracle is None else to_json(oracle), []
@@ -176,9 +176,25 @@ def run_e7(ctx: EvalContext) -> Outcome:
     return checks, [ev, accepted], None, []
 
 
+def _alternates(ctx: EvalContext, key: str) -> list[str]:
+    """The design's own wording of an edge case, asked as well with the same checks (prompts.json edgeAlternates)."""
+    return [str(q) for q in ctx.prompts.get("edgeAlternates", {}).get(key, [])]
+
+
+def _labelled(phrase: str, checks: Sequence[Check]) -> list[Check]:
+    return [Check(f'"{phrase}": {c.name}', c.status, c.detail, c.evidence, c.source, c.gate) for c in checks]
+
+
 def run_e8(ctx: EvalContext) -> Outcome:
     ev = _ask_once(ctx, "E8", "E8")
-    return ec.e8_out_of_panel(ev), [ev], None, []
+    checks, runs = ec.e8_out_of_panel(ev), [ev]
+    for phrase in _alternates(ctx, "E8"):
+        thread = sc.new_thread(ctx, f"E8 {phrase}")
+        turn = sc.require(thread.ask(phrase))
+        alt = sc.evidence(thread, turn.run_id, f"E8 {phrase}", phrase)
+        checks += _labelled(phrase, ec.e8_out_of_panel(alt))
+        runs.append(alt)
+    return checks, runs, None, []
 
 
 def run_e9(ctx: EvalContext) -> Outcome:
@@ -189,8 +205,17 @@ def run_e9(ctx: EvalContext) -> Outcome:
 
 
 def run_e10(ctx: EvalContext) -> Outcome:
-    question = str(ctx.prompts["edge"]["E10"])
-    thread = sc.new_thread(ctx, "E10")
+    checks, ev = _e10_once(ctx, str(ctx.prompts["edge"]["E10"]), "E10")
+    runs = [ev]
+    for phrase in _alternates(ctx, "E10"):
+        alt_checks, alt = _e10_once(ctx, phrase, f"E10 {phrase}")
+        checks += _labelled(phrase, alt_checks)
+        runs.append(alt)
+    return checks, runs, None, []
+
+
+def _e10_once(ctx: EvalContext, question: str, label: str) -> tuple[list[Check], RunEvidence]:
+    thread = sc.new_thread(ctx, label)
     turn = sc.require(thread.ask(question))
     after = None
     pending = thread.pending(turn.run_id)
@@ -202,8 +227,8 @@ def run_e10(ctx: EvalContext) -> Outcome:
             after = thread.view(turn.run_id)
             if after and after.get("status") == "AwaitingConfirmation":
                 thread.confirm_dont_save(turn.run_id)
-    ev = sc.evidence(thread, turn.run_id, "E10", question)
-    return ec.e10_clarify(ev, after), [ev], None, []
+    ev = sc.evidence(thread, turn.run_id, label, question)
+    return ec.e10_clarify(ev, after), ev
 
 
 def run_e11(ctx: EvalContext) -> Outcome:

@@ -2,10 +2,12 @@
 
 The stub planner turns a question into planner output (ir.PlannerOutput) with deterministic keyword
 rules, never a model call: the three reference journeys in both phrasings (E1-E6), the edge cases
-the design evaluates (E7-E10, E12, E14, E15, E17, E18), the follow-ups the fixtures offer and
-"Show the top 5 instead". Like the real planner it fills only what the question states and writes
-no display text: the compiler fills every default and every name. Both phrasings of a journey
-produce the same IR apart from `named_tools`, so they reach the same plan signature.
+the design evaluates (E7-E10, E12, E14, E15, E17, E18), the follow-ups the fixtures offer, every
+follow-up chip the stub composer writes, and "Show the top 5 instead". Like the real planner it
+fills only what the question states and never drops a population it names (a gene outside the
+panel becomes an OTHER cohort, which the compiler stops with OUT_OF_PANEL); it writes no display
+text: the compiler fills every default and every name. Both phrasings of a journey produce the same
+IR apart from `named_tools`, so they reach the same plan signature.
 
 The stub executor (Day 1) makes no data call and invents no number: it skips every step and ends
 the run Limited. The engine's executor replaces it at integration.
@@ -229,27 +231,75 @@ def plan_question(
         return follow_up
     survival = _has(text, "survival", "kaplan meier", "kaplan")
     de = _has(text, "differential expression", "differentially expressed", "expression between")
-    genes = (" mutated gene" in text or " oncomatrix " in text) and _has(text, "top", "most frequently")
+    # "Top mutated genes", "the most frequently mutated genes", and the chip "Which genes are most frequently mutated".
+    ranked = _has(text, "top", "most frequently", "most often", "most commonly")
+    genes = ranked and (" mutated gene" in text or " oncomatrix " in text or (_has(text, "genes") and _has(text, "mutated")))
     size = _has(text, "how many", "count", "number of", "size of")
+    named = _named_tools(question)
+    scope = _scope(question, context)
     if not (survival or de or genes or size):
         for phrase, app in _APP_VIEWS:
             if phrase in text:
                 # E18 and its kind: no analysis kind draws this view; the card names the nearest app.
                 return ir.Unsupported(kind="unsupported", reason="UNSUPPORTED_ANALYSIS", nearest_app_ids=[app])
+        risk = _risk_population(text, named, scope, clarification)
+        if risk is not None:
+            return risk
         return ir.Unsupported(kind="unsupported", reason="UNSUPPORTED_ANALYSIS", nearest_app_ids=[])
-    named = _named_tools(question)
-    scope = _scope(question, context)
+    # Genes named outside a saved cohort's name ("my KRAS mutated (ORION) cohort" names a cohort, not a gene).
+    stated = _genes(_without_saved_names(question, context))
     if survival:
-        return _survival(text, named, scope, clarification)
+        return _survival(text, named, scope, clarification, stated)
     if de:
         return _differential_expression(question, text, named, scope, clarification)
     if genes:
-        return _top_genes(text, named, scope)
+        return _top_genes(text, named, scope, stated)
     return _cohort_size(question, text, named, scope)
 
 
-def _survival(text: str, named: list[ir.NamedTool], scope: ir.BaseCohort | None, clarification: Clarification | None) -> ir.PlannerOutput:
-    """J1 (E1, E2, E7, E10, E14): survival split by a field the question names, or one clarifying question."""
+def _without_saved_names(question: str, context: CohortContext) -> str:
+    out = question
+    for saved in sorted(context.saved, key=lambda s: -len(s.name)):
+        if saved.name.strip():
+            out = re.sub(re.escape(saved.name), " ", out, flags=re.IGNORECASE)
+    return out
+
+
+# FR-04, E10: a risk population with no field that defines it ("High-risk patients"). CGS risk category
+# and ISS stage both define risk; the clarified field sizes that cohort (ISS stage III is its high-risk stage).
+_RISK_VALUES: Final[dict[str, dict[str, str]]] = {
+    CGS_RISK: {"high risk": "High risk", "standard risk": "Standard risk", "low risk": "Standard risk"},
+    ISS_STAGE: {"high risk": "Stage III", "standard risk": "Stage I", "low risk": "Stage I"},
+}
+
+
+def _risk_population(
+    text: str, named: list[ir.NamedTool], scope: ir.BaseCohort | None, clarification: Clarification | None
+) -> ir.PlannerOutput | None:
+    """"High-risk patients" asks once which field defines the risk (CGS risk category, ISS stage), then sizes
+    that cohort; None when the question names no risk population, or names the field itself."""
+    level = next((phrase for phrase in ("high risk", "standard risk", "low risk") if _has(text, phrase)), None)
+    if level is None or _has(text, "cgs", "risk category", "iss", "stage"):
+        return None
+    field = clarification.field if clarification is not None else None
+    if field not in _RISK_VALUES:
+        return ir.Clarify(kind="clarify", slot="cohort_field", option_ids=[CGS_RISK, ISS_STAGE])
+    assert field is not None
+    clause = ir.Clause(field=field, op="in", values=[_RISK_VALUES[field][level]])
+    cohort = ir.CohortDef(ref=level.split()[0], definition=ir.FilterDef(kind="filter", clauses=[clause]))
+    return ir.Plan(
+        kind="plan", base_cohort=scope, cohorts=[cohort], analyses=[ir.CohortSize(kind="cohort_size", cohort=cohort.ref)],
+        named_tools=named,
+    )
+
+
+def _survival(
+    text: str, named: list[ir.NamedTool], scope: ir.BaseCohort | None, clarification: Clarification | None,
+    genes: Sequence[ir.PanelGene] = (),
+) -> ir.PlannerOutput:
+    """J1 (E1, E2, E7, E10, E14): survival split by a field the question names; else, for a gene it names
+    ("Survival by KRAS mutation", J2's chip), the gene-mutated against the other mutation-tested cases; else
+    one clarifying question."""
     field: str | None = None
     values: list[ir.Value] | None = None
     if _has(text, "cgs", "risk category", "risk categories"):
@@ -266,6 +316,15 @@ def _survival(text: str, named: list[ir.NamedTool], scope: ir.BaseCohort | None,
         field = VITAL_STATUS
     elif _has(text, "ethnicity"):
         field = ETHNICITY
+    elif genes:
+        # The gene's mutated cases against the other mutation-tested ones (C-UNTESTED), the question's order;
+        # a gene outside the panel is OTHER, which the compiler stops (C-PANEL OUT_OF_PANEL) before any data call.
+        mutated, gene_cohorts = _gene_groups(genes[0], ir.BASE_REF)
+        return ir.Plan(
+            kind="plan", base_cohort=scope, cohorts=gene_cohorts,
+            analyses=[ir.SurvivalCompare(kind="survival_compare", groups=[mutated, f"{genes[0].lower()}_wt"])],
+            named_tools=named,
+        )
     elif clarification is not None and clarification.field is not None:
         field = clarification.field
     if field is None:
@@ -279,10 +338,26 @@ def _survival(text: str, named: list[ir.NamedTool], scope: ir.BaseCohort | None,
     )
 
 
-def _top_genes(text: str, named: list[ir.NamedTool], scope: ir.BaseCohort | None) -> ir.Plan:
-    """J2 (E3, E4) and the fixtures' follow-ups: top mutated genes in a stated population, or in the scope."""
+def _gene_groups(gene: ir.PanelGene, within: str) -> tuple[str, list[ir.CohortDef]]:
+    """The mutation-tested cases, the gene-mutated ones among them and the rest (C-UNTESTED). Returns the mutated ref."""
+    key = gene.lower()
+    return f"{key}_mut", [
+        ir.CohortDef(ref="tested", definition=ir.MutationTestedDef(kind="mutation_tested", within=within)),
+        ir.CohortDef(ref=f"{key}_mut", definition=ir.GeneMutatedDef(kind="gene_mutated", gene=gene, within="tested")),
+        ir.CohortDef(ref=f"{key}_wt", definition=ir.DifferenceDef(kind="difference", a="tested", b=f"{key}_mut")),
+    ]
+
+
+def _top_genes(text: str, named: list[ir.NamedTool], scope: ir.BaseCohort | None, genes: Sequence[ir.PanelGene] = ()) -> ir.Plan:
+    """J2 (E3, E4) and the follow-ups: top mutated genes in a stated population, or in the scope. A gene the
+    question names ("in IDH1-mutated patients") is a gene-mutated cohort within it, never dropped: OTHER stops
+    at compile time (C-PANEL OUT_OF_PANEL), an in-panel gene ranks within its mutated cases."""
     populations = _populations(text)
     cohorts = _population_cohorts(populations)
+    if genes:
+        within = cohorts[-1].ref if cohorts else ir.BASE_REF
+        gene = genes[0]
+        cohorts.append(ir.CohortDef(ref=f"{gene.lower()}_mut", definition=ir.GeneMutatedDef(kind="gene_mutated", gene=gene, within=within)))
     cohort = cohorts[-1].ref if cohorts else ir.BASE_REF
     return ir.Plan(
         kind="plan", base_cohort=scope, cohorts=cohorts,

@@ -4,6 +4,7 @@ pass the verifier; hypotheses are questions; follow-ups come only from runnable 
 import unittest
 from typing import Any
 
+from orion_agent import ir
 from orion_agent.catalog import ANALYSIS_APPS
 from orion_agent.compiler import CompiledPlan
 from orion_agent.interfaces import ObservedResult
@@ -12,7 +13,9 @@ from orion_agent.model.calls import model_call_scope
 from orion_agent.model.stub_composer import STUB_MODEL, StubComposer, stub_output
 from orion_agent.model.verifier import CodeVerifier
 from orion_agent.models import FactRecord
-from support import vocabulary
+from orion_agent.stubs import plan_question
+from support import context, vocabulary
+from test_compiler_cases import compile_ir, compiled, j2_ledger, j3_ledger
 from test_model_fixtures import genes_plan, j1_facts, j1_observed, j1_plan, j3_plan, last_view, view_facts, view_observed
 from test_model_mock import RUN_ID, run
 
@@ -67,6 +70,19 @@ class StubComposerTest(unittest.TestCase):
                 assert output is not None
                 self.assertTrue(all(h.form == "question" and h.text.endswith("?") for h in output.hypotheses))
                 self.assertTrue({f.kind for f in output.follow_ups} <= set(ANALYSIS_APPS))
+
+    def test_every_chip_the_stub_composer_offers_plans_to_its_kind_with_the_stub_planner(self) -> None:
+        """C-06: chips come only from kinds the agent runs, so in mode L each one, sent verbatim as the click does
+        (AssistantApp sends followUp.question), must plan that kind in its run's thread and compile."""
+        ledgers = {"J1": None, "J2": j2_ledger(), "J3": j3_ledger()}
+        for name, plan, facts, observed in journeys():
+            outcome = self.answer(plan, facts, observed)
+            for chip in outcome.follow_ups:
+                with self.subTest(journey=name, chip=chip.question):
+                    output = plan_question(chip.question, context(), ledgers[name])
+                    assert isinstance(output, ir.Plan), output
+                    self.assertEqual([a.kind for a in output.analyses], [chip.kind])
+                    compiled(compile_ir(output, context(), ledgers[name]))
 
     def test_the_output_is_deterministic(self) -> None:
         for name, plan, facts, observed in journeys():

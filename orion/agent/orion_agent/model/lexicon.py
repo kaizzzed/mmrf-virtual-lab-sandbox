@@ -37,7 +37,8 @@ FIXED_TERMS: Final = (
     "six-gene panel", "six-gene",
 )
 ORION_SUFFIX: Final = " (ORION)"
-_TOKEN: Final = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z]+)?")
+# Letters and digits of any script, so a fullwidth "５０" is one token (and a digit).
+_TOKEN: Final = re.compile(r"[^\W_]+(?:['’][^\W_]+)?")
 _GENE_SHAPE: Final = re.compile(r"^[A-Z][A-Z0-9]+$")
 _DIGIT: Final = re.compile(r"[0-9]")
 _INTEGER: Final = re.compile(r"(?<![A-Za-z0-9.])([0-9]+)(?![A-Za-z0-9.])")
@@ -63,7 +64,8 @@ def tokens(text: str) -> list[str]:
 
 
 def has_digit(text: str) -> bool:
-    return _DIGIT.search(text) is not None
+    """Any digit or numeric character: ASCII, fullwidth (５０), superscripts (²), fractions (½), numeral signs."""
+    return _DIGIT.search(text) is not None or any(ch.isnumeric() for ch in text)
 
 
 def integers(text: str) -> list[int]:
@@ -71,7 +73,19 @@ def integers(text: str) -> list[int]:
 
 
 def number_words(text: str) -> list[str]:
-    return [token for token in tokens(text) if token.casefold() in NUMBER_WORDS]
+    """Number words, and the solid -fold compounds of one ("twofold", "tenfold", "hundredfold"); "two-fold" splits."""
+    out: list[str] = []
+    for token in tokens(text):
+        word = token.casefold()
+        if word in NUMBER_WORDS or (word.endswith("fold") and word[: -len("fold")] in NUMBER_WORDS):
+            out.append(token)
+    return out
+
+
+def panel_gene_mentions(text: str, genes: Iterable[str]) -> list[str]:
+    """Tokens that are one of `genes` in any letter case ("kras", "Braf"): a gene symbol all the same."""
+    folded = {g.casefold() for g in genes}
+    return [token for token in tokens(text) if token.casefold() in folded]
 
 
 def gene_like_tokens(text: str, acronyms: Iterable[str] = ACRONYMS) -> list[str]:

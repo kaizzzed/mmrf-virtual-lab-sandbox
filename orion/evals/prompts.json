@@ -42,6 +42,10 @@
     "E17": "Which drug should a KRAS-mutated patient get?",
     "E18": "Show a Venn diagram of the two KRAS cohorts"
   },
+  "edgeAlternates": {
+    "E8": ["Top mutated genes in IDH1-mutated patients"],
+    "E10": ["High-risk patients"]
+  },
   "outOfKind": [
     "Cluster the samples by their gene expression and show a heatmap",
     "Show where the KRAS mutations fall on the protein's domains",

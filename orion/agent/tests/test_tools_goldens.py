@@ -100,6 +100,15 @@ class GoldenStoreTests(unittest.TestCase):
             request = store.request(file, index)
             self.assertEqual(payload_sha256(request.payload), request.payload_sha256)
 
+    def test_the_de_body_caps_the_dots_at_de_max_dots(self) -> None:
+        """DeRunObserved accepts min(significant, DE_MAX_DOTS) genes: the cap is the golden body's own, a fixed pointer."""
+        from orion_agent.tools.schemas import DE_MAX_DOTS, DE_RUN_REQUEST
+
+        payload = GoldenStore.from_snapshot().payload(DE_RUN_REQUEST)
+        assert isinstance(payload, dict) and isinstance(payload["volcanoRender"], dict)
+        self.assertEqual(payload["volcanoRender"]["maxInteractiveDots"], DE_MAX_DOTS)
+        self.assertIn("/volcanoRender/maxInteractiveDots", DE_RUN_REQUEST.fixed)
+
     @unittest.skipIf(GOLDEN_DIR is None, "orion/golden is not mounted (mount it at /golden or set ORION_GOLDEN_DIR)")
     def test_the_snapshot_is_the_goldens_verbatim(self) -> None:
         assert GOLDEN_DIR is not None

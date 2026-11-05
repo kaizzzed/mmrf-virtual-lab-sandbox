@@ -14,7 +14,7 @@ from typing import Any, TypeVar
 from pydantic import JsonValue
 from test_tools_fakes import LIVE_ORIGIN, RUN_ID, goldens, live_stack_reachable, obj
 
-from orion_agent.models import derive_request_pinned, pinned_hash
+from orion_agent.models import OncomatrixPinned, derive_request_pinned, pinned_hash
 from orion_agent.settings import Settings
 from orion_agent.tools.base import STEP_TIMEOUT_S, ServerToolName, ToolCallOutcome
 from orion_agent.tools.client import make_tool_client
@@ -140,10 +140,14 @@ class LiveJourneyTests(unittest.TestCase):
         report("s2 black or african american", obj(s2.result.observed)["count"])
         s3 = steps.server("s3", "top_mutated_genes", {"filter0": {"and": [{"in": {"case_id": {"ref": "s2", "pointer": "/observed/caseIds"}}}]}, "geneCount": 3})
         report("s3 top genes (+ next)", [(g["gene"], g["cases"]) for g in obj(s3.result.observed)["genes"]] + [("next", obj(s3.result.observed).get("nextGene"))])
-        s4 = steps.function("s4", "rank_top_n", {"rows": "s3", "key": "gene", "rankBy": "cases", "n": 3, "ascending": False, "tieBreak": "gene"})
+        s4 = steps.function("s4", "rank_top_n", {"rows": "s3", "key": "gene", "rankBy": "cases", "n": 3, "ascending": False, "tieBreak": "source"})
         report("s4 ranking", [(r["rank"], r["key"], r["value"]) for r in s4["rows"]] + [("ties", s4["tiesAtCutoff"])])
         pinned = derive_request_pinned("oncomatrix", obj(s3.request), s3.result.observed)
-        self.assertEqual(pinned.genes, [g["gene"] for g in obj(s3.result.observed)["genes"]])  # type: ignore[union-attr]
+        assert isinstance(pinned, OncomatrixPinned)
+        self.assertEqual(pinned.genes, [g["gene"] for g in obj(s3.result.observed)["genes"]])
+        # Ties break in ProteinPaint's order: the top 3 are the genes OncoMatrix shows; a tie names only one it leaves out.
+        self.assertEqual([r["key"] for r in s4["rows"][:3]], pinned.genes)
+        self.assertFalse(set(s4["tiesAtCutoff"]) & set(pinned.genes))
         count = steps.server("s9", "cohort_count", {"filter": {"and": [{"in": {"demographic.race": ["black or african american"]}}]}})
         self.assertEqual(count.result.observed, {"count": obj(s2.result.observed)["count"]})
 

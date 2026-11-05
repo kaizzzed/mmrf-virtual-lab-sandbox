@@ -341,7 +341,7 @@ Does Wilcoxon DE on the J3 groups finish inside the A4 budget through CloudFront
 | --- | --- |
 | `terraform fmt -recursive -check`, `init -backend=false`, `validate` in `terraform/orion-infra` | Pass (hashicorp/aws 6.72.0) |
 | `terraform/orion-infra/tests/orion_infra.tftest.hcl` (mocked provider, plan only) | Written and syntax-checked by `validate`; **not run** (`terraform test` is outside this track's allowed commands; `validate` does not resolve test references) |
-| `docker compose -f compose.yaml -f orion/compose.orion.yaml config` | Pass; read only, nothing started |
+| `docker compose -f compose.yaml -f orion/compose.orion.yaml config --quiet` | Pass; read only, nothing started (print with `--no-interpolate`: an interpolated print shows exported AWS credentials) |
 | `bash -n orion/scripts/orion-local.sh` | Pass; the script itself was not run |
 | `docker buildx build --platform linux/arm64 --load` as `orion-agent:arm64-check` | Pass: arm64, uid 10001, healthy on `/ping`, warmup turn answered, no mounts needed |
 | Agent suite in `orion-agent:arm64-check` | Pass, golden tests included (the image bakes `/golden`) |

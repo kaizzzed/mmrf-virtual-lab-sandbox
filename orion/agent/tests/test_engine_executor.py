@@ -88,6 +88,14 @@ class GuardTests(EngineCase):
         self.assertEqual(final.steps[1].output_summary, "Returned an error")
         self.assertEqual(final.limitations[0].text, "The case count returned an error, so this group's count is missing.")
 
+    async def test_the_tool_clients_call_cap_is_explained_under_limitations(self) -> None:
+        _, app = self.build(tools=FakeTools({"s4": "budget"}))
+        frames = await self.turn(app, ask_body(new_id(), new_id()))
+        final = self.last_view(frames)
+        self.assertEqual((final.status, final.code), ("Limited", "CALL_BUDGET"))
+        self.assertEqual((final.steps[3].status, final.steps[3].code), ("Skipped", "CALL_BUDGET"))
+        self.assertEqual([lim.code for lim in final.limitations].count("CALL_BUDGET"), 1, "one line says why the run stopped")
+
     async def test_the_call_budget_skips_the_rest(self) -> None:
         settings = Settings(run_dir=self.run_dir, fields_path=self.fields())
         store = RunStore(self.run_dir)

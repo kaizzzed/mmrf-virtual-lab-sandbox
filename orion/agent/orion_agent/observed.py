@@ -597,6 +597,9 @@ class TemplateRenderer:
                 lines.limit(run.order[guarded.id], run.limitation("de.too_many_samples", steps={"samples": samples.id}))
         if samples is not None:
             self._sample_limits(run, samples, (control, case), lines)
+        if status in DONE and call is not None and isinstance(call.observed, dict) and call.observed.get("capped") is True:
+            # More genes passed than ProteinPaint returns as dots: the ranking covers the 5,000 with the smallest p.
+            lines.limit(anchor, run.limitation("de.dots_capped", steps={"de": spec.id}))
         if ranking is not None:
             self._rank_limits(run, ranking, "rank.ties", lines, empty_template="rank.none_de")
         if status not in DONE or ranking is None or run.status(ranking.id) not in DONE or call is None or not isinstance(call.request, dict):

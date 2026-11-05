@@ -814,9 +814,11 @@ class Controller:
             await body()
             while handle.edit is not None:
                 # An edit accepted just as the run paused or ended: apply it now, or answer its stream.
-                if handle.status in ACTION_STATUSES["edit_plan"]:
-                    plan, resume = await self._apply_live_edit(handle)
-                    await self._continue(handle, plan, resume)
+                if handle.status in ACTION_STATUSES["edit_plan"] and not handle.stop.is_set():
+                    applied = await self._apply_live_edit(handle)
+                    if applied is None:
+                        break  # a cancel of the paused or ended run came first; it ends the run
+                    await self._continue(handle, *applied)
                 else:
                     self._release_joiners(handle)
         except Exception:
@@ -965,7 +967,8 @@ class Controller:
             def clarify(r: RunRecord) -> None:
                 r.status, r.code, r.pending = "Clarifying", None, pending
 
-            await writer.transition(clarify)
+            if not await self._guarded(handle, clarify):
+                return await self._end_stopped(handle)
             return self._pause_terminal(handle)
         compiled = self.compiler.compile(output, ask.cohort_context, ledger)
         if isinstance(compiled, CompileStop):
@@ -994,10 +997,29 @@ class Controller:
             else:
                 r.status = "Executing"
 
-        await writer.transition(show_plan)
+        if not await self._guarded(handle, show_plan):
+            return await self._end_stopped(handle)
         if consent is not None:
             return self._pause_terminal(handle)
         await self._continue(handle, compiled, None)
+
+    async def _guarded(self, handle: RunHandle, mutate: Callable[[RunRecord], None]) -> bool:
+        """A status change by the run's own task (a pause, Answering, an end, an applied edit) that a cancel has not
+        overtaken. Once a cancel began (`stop` is set before its transition), the task changes nothing: the cancel's
+        Stopping, or a waiting run's Cancelled, stands. Returns False then, and the caller ends the run stopped."""
+        assert handle.writer is not None
+        applied = False
+
+        def change(r: RunRecord) -> bool:
+            nonlocal applied
+            if handle.stop.is_set():
+                return False
+            mutate(r)
+            applied = True
+            return True
+
+        await handle.writer.transition(change)
+        return applied
 
     def _compiler_call(self, name: str, *args: object) -> object:
         """A compiler method other than compile (clarify, unsupported, edit), when this compiler has it."""
@@ -1107,7 +1129,10 @@ class Controller:
         while True:
             result = await self._run_executor(handle, plan, resume)
             if handle.edit is not None and not handle.stop.is_set():
-                plan, resume = await self._apply_live_edit(handle)
+                applied = await self._apply_live_edit(handle)
+                if applied is None:
+                    return await self._end_stopped(handle)
+                plan, resume = applied
                 continue
             if handle.stop.is_set() or result.status == "Cancelled":
                 return await self._end_stopped(handle)
@@ -1116,7 +1141,10 @@ class Controller:
             if result.status in READY:
                 outcome = await self._answer(handle, plan)
                 if outcome == "edit":
-                    plan, resume = await self._apply_live_edit(handle)
+                    applied = await self._apply_live_edit(handle)
+                    if applied is None:
+                        return await self._end_stopped(handle)
+                    plan, resume = applied
                     continue
                 return
             return await self._end_execution(handle, plan, result)
@@ -1131,7 +1159,8 @@ class Controller:
             r.status, r.code, r.pending = "AwaitingConfirmation", None, pending
             _set_step(r, pending.step_id, status="AwaitingUser")
 
-        await handle.writer.transition(pause)
+        if not await self._guarded(handle, pause):
+            return await self._end_stopped(handle)
         for frame in events.save_cohorts_call(SaveCohortsArgs.model_validate(pending.model_dump(mode="json"))):
             handle.publish(frame)
         self._pause_terminal(handle)
@@ -1205,7 +1234,9 @@ class Controller:
             r.answer.interpretation = r.answer.hypotheses = None
             r.answer.follow_ups, r.answer.open_links, r.answer.withheld_reason = [], [], None
 
-        await writer.transition(answering)
+        if not await self._guarded(handle, answering):
+            await self._end_stopped(handle)
+            return "done"
         if self.composer is None or self.verifier is None or self.vocab is None:
             await self._end_answer(handle, NOT_CONFIGURED_WITHHELD)
             return "done"
@@ -1303,7 +1334,11 @@ class Controller:
         if handle.edit is not None and status in END_STATUSES and status not in ACTION_STATUSES["edit_plan"]:
             handle.attach_joiners()  # a Stop or a failure won over a waiting edit: its stream sees this end
             handle.edit = None
-        await handle.writer.transition(end)
+        if status in ("Cancelled", "Failed"):
+            await handle.writer.transition(end)
+        elif not await self._guarded(handle, end):
+            # A cancel that began meanwhile wins: the run ends Cancelled, not with the status it reached.
+            return await self._end_stopped(handle)
         record = handle.writer.record
         if message and status in ("Complete", "ObservedOnly"):
             version = record.plan_versions[-1].version if record.plan_versions else 1
@@ -1384,17 +1419,20 @@ class Controller:
         async with self._thread_locks[thread_id]:
             try:
                 handle, record = await self._target(thread_id, run_id)
+                report = VizReport(
+                    run_id=run_id, viz_id=action.viz_id, mounted=action.mounted, error=action.error,
+                    pinned_hash_verified=action.pinned_hash_verified,
+                )
                 if handle is None and record.status in LEASED_STATUSES and is_expired(record.lease, utc_now()):
+                    # The expiry is this turn's outcome; the reports it carried are recorded with it (the target's in
+                    # the expiry's transition, a report naming a viz the run lacks dropped and logged).
+                    await self._take_reports(record, None, [*action.viz_reports, report])
                     view = await self._expire(record)
                     await self._clear_index(thread_id, run_id)
                     replies = [events.state_snapshot(view), terminal_for(record)]
                 else:
                     if action.viz_id not in _viz_ids(record):
                         raise _Reject("INVALID_INPUT", f"This run has no viz {action.viz_id}.")
-                    report = VizReport(
-                        run_id=run_id, viz_id=action.viz_id, mounted=action.mounted, error=action.error,
-                        pinned_hash_verified=action.pinned_hash_verified,
-                    )
                     await self._ride_along(thread_id, action.viz_reports, None)
                     await self._write_report(record, handle, report)
                     replies = [events.run_finished(thread_id, run_id, "Recorded", None)]
@@ -1447,13 +1485,15 @@ class Controller:
                 handle, record = await self._target(thread_id, run_id)
                 live = handle is not None and handle.task is not None and not handle.task.done()
                 if not live and record.status in LEASED_STATUSES and is_expired(record.lease, utc_now()):
-                    # Check 4: recorded as of the lease's expiry, reported, and the turn ends with that status.
+                    # Check 4: recorded as of the lease's expiry, reported, and the turn ends with that status. The
+                    # turn is accepted, so its reports are recorded: the target's go into the expiry's transition.
+                    await self._take_reports(record, None, action.viz_reports)
                     view = await self._expire(record)
                     await self._clear_index(thread_id, run_id)
                     replies = [events.state_snapshot(view), terminal_for(record)]
                 elif isinstance(action, CancelAction):
-                    await self._take_reports(record, handle if live else None, action.viz_reports)
-                    follow, replies = await self._cancel(handle if live else None, record)
+                    reported = await self._take_reports(record, handle if live else None, action.viz_reports)
+                    follow, replies = await self._cancel(handle if live else None, record, reported)
                 else:
                     preface: list[BaseEvent] = []
                     index = await self.store.load_thread(thread_id)
@@ -1475,11 +1515,20 @@ class Controller:
             yield event
 
     async def _cancel(
-        self, handle: RunHandle | None, record: RunRecord
+        self, handle: RunHandle | None, record: RunRecord, reported: bool = False
     ) -> tuple[tuple[RunHandle, asyncio.Queue[BaseEvent]] | None, list[BaseEvent]]:
+        """`reported`: the turn carried reports for this run, kept on the at-rest `record` (saved even when nothing else changes)."""
         if handle is not None and handle.status not in END_STATUSES:
-            if handle.status != "Stopping":
-                await self._request_stop(handle)
+            if not handle.stop.is_set():
+                # A cancel that finds the stop signalled but not yet shown (a first cancel still saving Stopping)
+                # joins it; otherwise it asks for the stop, which is signalled even if the Stopping save fails.
+                try:
+                    if await self._request_stop(handle):
+                        await self._clear_index(handle.thread_id, handle.run_id)
+                except Exception:
+                    if handle.status in END_STATUSES:
+                        raise  # a waiting run's Cancelled end was not saved: the turn fails, the record keeps the pause
+                    log.info("run %s: Stopping was not saved; the stop still applies and the run ends Cancelled", handle.run_id)
             # Subscribe once Stopping is applied, with no await in between: the turn's first snapshot is the run
             # with the cancel applied (contract "What the agent emits on a resume"), never a snapshot the run's
             # task published while the stop waited for the record writer. A run already Stopping, or one that
@@ -1487,6 +1536,8 @@ class Controller:
             queue = handle.subscribe(current=True)
             return (handle, queue), []
         if record.status in END_STATUSES:
+            if reported:
+                await RunWriter(self.store, record, self.owner, self.settings.lease_ttl_s).save_quietly(lambda r: None)
             return None, [events.state_snapshot(record.view()), terminal_for(record)]
         if record.status in LEASED_STATUSES:
             raise _Reject("RUN_BUSY", "This run is owned by another controller; try again shortly.")
@@ -1500,20 +1551,48 @@ class Controller:
         await self._clear_index(record.thread_id, record.run_id)
         return None, [events.state_snapshot(view), terminal_for(record)]
 
-    async def _request_stop(self, handle: RunHandle) -> None:
-        """Stopping shows at once; then the in-flight call is aborted (contract "cancel")."""
+    async def _request_stop(self, handle: RunHandle) -> bool:
+        """Stopping shows at once; then the in-flight call is aborted (contract "cancel").
+
+        `stop` is set before the Stopping transition, so the run's task makes no other status change once
+        a cancel has begun (`_guarded`); `abort` is set after it, so Stopping shows before the aborted
+        call's Skipped row. Both are set even when the invocation is cancelled at the save (a client
+        disconnect, the BFF preempting the turn) or the save fails, and the shielded transition still
+        completes, so a lost cancel can never leave a run Stopping that is not stopping.
+
+        A run whose task just paused (a cancel that arrived while the pause was being saved) is waiting
+        when the transition applies: it ends Cancelled at once, as a waiting run's cancel does, and its
+        terminal replaces the pause's. Returns True in that case.
+        """
         assert handle.writer is not None
+        writer = handle.writer
+        ended = False
 
         def stopping(r: RunRecord) -> bool:
+            nonlocal ended
             if r.status in END_STATUSES or r.status == "Stopping":
                 return False
-            r.status = "Stopping"
+            if r.status in WAITING_STATUSES:
+                _cancel_mark(r)
+                ended = True
+            else:
+                r.status = "Stopping"
             _log_action(r, "cancel", "accepted")
             return True
 
-        await handle.writer.transition(stopping)
+        async def apply() -> bool:
+            await writer.transition(stopping)
+            if ended:
+                handle.publish(terminal_for(writer.record))
+            return ended
+
         handle.stop.set()
-        handle.abort.set()
+        work = asyncio.ensure_future(apply())
+        work.add_done_callback(partial(_log_stop_failure, run_id=handle.run_id))
+        try:
+            return await asyncio.shield(work)
+        finally:
+            handle.abort.set()
 
     async def _accept(
         self, handle: RunHandle | None, record: RunRecord, index: ThreadIndex, action: OrionAction, preface: list[BaseEvent]
@@ -1559,14 +1638,18 @@ class Controller:
         await self._take_reports(record, None, action.viz_reports)
         return self._started(record, preface, *applied)
 
-    async def _take_reports(self, record: RunRecord, handle: RunHandle | None, reports: Sequence[VizReport]) -> None:
+    async def _take_reports(self, record: RunRecord, handle: RunHandle | None, reports: Sequence[VizReport]) -> bool:
         """Ride-along reports of an accepted turn: the target run's go into its record (staged on a live writer,
-        or into the at-rest record the applied transition saves); other runs' follow "Who writes a record"."""
+        or into the at-rest record the applied transition saves); other runs' follow "Who writes a record".
+        Returns True when the at-rest record took any, so a turn that changes nothing else still saves it."""
+        kept = False
         for report in await self._ride_along(record.thread_id, reports, record):
             if handle is not None and handle.writer is not None:
                 await handle.writer.stage(partial(_keep_report, report=report))
             else:
                 _keep_report(record, report)
+                kept = True
+        return kept
 
     async def _replay(
         self, handle: RunHandle | None, record: RunRecord, name: ActionName, preface: list[BaseEvent]
@@ -1589,7 +1672,8 @@ class Controller:
 
         async def go() -> None:
             assert handle.writer is not None
-            await handle.writer.transition(mutate)
+            if not await self._guarded(handle, mutate):
+                return  # a cancel reached the taken-over run before its applied transition; the cancel ends it
             async with self._thread_locks[handle.thread_id]:
                 index = await self.store.load_thread(handle.thread_id)
                 if handle.writer.record.status not in END_STATUSES and index.active_run_id != handle.run_id:
@@ -1728,6 +1812,9 @@ class Controller:
 
     async def _build_edit(self, record: RunRecord, action: EditPlanAction) -> PendingEdit | None:
         """Checks 7 and 8 for an edit, and plan version n+1 compiled without a model call. None: a no-op edit."""
+        if not record.plan_versions:
+            # A run that ended Limited before planning (a second clarify, a clarify or compile stop) has nothing to edit.
+            raise _Reject("INVALID_INPUT", "This run has no plan to edit.")
         plan = record.plan_versions[-1]
         tools = {s.tool for s in plan.steps}
         if isinstance(action, (EditMethodAction, EditThresholdsAction)) and "de_run" not in tools:
@@ -1920,8 +2007,11 @@ class Controller:
             handle.abort.set()
         return (handle, queue), []
 
-    async def _apply_live_edit(self, handle: RunHandle) -> tuple[CompiledPlan, ResumeState]:
-        """Inside the run's task, at a step boundary: the applied snapshot reaches the edit stream first."""
+    async def _apply_live_edit(self, handle: RunHandle) -> tuple[CompiledPlan, ResumeState] | None:
+        """Inside the run's task, at a step boundary: the applied snapshot reaches the edit stream first.
+
+        None: a cancel began before the edit applied; the edit's stream (now a subscriber) sees the stop's end.
+        """
         assert handle.writer is not None and handle.edit is not None
         edit = handle.edit
         handle.edit = None
@@ -1935,7 +2025,8 @@ class Controller:
         def apply(r: RunRecord) -> None:
             reused.update(mutation(r))
 
-        await handle.writer.transition(apply)
+        if not await self._guarded(handle, apply):
+            return None
         async with self._thread_locks[handle.thread_id]:
             index = await self.store.load_thread(handle.thread_id)
             if index.active_run_id != handle.run_id:
@@ -1947,6 +2038,12 @@ class Controller:
 def _code(value: object) -> Code | None:
     """A contract code another builder's object carries, or None when it is not one."""
     return cast(Code, value) if isinstance(value, str) and value in CODES else None
+
+
+def _log_stop_failure(work: "asyncio.Future[bool]", run_id: str) -> None:
+    """Retrieve a failed stop transition's error, also when the cancel invocation was gone before it ended."""
+    if not work.cancelled() and work.exception() is not None:
+        log.warning("run %s: the stop transition failed: %r", run_id, work.exception())
 
 
 def _keep_model_calls(r: RunRecord, calls: Sequence[ModelCallRecord]) -> None:

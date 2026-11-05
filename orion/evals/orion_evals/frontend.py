@@ -3,6 +3,10 @@
 A check is "covered by frontend test <file>" when that file exists in the fork (and, when a test
 name pattern is given, the file contains it); otherwise "not covered". The harness does not run
 the frontend tests: they run with jest in the fork (see the README).
+
+A check only a real browser can make (a chat-made cohort opening in Cohort Builder, FR-09) is
+"covered by browser E2E scenario <id>" when orion/scripts/e2e-mode-l.mjs holds the step that does
+it (`--e2e-script`); that script runs Playwright against the mode L stack.
 """
 
 import re
@@ -27,14 +31,6 @@ BROWSER_CHECKS: Final[dict[str, BrowserCheck]] = {
     "viewer_mounts": BrowserCheck(
         "the viewer mounts in the card",
         (f"{ORION_SRC}/viz/OrionPpCard.unit.test.tsx", f"{ORION_SRC}/viz/liveViz.unit.test.ts"),
-    ),
-    "opens_in_cohort_builder": BrowserCheck(
-        "a chat-made cohort opens in Cohort Builder",
-        # saveCohorts: Create writes each cohort with the Cohort Builder store's createNewCohort and reads it back;
-        # setActiveCohort: "Open with this cohort" makes it the Cohort Builder's current cohort.
-        (f"{ORION_SRC}/cohort/saveCohorts.unit.test.ts", f"{ORION_SRC}/cohort/setActiveCohort.unit.test.ts",
-         f"{ORION_SRC}/cohort/useCohortContext.unit.test.ts", f"{ORION_SRC}/cohort/cohortAdapter.unit.test.ts"),
-        r"Cohort Builder|createNewCohort|set_active_cohort|setCurrentCohort",
     ),
     "enter_saves_nothing": BrowserCheck(
         "Enter in the composer as the confirmation card appears saves nothing",
@@ -83,6 +79,35 @@ def coverage(key: str, frontend_root: Path | None) -> Check:
             continue
         return Check(spec.name, "covered", f"covered by frontend test {relative}", {"file": relative, "pattern": spec.pattern}, "browser")
     return Check(spec.name, "not-covered", "not covered: no frontend test file found", {"candidates": list(spec.files), "pattern": spec.pattern}, "browser")
+
+
+@dataclass(frozen=True)
+class E2eCheck:
+    name: str
+    scenario: str
+    pattern: str  # the step in e2e-mode-l.mjs that makes the check in a real browser
+
+
+E2E_CHECKS: Final[dict[str, E2eCheck]] = {
+    # A unit test of the cohort store's createNewCohort is no evidence that Cohort Builder shows the cohort: only the
+    # browser step that opens ?app=CohortBuilder and reads its filter and case count is.
+    "opens_in_cohort_builder": E2eCheck(
+        "a chat-made cohort opens in Cohort Builder", "j2",
+        r"app=CohortBuilder[\s\S]{0,800}text-cohort-filters[\s\S]{0,800}opens in Cohort Builder",
+    ),
+}
+
+
+def e2e_coverage(key: str, script: Path | None) -> Check:
+    spec = E2E_CHECKS[key]
+    if script is None:
+        return Check(spec.name, "not-covered", "no browser E2E script given (--e2e-script)", {"scenario": spec.scenario}, "browser")
+    if not script.is_file():
+        return Check(spec.name, "not-covered", f"no browser E2E script at {script}", {"scenario": spec.scenario}, "browser")
+    if not re.search(spec.pattern, script.read_text(encoding="utf-8", errors="replace")):
+        return Check(spec.name, "not-covered", f"not covered: {script.name} has no step that does it", {"pattern": spec.pattern}, "browser")
+    return Check(spec.name, "covered", f"covered by browser E2E scenario {spec.scenario} ({script.name})",
+                 {"file": script.name, "scenario": spec.scenario, "pattern": spec.pattern}, "browser")
 
 
 def coverage_all(keys: Sequence[str], frontend_root: Path | None) -> list[Check]:

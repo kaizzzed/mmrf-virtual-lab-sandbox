@@ -496,7 +496,11 @@ class DeRun(ServerToolBase[DeRunInput]):
         method, sizes, totals, genes, cache_id = read_de_result(await requests.send(DE_RUN_REQUEST, de_run_body(inp, self._goldens)))
         if method != inp.method:
             raise ShapeError(f"ProteinPaint ran {method!r}, not the requested {inp.method!r}")
-        observed = DeRunObserved(method=inp.method, sample_sizes=sizes, totals=totals, genes=genes, cache_id=cache_id)
+        # Past the volcano's dot cap ProteinPaint returns only the DE_MAX_DOTS genes with the smallest p: `capped`.
+        observed = DeRunObserved(
+            method=inp.method, sample_sizes=sizes, totals=totals, genes=genes, cache_id=cache_id,
+            capped=totals.significant > len(genes),
+        )
         return Settled(observed)
 
 

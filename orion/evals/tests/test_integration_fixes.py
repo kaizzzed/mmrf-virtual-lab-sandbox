@@ -12,7 +12,7 @@ from orion_evals.cli import _records
 from orion_evals.client import BffRecordSource, DirRecordSource, NoRecordSource
 from orion_evals.evals import reuse_of_saved
 from orion_evals.evidence import EvalContext
-from orion_evals.frontend import BROWSER_CHECKS, coverage
+from orion_evals.frontend import BROWSER_CHECKS, E2E_CHECKS, coverage, e2e_coverage
 from orion_evals.runner import environment
 
 
@@ -83,6 +83,37 @@ class BrowserCoverageTests(unittest.TestCase):
             with self.subTest(key):
                 check = coverage(key, fork_root())
                 self.assertEqual(check.status, "covered", check.detail)
+
+
+class E2eCoverageTests(unittest.TestCase):
+    """FR-09 "opens in Cohort Builder" is a browser fact: a unit test that names createNewCohort is no evidence."""
+
+    STEP = (
+        "await s.page.waitForURL(/[?&]app=CohortBuilder\\b/);\n"
+        "const filters = s.page.getByTestId('text-cohort-filters');\n"
+        "s.pass(`opens in Cohort Builder: ...`);\n"
+    )
+
+    def test_only_the_browser_step_covers_opening_in_cohort_builder(self) -> None:
+        self.assertNotIn("opens_in_cohort_builder", BROWSER_CHECKS, "no longer credited to a fork unit test's name")
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp, "e2e-mode-l.mjs")
+            script.write_text("await s.page.goto('/?app=Assistant'); // createNewCohort, setCurrentCohort\n")
+            self.assertEqual(e2e_coverage("opens_in_cohort_builder", script).status, "not-covered")
+            script.write_text(self.STEP)
+            check = e2e_coverage("opens_in_cohort_builder", script)
+            self.assertEqual((check.status, check.evidence["scenario"]), ("covered", "j2"), check.detail)
+        self.assertEqual(e2e_coverage("opens_in_cohort_builder", None).status, "not-covered")
+
+    def test_the_repos_browser_e2e_has_the_step(self) -> None:
+        candidates = [os.environ.get("ORION_EVAL_E2E_SCRIPT"), "/orion-scripts/e2e-mode-l.mjs",
+                      str(Path(__file__).resolve().parents[2] / "scripts" / "e2e-mode-l.mjs")]
+        script = next((Path(c) for c in candidates if c and Path(c).is_file()), None)
+        if script is None:
+            self.skipTest("orion/scripts is not mounted (ORION_EVAL_E2E_SCRIPT or /orion-scripts)")
+        for key in E2E_CHECKS:
+            with self.subTest(key):
+                self.assertEqual(e2e_coverage(key, script).status, "covered")
 
 
 if __name__ == "__main__":

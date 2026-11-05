@@ -186,9 +186,13 @@ def group_keys(labels: Sequence[str]) -> list[str]:
     return keys
 
 
-def rank_with_ties(rows: Sequence[tuple[str, float]], n: int, descending: bool) -> tuple[list[tuple[str, float]], list[str]]:
-    """Sort by value (then key), keep the top n plus every row equal to the n-th; return (kept, tied keys)."""
-    ordered = sorted(rows, key=lambda r: ((-r[1] if descending else r[1]), r[0]))
+def rank_with_ties(
+    rows: Sequence[tuple[str, float]], n: int, descending: bool, order: Sequence[str] = ()
+) -> tuple[list[tuple[str, float]], list[str]]:
+    """Sort by value, then by `order` (keys in that order first, as ProteinPaint listed them) and then by key; keep
+    the top n plus every row equal to the n-th; return (kept, tied keys)."""
+    position = {key: i for i, key in enumerate(order)}
+    ordered = sorted(rows, key=lambda r: ((-r[1] if descending else r[1]), position.get(r[0], len(position)), r[0]))
     if len(ordered) <= n:
         return list(ordered), []
     cutoff = ordered[n - 1][1]
@@ -412,13 +416,16 @@ class Oracle:
         tested = set(self.case_ids(gen3_filter([*clauses, {"field": "available_variation_data", "op": "in", "values": ["ssm"]}])))
         counts = {gene: len(self.mutated(gene) & cohort) for gene in PANEL_GENE_IDS}
         rows = [(gene, float(c)) for gene, c in counts.items() if c > 0]
-        ranking = [(g, int(v)) for g, v in rank_with_ties(rows, len(rows), descending=True)[0]]
-        shown, ties = rank_with_ties(rows, n, descending=True)
         engine = self.gw.post(
             "/protein-paint/termdb/topMutatedGenes",
             {"genome": GENOME, "dslabel": DSLABEL, "maxGenes": 50, "geneFilter": "CGC", "filter0": case_id_filter(sorted(cohort))},
         )
         engine_ranking = [(str(g["gene"]), self._snv_count(g)) for g in engine.get("genes", [])]
+        # Equal counts keep ProteinPaint's order (TOOLS.md rank_top_n tieBreak `source`): the top n are the genes
+        # OncoMatrix shows, and a tie names a gene it leaves out. The counts stay the oracle's own.
+        order = [g for g, _ in engine_ranking]
+        ranking = [(g, int(v)) for g, v in rank_with_ties(rows, len(rows), descending=True, order=order)[0]]
+        shown, ties = rank_with_ties(rows, n, descending=True, order=order)
         return J2Expected(
             [dict(c) for c in cohort_clauses],
             scope,
@@ -449,6 +456,7 @@ class Oracle:
             {"name": "oracle case", "in": True, "values": [{"sampleId": i} for i in case_samples]},
         ]
         cutoff = float(thresholds["pValueCutoff"])
+        sent_cutoff = round(-math.log10(cutoff), 2)
         body = {
             "kind": "DE",
             "genome": GENOME,
@@ -462,7 +470,7 @@ class Oracle:
             "filter0": None,
             "volcanoRender": {
                 "significanceThresholds": {
-                    "pValueCutoff": round(-math.log10(cutoff), 2),
+                    "pValueCutoff": sent_cutoff,
                     "pValueType": thresholds["pValueType"],
                     "foldChangeCutoff": thresholds["foldChangeCutoff"],
                 },
@@ -485,7 +493,12 @@ class Oracle:
             DeRow(str(d["gene_name"]), float(d["fold_change"]), float(d["adjusted_p_value"]), float(d["original_p_value"]))
             for d in data.get("dots", [])
         ]
-        passing = [r for r in rows if (r.padj if adjusted else r.p) < cutoff and abs(r.log2fc) > fc_cutoff]
+        # The viewer's rule on the value sent (TOOLS.md rank_top_n): -log10 p above the rounded cutoff (0.05 -> 1.3, so
+        # p < 0.0501), p = 0 passing, and |log2FC| above its cutoff; the genes ProteinPaint marks significant.
+        passing = [
+            r for r in rows
+            if ((p := r.padj if adjusted else r.p) <= 0 or -math.log10(p) > sent_cutoff) and abs(r.log2fc) > fc_cutoff
+        ]
         by_gene = {r.gene: r for r in passing}
         kept, ties = rank_with_ties([(r.gene, r.padj) for r in passing], top_n, descending=False)
         return {

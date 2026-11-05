@@ -633,8 +633,19 @@ def j1_open(run: Run, stream: Stream, at: float = 2.6) -> None:
     stream.snapshot(iso(at))
 
 
+def stub_fingerprinted(run: Run, step: StepRun) -> None:
+    """s1 finished: the record's environment names the fixture fingerprint (the scope stays unsized, as on Day 1)."""
+    if step.step_id == "s1":
+        run.fingerprint = FP_SHA
+
+
 def build_j1_stub() -> str:
     """The Day 1 reference stream: the stub era's J1, ending ObservedOnly (no fingerprint fact yet).
+
+    Its withheld reason, its Done steps and its end without a TEXT_MESSAGE are the Day 1 stub's, which
+    no current configuration sends (`ORION_EXECUTOR=stub` now skips every step NOT_IMPLEMENTED and
+    ends Limited; a live ObservedOnly end sends its TEXT_MESSAGE): the fork's replay tests pin those
+    22 frames. The environment names the fingerprint once s1 is Done, as the agent's record does.
 
     Its plan is the J1 plan the live stub ask sends (tests/test_contract.py LiveAppStreamTests),
     the scope edit included: every plan offers it (TOOLS.md 6.4)."""
@@ -642,8 +653,7 @@ def build_j1_stub() -> str:
     stream = Stream(run)
     j1_open(run, stream, at=3.2)
     steps = [StepRun(sid, at, out, ms) for (sid, out, ms), at in zip(J1_OUTPUTS, J1_STEP_TIMES)]
-    steps[0] = StepRun("s1", J1_STEP_TIMES[0], "fingerprint 7d41…", 412)
-    run_steps(stream, steps, facts_live=False, heartbeat=("s4", 5.3))
+    run_steps(stream, steps, facts_live=False, heartbeat=("s4", 5.3), on_finish=stub_fingerprinted)
     run.status = "Answering"
     run.facts = [f for sid in ("s2", "s3", "s4") for f in J1_FACTS[sid]]
     run.observed = j1_observed(with_medians=False)

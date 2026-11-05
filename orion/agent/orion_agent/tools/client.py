@@ -85,22 +85,27 @@ class Clock:
 
 
 class CallBudget:
-    """At most `limit` tool calls per run (A4 "Runaway load or cost"), counted per ToolClient.call."""
+    """At most `limit` tool calls per plan version of a run (A4 "Runaway load or cost"), counted per ToolClient.call.
+
+    Counted like the compiler's 20-step check and the executor's own count: per plan version, so an edit
+    (version n+1 of the same run) starts its own budget instead of inheriting the calls of the versions before.
+    """
 
     def __init__(self, limit: int = MAX_TOOL_CALLS_PER_RUN, *, remember: int = RUNS_REMEMBERED) -> None:
         self.limit = limit
-        self._used: OrderedDict[str, int] = OrderedDict()
+        self._used: OrderedDict[tuple[str, int], int] = OrderedDict()
         self._remember = remember
 
-    def take(self, run_id: str) -> bool:
-        used = self._used.pop(run_id, 0)
-        self._used[run_id] = used + 1 if used < self.limit else used
+    def take(self, run_id: str, plan_version: int) -> bool:
+        key = (run_id, plan_version)
+        used = self._used.pop(key, 0)
+        self._used[key] = used + 1 if used < self.limit else used
         while len(self._used) > self._remember:
             self._used.popitem(last=False)
         return used < self.limit
 
-    def used(self, run_id: str) -> int:
-        return self._used.get(run_id, 0)
+    def used(self, run_id: str, plan_version: int) -> int:
+        return self._used.get((run_id, plan_version), 0)
 
 
 def resolved_request(name: ServerToolName, input: JsonValue) -> tuple[JsonValue, str]:
@@ -211,8 +216,10 @@ class ToolClientBase:
             )
             results.append(result)
 
-        if not self.budget.take(run_id):
-            failure = ToolFailure("GUARD_FAILED", f"the run has made its {self.budget.limit} tool calls", limitation="CALL_BUDGET")
+        if not self.budget.take(run_id, plan_version):
+            failure = ToolFailure(
+                "GUARD_FAILED", f"plan version {plan_version} of the run has made its {self.budget.limit} tool calls", limitation="CALL_BUDGET"
+            )
             record(1, call_id(run_id, plan_version, step_id, first_call), iso_utc(clock.now()), clock.monotonic(), failure_result(failure, []), 0)
             return outcome()
 

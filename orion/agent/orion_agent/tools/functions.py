@@ -50,8 +50,12 @@ from .schemas import (
     SetOperationInput,
     StepValueReader,
     input_json_schema,
+    minus_log10,
     tool_spec,
 )
+
+# rank_top_n's tieBreak that keeps the rows' returned order instead of a row field's code point order.
+SOURCE_ORDER: Final = "source"
 
 SET_OPERATION_VERSION: Final = tool_spec("set_operation").version
 CHECK_SUBSET_VERSION: Final = tool_spec("check_subset").version
@@ -112,18 +116,21 @@ def rank_top_n(
 ) -> RankResult:
     """The top n rows by `rank_by` (a row field or abs(<field>)), plus every row tied with the n-th.
 
-    Rows sort by value (ascending or descending), then by `tie_break` in code point order, so the
-    order is deterministic. Tied values share a rank (competition ranking: 1, 2, 2, 4).
-    `ties_at_cutoff` lists the keys kept beyond the n-th because they tie with it.
+    Rows sort by value (ascending or descending), then by `tie_break`: a row field in code point
+    order, or `source`, the order the rows came in (top mutated genes: ProteinPaint's order, so the
+    top n are the genes OncoMatrix shows). The order is deterministic either way. Tied values share a
+    rank (competition ranking: 1, 2, 2, 4). `ties_at_cutoff` lists the keys kept beyond the n-th
+    because they tie with it.
     """
     if n < 1:
         raise FunctionError("n is at least 1")
-    scored: list[tuple[float, str, str, Mapping[str, JsonValue]]] = []
-    for row in rows:
-        identity, order = row.get(key), row.get(tie_break)
+    scored: list[tuple[float, tuple[int, str], str, Mapping[str, JsonValue]]] = []
+    for index, row in enumerate(rows):
+        identity = row.get(key)
+        order = "" if tie_break == SOURCE_ORDER else row.get(tie_break)
         if not isinstance(identity, str) or not isinstance(order, str):
             raise FunctionError(f"every row names its {key} and {tie_break} as text")
-        scored.append((_rank_value(row, rank_by), order, identity, row))
+        scored.append((_rank_value(row, rank_by), (index if tie_break == SOURCE_ORDER else 0, order), identity, row))
     scored.sort(key=lambda item: (item[0] if ascending else -item[0], item[1]))
     # Sorted by value, rows tied with the n-th follow it directly: keep the whole run of them.
     end = min(n, len(scored))
@@ -142,14 +149,21 @@ def rank_top_n(
 
 
 def passes_thresholds(row: Mapping[str, JsonValue], thresholds: Mapping[str, JsonValue]) -> bool:
-    """A DE row passes when its p (adjusted or original, by `pValueType`) is below `pValueCutoff` and its
-    |fold_change| above `foldChangeCutoff` (the thresholds' JSON form). A row without the numbers raises."""
+    """A DE row passes by the viewer's rule, the one ProteinPaint applied to the dots: -log10 of its p
+    (adjusted or original, by `pValueType`) above minus_log10(`pValueCutoff`), the rounded value de_run
+    sends (0.05 -> 1.3, so p < 0.0501), and |fold_change| above `foldChangeCutoff` (the thresholds' JSON
+    form). p = 0 passes (the viewer plots it at its smallest non-zero p). A row without the numbers raises."""
     p_field = "adjusted_p_value" if thresholds.get("pValueType") == "adjusted" else "original_p_value"
     cutoff, fold_cutoff = thresholds.get("pValueCutoff"), thresholds.get("foldChangeCutoff")
     if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (cutoff, fold_cutoff)):
         raise FunctionError("the thresholds need a numeric pValueCutoff and foldChangeCutoff")
     assert isinstance(cutoff, (int, float)) and isinstance(fold_cutoff, (int, float))
-    return _rank_value(row, p_field) < cutoff and _rank_value(row, "abs(fold_change)") > fold_cutoff
+    try:
+        sent = minus_log10(float(cutoff))
+    except ValueError as error:
+        raise FunctionError(str(error)) from None
+    p = _rank_value(row, p_field)
+    return (p <= 0 or -math.log10(p) > sent) and _rank_value(row, "abs(fold_change)") > fold_cutoff
 
 
 def derive_km_median(curves: Sequence[KmCurve], *, unit: str) -> KmMedianResult:

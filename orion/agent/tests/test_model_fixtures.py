@@ -149,7 +149,7 @@ def genes_plan() -> CompiledPlan:
         _step("s3", 2, "top_mutated_genes", "server",
               {"filter0": {"and": [{"in": {"case_id": _ref("s2", "/observed/caseIds")}}]}, "geneCount": 3}, ["s2"]),
         _step("s4", 2, "rank_top_n", "exec", {"rows": "s3", "key": "gene", "rankBy": "cases", "n": 3, "ascending": False,
-                                              "tieBreak": "gene"}, ["s3"]),
+                                              "tieBreak": "source"}, ["s3"]),
     ]
     plan = view.plan
     return CompiledPlan.model_validate(

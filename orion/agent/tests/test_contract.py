@@ -250,7 +250,7 @@ class FixtureTests(unittest.TestCase):
     def test_contract_enumerations_are_complete(self) -> None:
         self.assertEqual(len(RUN_STATUSES), 15)
         self.assertEqual(len(STEP_STATUSES), 9)
-        self.assertEqual(len(CODES), 33)
+        self.assertEqual(len(CODES), 34)
         self.assertEqual(REJECTION_CODES, {"INVALID_INPUT", "RUN_BUSY", "RUN_NOT_FOUND", "NOT_IMPLEMENTED", "STALE_ACTION"})
         resumable = set(get_args(ActionName)) - {"ask", "warmup"}
         self.assertEqual(set(ACTION_STATUSES), resumable)
@@ -291,7 +291,9 @@ class FixtureTests(unittest.TestCase):
             self.assertEqual(frame.result.status, status)
 
     def _final_frame(self) -> dict[str, Any]:  # Any: the test edits raw frame JSON.
-        value: dict[str, Any] = json.loads(list(iter_sse_data(self.text))[-2])
+        """The last snapshot (the TEXT_MESSAGE of an ObservedOnly end follows it)."""
+        frames = [json.loads(data) for data in iter_sse_data(self.text)]
+        value: dict[str, Any] = [f for f in frames if f["type"] == "STATE_SNAPSHOT"][-1]
         return value
 
 
@@ -417,6 +419,26 @@ class StreamFixtureTests(unittest.TestCase):
                 kinds = [type(f) for f in frames]
                 self.assertEqual(kinds[-4:], [TextMessageStartFrame, TextMessageContentFrame, TextMessageEndFrame, RunFinishedFrame])
                 self.assertIsInstance(frames[-5], StateSnapshotFrame)
+
+    def test_every_complete_or_observed_only_end_sends_its_text_message_after_the_last_snapshot(self) -> None:
+        """README "Answer text". j1-stub is the README's one named exception (the Day 1 end, which the fork's replay
+        tests pin); any other ObservedOnly fixture added later is held to the rule."""
+        for name in [n for n, (status, _) in STREAMS.items() if status in ("Complete", "ObservedOnly") and n != "j1-stub"]:
+            with self.subTest(name):
+                _, frames = read_stream(name)
+                kinds = [type(f) for f in frames]
+                self.assertEqual(kinds[-4:], [TextMessageStartFrame, TextMessageContentFrame, TextMessageEndFrame, RunFinishedFrame])
+                self.assertIsInstance(frames[-5], StateSnapshotFrame)
+
+    def test_a_run_whose_s1_is_done_names_the_fingerprint(self) -> None:
+        """README "environment": fingerprintSha256 is null only until s1 ran (every stream, j1-stub included)."""
+        for name in STREAMS:
+            with self.subTest(name):
+                _, frames = read_stream(name)
+                for view in views(frames):
+                    s1 = next((s for s in view.steps if s.id == "s1" and s.tool == "fixture_fingerprint"), None)
+                    if s1 is not None and s1.status in ("Done", "Reused"):
+                        self.assertIsNotNone(view.environment.fingerprint_sha256, f"{name} r{view.revision}")
 
     def test_save_pause_sends_the_pending_payload_as_save_cohorts_args(self) -> None:
         _, frames = read_stream("j3-save-pause")

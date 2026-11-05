@@ -37,6 +37,7 @@ def all_prompts(prompts: dict[str, Any]) -> list[str]:
     out = [q for journey in prompts["reference"].values() for q in journey.values()]
     out += [q for qs in prompts["heldOut"].values() for q in qs]
     out += list(prompts["edge"].values()) + list(prompts["outOfKind"])
+    out += [q for qs in prompts.get("edgeAlternates", {}).values() for q in qs]
     return out
 
 
@@ -116,6 +117,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         restart_cmd=shlex.split(args.restart_cmd) if args.restart_cmd else None,
         frontend_root=Path(args.frontend_root) if args.frontend_root else None,
         agent_tests_root=Path(args.agent_tests_root) if args.agent_tests_root else None,
+        e2e_script=Path(args.e2e_script) if args.e2e_script else None,
         prompts=prompts,
         log=_log,
         planner=args.planner,
@@ -242,6 +244,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--turn-timeout-s", type=float, default=900.0)
     run.add_argument("--frontend-root", default=env("ORION_EVAL_FRONTEND_ROOT"), help="the fork's root, to find browser tests")
     run.add_argument("--agent-tests-root", default=env("ORION_EVAL_AGENT_TESTS_ROOT"), help="orion/agent/tests, to find lease tests")
+    run.add_argument("--e2e-script", default=env("ORION_EVAL_E2E_SCRIPT"), help="orion/scripts/e2e-mode-l.mjs, to find browser E2E steps")
     run.add_argument("--planner", default=env("ORION_EVAL_PLANNER"), help="override the planner name read from the records")
     oracle_args(run)
     run.set_defaults(func=cmd_run)

@@ -159,7 +159,7 @@ class InvocationTests(ControllerCase):
 
     async def test_other_unsupported_questions_name_no_app(self) -> None:
         _, app = self.make()
-        frames = check_stream(self, (await asgi_call(app, "POST", "/invocations", ask_body(new_id(), new_id(), question="Which genes are mutated most often?"))).text)
+        frames = check_stream(self, (await asgi_call(app, "POST", "/invocations", ask_body(new_id(), new_id(), question="Which pathway is most active here?"))).text)
         final = snapshots(frames)[-1].snapshot
         self.assertEqual((final.status, [lim.nearest_apps for lim in final.limitations]), ("Unsupported", [[]]))
 
