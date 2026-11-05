@@ -1,0 +1,80 @@
+{
+  "schema": "orion.golden/v1",
+  "kind": "proteinpaint/termdb-survival",
+  "viewer": "Correlation Plot (/?app=Correlation)",
+  "flow": "J1 by hand: primary variable \"Synthetic overall survival\", overlay \"CGS risk category\", Submit",
+  "stage": "pre-bridge",
+  "proteinpaintServer": "2.216.0",
+  "normalized": [
+    "query.embedder",
+    "query.term2.$id"
+  ],
+  "requests": [
+    {
+      "step": "correlation-survival",
+      "method": "GET",
+      "path": "/protein-paint/termdb/survival",
+      "query": {
+        "genome": "hg38",
+        "dslabel": "MMRF",
+        "embedder": "<page hostname>",
+        "term1": {
+          "term": {
+            "id": "overall_survival",
+            "name": "Synthetic overall survival",
+            "type": "survival",
+            "values": {
+              "0": {
+                "label": "Censored"
+              },
+              "1": {
+                "label": "Death"
+              }
+            }
+          },
+          "q": {},
+          "$id": "+JMEWl6EhJnjseKnQBnfMa0ZZaw-"
+        },
+        "term2": {
+          "type": "QualTWValues",
+          "term": {
+            "id": "cgs_risk_category",
+            "name": "CGS risk category",
+            "type": "categorical",
+            "values": {
+              "High risk": {
+                "label": "High risk"
+              },
+              "Standard risk": {
+                "label": "Standard risk"
+              }
+            },
+            "groupsetting": {
+              "disabled": false
+            }
+          },
+          "q": {
+            "mode": "discrete",
+            "type": "values",
+            "hiddenValues": {}
+          },
+          "$id": "TwBase_0_<page load>"
+        },
+        "filter0": {
+          "and": []
+        },
+        "hiddenValues": {
+          "term1": [],
+          "term2": []
+        }
+      },
+      "body": null,
+      "payloadSha256": "3189eb0fa8f8a4a5882cea87bb69ae88db12053215d6510db67e5916c11b4e39",
+      "response": {
+        "status": 200,
+        "bytes": 91229,
+        "sha256": "15186c0a50c8cba80ac7518e688ab59ca8cd6f9e244bb89720211197d5284016"
+      }
+    }
+  ]
+}

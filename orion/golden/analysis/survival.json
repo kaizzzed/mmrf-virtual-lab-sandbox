@@ -1,0 +1,66 @@
+{
+  "schema": "orion.golden/v1",
+  "kind": "analysis/survival",
+  "viewer": "Clinical Data Analysis (/?app=cDave)",
+  "flow": "Default Overall Survival card on all cases, then the Sex card survival toggle (its top two values)",
+  "stage": "pre-bridge",
+  "proteinpaintServer": "2.216.0",
+  "normalized": [
+    "response.results[*].meta.id"
+  ],
+  "requests": [
+    {
+      "step": "cdave-overall-survival",
+      "method": "POST",
+      "path": "/analysis/v0/survival/",
+      "query": null,
+      "body": {
+        "filters": [
+          {
+            "and": []
+          }
+        ]
+      },
+      "payloadSha256": "0dad73e39a9f7d654a43255a68abda1f0337ed6008f5c80114e6516689202d88",
+      "response": {
+        "status": 200,
+        "bytes": 152083,
+        "sha256": "ac3d024f5d5897bb9851458972dbfceaaf0f02294b8887b376b27595092130c7"
+      }
+    },
+    {
+      "step": "cdave-sex-survival",
+      "method": "POST",
+      "path": "/analysis/v0/survival/",
+      "query": null,
+      "body": {
+        "filters": [
+          {
+            "and": [
+              {
+                "=": {
+                  "demographic.gender": "female"
+                }
+              }
+            ]
+          },
+          {
+            "and": [
+              {
+                "=": {
+                  "demographic.gender": "male"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "payloadSha256": "08ae0f448e2a8307eeb6186a4a23308f2d0cbf005d32e3261276ce8fa39838e7",
+      "response": {
+        "status": 200,
+        "bytes": 152047,
+        "sha256": "b7be142cb2bbfcfd1840fa7eabee2701eead0ec6d64def293f4112cf797f1518"
+      }
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "schema": "orion.viz-pinned-vectors/v1",
+  "vectors": [
+    {
+      "name": "survival, all cases",
+      "pinned": {
+        "kind": "survival",
+        "filter0": null,
+        "term": "overall_survival",
+        "overlay": "cgs_risk_category"
+      },
+      "canonical": "{\"filter0\":null,\"kind\":\"survival\",\"overlay\":\"cgs_risk_category\",\"schema\":\"orion.viz-pinned/v1\",\"term\":\"overall_survival\"}",
+      "sha256": "660a67ada3be378c148e83443173994dccfad7e7bb579eaac5a4f1f1f3d7f5de"
+    },
+    {
+      "name": "oncomatrix, case-ID scope, gene order kept",
+      "pinned": {
+        "kind": "oncomatrix",
+        "filter0": {
+          "and": [
+            {
+              "in": {
+                "case_id": [
+                  "SYNTH-CASE-0003",
+                  "SYNTH-CASE-0001"
+                ]
+              }
+            }
+          ]
+        },
+        "genes": [
+          "KRAS",
+          "NRAS",
+          "DIS3"
+        ]
+      },
+      "canonical": "{\"filter0\":{\"and\":[{\"in\":{\"case_id\":[\"SYNTH-CASE-0003\",\"SYNTH-CASE-0001\"]}}]},\"genes\":[\"KRAS\",\"NRAS\",\"DIS3\"],\"kind\":\"oncomatrix\",\"schema\":\"orion.viz-pinned/v1\"}",
+      "sha256": "fcfe510e894b7e42993390bcb1a67d6f4df3dc60da776678195d4d07add3daa9"
+    },
+    {
+      "name": "deDirect, unsorted sample ids, decimal pin, non-ASCII name",
+      "pinned": {
+        "kind": "deDirect",
+        "groups": [
+          {
+            "name": "KRAS no mutation",
+            "sampleIds": [
+              9,
+              2,
+              5
+            ]
+          },
+          {
+            "name": "KRAS mutated – café",
+            "sampleIds": [
+              7,
+              1,
+              3
+            ]
+          }
+        ],
+        "method": "wilcoxon",
+        "volcano": {
+          "foldChangeCutoff": 0.3,
+          "pValueType": "adjusted"
+        }
+      },
+      "canonical": "{\"groups\":[{\"name\":\"KRAS no mutation\",\"sampleIds\":[2,5,9]},{\"name\":\"KRAS mutated – café\",\"sampleIds\":[1,3,7]}],\"kind\":\"deDirect\",\"method\":\"wilcoxon\",\"schema\":\"orion.viz-pinned/v1\",\"volcano\":{\"foldChangeCutoff\":0.3,\"pValueType\":\"adjusted\"}}",
+      "sha256": "f147d9d43a0d6528b7ae9cf5087111faec33fae7683c1a54f5d068a2ab87b93d"
+    },
+    {
+      "name": "deInput, saved cohorts",
+      "pinned": {
+        "kind": "deInput",
+        "groups": [
+          {
+            "name": "KRAS no mutation (ORION)",
+            "cohortId": "c-0001",
+            "filter0": {
+              "and": [
+                {
+                  "in": {
+                    "case_id": [
+                      "SYNTH-CASE-0002"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "KRAS mutated (ORION)",
+            "cohortId": "c-0002",
+            "filter0": {
+              "and": [
+                {
+                  "in": {
+                    "case_id": [
+                      "SYNTH-CASE-0001"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "canonical": "{\"groups\":[{\"cohortId\":\"c-0001\",\"filter0\":{\"and\":[{\"in\":{\"case_id\":[\"SYNTH-CASE-0002\"]}}]},\"name\":\"KRAS no mutation (ORION)\"},{\"cohortId\":\"c-0002\",\"filter0\":{\"and\":[{\"in\":{\"case_id\":[\"SYNTH-CASE-0001\"]}}]},\"name\":\"KRAS mutated (ORION)\"}],\"kind\":\"deInput\",\"schema\":\"orion.viz-pinned/v1\"}",
+      "sha256": "fc9766083d80fe045147fce869f5145af9ba7be77544cb3e811d9615882e0caf"
+    }
+  ]
+}
