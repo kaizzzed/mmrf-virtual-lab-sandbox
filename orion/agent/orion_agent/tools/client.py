@@ -108,6 +108,22 @@ class CallBudget:
         return self._used.get((run_id, plan_version), 0)
 
 
+def without_nulls(value: JsonValue) -> JsonValue:
+    """The arguments as AgentCore Gateway takes them: every null-valued object key left out, at any depth.
+
+    Gateway validates tools/call arguments against the target's tool schema, which cannot say "or
+    null" (orion/infra/gateway_tools.py drops the null branch and leaves nullable properties out of
+    `required`), so an explicit null is refused before the Lambda runs ("Field '/scope' has invalid
+    type: null found, object expected"). Every nullable Input field defaults to None, so the Lambda
+    reads an omitted field as null. Only the wire form changes: the recorded request keeps its nulls.
+    """
+    if isinstance(value, dict):
+        return {key: without_nulls(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [without_nulls(item) for item in value]
+    return value
+
+
 def resolved_request(name: ServerToolName, input: JsonValue) -> tuple[JsonValue, str]:
     """The request as recorded and sent: the validated Input dumped (camelCase, defaults explicit),
     or the input as given when it does not validate (the tool then answers INVALID_INPUT)."""
@@ -313,7 +329,7 @@ class GatewayToolClient(ToolClientBase):
             )
             return failure_result(failure, sink)
         try:
-            reply = await self._mcp.call_tool(gateway_tool_name(name), request, timeout_s=budget_s, clock=self._clock.monotonic)
+            reply = await self._mcp.call_tool(gateway_tool_name(name), without_nulls(request), timeout_s=budget_s, clock=self._clock.monotonic)
         except HttpTimeout:
             return failure_result(ToolFailure("TIMEOUT", f"the Gateway did not answer {name} in time", retryable=True), sink)
         except HttpError as error:

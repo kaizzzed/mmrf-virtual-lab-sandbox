@@ -10,12 +10,13 @@ from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
 from botocore.auth import SigV4Auth  # type: ignore[import-untyped]
+from pydantic import JsonValue
 from botocore.awsrequest import AWSRequest  # type: ignore[import-untyped]
 from botocore.credentials import Credentials  # type: ignore[import-untyped]
 from test_tools_fakes import RUN_ID, FakeTransport, LocalServer, ManualClock, Received, Reply, goldens
 
 from orion_agent.tools.base import ToolResult
-from orion_agent.tools.client import GatewayToolClient
+from orion_agent.tools.client import GatewayToolClient, without_nulls
 from orion_agent.tools.gateway import (
     BotocoreSigner,
     GatewayConfigError,
@@ -264,6 +265,43 @@ class GatewayPartsTests(unittest.TestCase):
         mcp = McpGatewayClient("http://127.0.0.1:9/mcp", transport, BotocoreSigner(REGION, fake_credentials))
         outcome = run(count(GatewayToolClient(mcp, local=local)))  # type: ignore[arg-type]
         self.assertEqual((outcome.result.status, outcome.result.observed, transport.sent), ("empty", {"count": 0}, []))
+
+    def test_null_arguments_are_left_out_on_the_wire_and_kept_in_the_record(self) -> None:
+        # The live Gateway refuses an explicit null ("Field '/scope' has invalid type: null found, object expected").
+        gateway = FakeGateway(fake_credentials())
+
+        async def top(client: GatewayToolClient) -> Any:
+            return await client.call("top_mutated_genes", {"filter0": None, "geneCount": 3}, timeout_s=60, run_id=RUN_ID,
+                                     plan_version=1, step_id="s2", first_call=1)
+
+        outcome = run(with_gateway(gateway, top))
+        self.assertEqual(gateway.calls, [{"name": "vlab___top_mutated_genes", "arguments": {"geneCount": 3}}])
+        self.assertIsInstance(outcome.request, dict)
+        self.assertIn("filter0", outcome.request)
+        self.assertIsNone(outcome.request["filter0"])
+
+    def test_without_nulls_drops_null_keys_at_any_depth_and_keeps_everything_else(self) -> None:
+        value: JsonValue = {"a": None, "b": {"c": None, "d": 0, "e": False, "f": ""}, "g": [{"h": None, "i": []}, None, 1]}
+        self.assertEqual(without_nulls(value), {"b": {"d": 0, "e": False, "f": ""}, "g": [{"i": []}, None, 1]})
+
+    def test_every_nullable_input_field_defaults_to_null(self) -> None:
+        """Leaving nulls out is safe only if the Lambda's Input models read an omitted nullable field as null."""
+        from orion_agent.tools.schemas import tool_spec
+        from orion_agent.tools.server import VLAB_TOOLS
+
+        for name in sorted(VLAB_TOOLS):
+            schema = tool_spec(name).input_model.model_json_schema(by_alias=True)
+            for node in [schema, *schema.get("$defs", {}).values()]:
+                required = set(node.get("required", []))
+                for prop, sub in node.get("properties", {}).items():
+                    branches = [*sub.get("anyOf", []), *sub.get("oneOf", [])]
+                    nullable = sub.get("type") == "null" or any(branch.get("type") == "null" for branch in branches)
+                    with self.subTest(tool=name, model=node.get("title"), field=prop):
+                        self.assertFalse(nullable and prop in required, "a required nullable field cannot be omitted")
+            model = tool_spec(name).input_model
+            if name == "top_mutated_genes":
+                full = model.model_validate({"filter0": None, "geneCount": 3})
+                self.assertEqual(model.model_validate(without_nulls(full.model_dump(mode="json", by_alias=True))), full)
 
 
 if __name__ == "__main__":
