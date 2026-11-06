@@ -32,9 +32,11 @@ def new_thread(ctx: EvalContext, label: str, store: SimulatedCohortStore | None 
     agent = target(ctx, fault)
     thread = EvalThread(agent.client, store or ctx.store(), agent.records, label)
     if ctx.warmup_threads:
-        # As the browser does when a thread opens (AssistantApp: controller.warmup(threadId)). In mode A the
-        # warm-up starts the thread's Runtime session, so its first ask is not the one that waits for a new
-        # microVM. A failed warm-up only makes the first answer slower: its result is not checked.
+        # The browser sends a warm-up when a thread opens (AssistantApp: controller.warmup(threadId)); in mode A
+        # it starts the thread's Runtime session. The harness reads the warm-up to its end before the first ask,
+        # so that ask never waits on it: its plan time is a best case. A browser ask sent while the warm-up is
+        # still in flight queues behind it, and the browser's time includes that wait. A failed warm-up only
+        # makes the first answer slower: its result is not checked.
         thread.send(wire.new_id(), wire.warmup())
     return thread
 

@@ -16,14 +16,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from helpers import FixtureTransport, fixture_events, fixture_text
+from helpers import FixtureTransport, fixture_events, fixture_evidence, fixture_text
 from test_fixture_checks import j1_expected, j3_expected
 
 from orion_evals import report
+from orion_evals.checks import Check
 from orion_evals.cli import load_prompts
 from orion_evals.client import AgentClient, DirRecordSource
 from orion_evals.evals import BY_ID
-from orion_evals.evidence import AgentTarget, EvalContext
+from orion_evals.evidence import AgentTarget, EvalContext, EvalResult, EvalStatus
 from orion_evals.oracle import Gateway, J1Expected, J3Expected, Oracle
 from orion_evals.runner import environment, gates, run_evals
 from orion_evals.sse import parse_text
@@ -96,6 +97,13 @@ def routes() -> dict[str, Any]:
     }
 
 
+class SettledViews(DirRecordSource):
+    """The view route of a run that went on after the harness dropped its stream, and ended Complete."""
+
+    def view(self, run_id: str, thread_id: str | None = None) -> dict[str, Any] | None:
+        return {"runId": run_id, "threadId": thread_id, "status": "Complete", "revision": 10**6}
+
+
 class RefusingTransport:
     def post(self, body: Any) -> Any:
         raise ConnectionRefusedError("connection refused")
@@ -154,7 +162,7 @@ class Runner(unittest.TestCase):
     def test_threads_are_not_warmed_unless_asked(self) -> None:
         self.run_ids("E1")
         self.assertNotIn("warmup", [b["forwardedProps"]["orion"]["action"] for b in self.transport.bodies])
-        plan = next(g for g in gates(self.results, self.evidence) if g["gate"].startswith("Plan visible"))
+        plan = next(g for g in gates(self.results, self.evidence, self.ctx.repeats) if g["gate"].startswith("Plan visible"))
         self.assertTrue(plan["measured"].endswith("; no thread warm-up"), plan["measured"])
         self.assertFalse(environment(self.ctx, self.evidence, None, "fake")["threadWarmup"])
 
@@ -177,8 +185,13 @@ class Runner(unittest.TestCase):
         # same target, and says the threads were warmed.
         self.assertTrue(all(any(t.action == "warmup" for t in ev.turns) for ev in self.evidence))
         self.assertNotIn("warmup", {t.action for ev in self.evidence for t in ev.run_turns})
-        plan = next(g for g in gates(self.results, self.evidence) if g["gate"].startswith("Plan visible"))
-        self.assertTrue(plan["measured"].endswith("asks; each thread warmed when it opened, as the browser does"), plan["measured"])
+        plan = next(g for g in gates(self.results, self.evidence, self.ctx.repeats) if g["gate"].startswith("Plan visible"))
+        # Review F3: the harness waited for each warm-up to end before it asked, which the browser does not do
+        # for an ask sent while the warm-up is in flight, so the gate says what was measured and claims no parity.
+        self.assertIn("asks; each thread's warm-up completed before its first ask", plan["measured"])
+        self.assertNotIn("browser", plan["measured"])
+        # A warmed-only sample has no cold first ask, so it can never pass NFR-01 (warm and cold runs).
+        self.assertNotEqual(plan["status"], "pass")
         self.assertEqual(plan["target"], "<= 5 s over at least 20 runs")
         self.assertTrue(environment(self.ctx, self.evidence, None, "fake")["threadWarmup"])
         self.assertEqual([contract_problems(b) for b in self.transport.bodies], [[] for _ in self.transport.bodies])
@@ -213,6 +226,74 @@ class Runner(unittest.TestCase):
         self.assertEqual(results["E22"].status, "not-run")
         self.assertTrue(all("needs Bedrock planner" in c.detail for c in results["E22"].checks))
 
+    def cache_reference_runs(self, runs_per_prompt: int) -> None:
+        """Reference runs already made (the memo E1-E6 fill), each a Complete J1 stream with its signature."""
+        for journey in ("J1", "J2", "J3"):
+            for phrasing in ("tool-named", "open-ended"):
+                self.ctx.cache[f"runs:{journey}:{phrasing}"] = [
+                    fixture_evidence(f"{journey} {phrasing} run {i + 1}", ("j1-complete.events.jsonl", "ask")) for i in range(runs_per_prompt)
+                ]
+
+    def test_e16_needs_five_repeats_to_pass(self) -> None:
+        """Review F2: every prompt Complete in 2 of 2 runs is no pass of "in 5 of 5 runs per prompt"."""
+        self.cache_reference_runs(2)
+        results = self.run_ids("E16")
+        self.assertEqual([c.status for c in results["E16"].checks if c.name != "5 of 5 runs per prompt"], ["pass"] * 6)
+        self.assertEqual(results["E16"].status, "not-run")
+        self.assertEqual(next(c for c in results["E16"].checks if c.name == "5 of 5 runs per prompt").detail, "needs 5 repeats, ran 2")
+        by_gate = {g["gate"]: g for g in gates(self.results, self.evidence, self.ctx.repeats)}
+        self.assertEqual(by_gate["Interpretation present"]["status"], "not-run")
+        self.assertIn("needs 5 repeats, ran 2", by_gate["Interpretation present"]["measured"])
+        # "6 of 6 reference prompts" is a scripted run end to end, not a 5-of-5 gate: it still reads the prompts.
+        self.assertEqual((by_gate["Reference prompts completed"]["status"], by_gate["Reference prompts completed"]["measured"]), ("pass", "6 of 6 prompts Complete in every run"))
+        self.ctx.cache.clear()
+        self.ctx.repeats = 5
+        self.cache_reference_runs(5)
+        results = self.run_ids("E16")
+        self.assertEqual(results["E16"].status, "pass")
+        self.assertEqual(next(g for g in gates(self.results, self.evidence, self.ctx.repeats) if g["gate"] == "Interpretation present")["status"], "pass")
+        self.assertEqual(self.transport.bodies, [], "the cached runs were used")
+
+    def test_e22_needs_five_repeats_to_pass(self) -> None:
+        """Review F2: each paraphrase on its journey's signature in 2 of 2 runs is no pass of "in 5 of 5 runs"."""
+        self.cache_reference_runs(2)
+        for questions in PROMPTS["heldOut"].values():
+            for question in questions:
+                self.transport.routes[f"ask:{question}"] = "j1-complete.events.jsonl"
+        self.ctx.planner = "bedrock"
+        results = self.run_ids("E22")
+        paraphrases = [c for c in results["E22"].checks if c.name != "5 of 5 runs per prompt"]
+        self.assertEqual([(c.status, c.detail) for c in paraphrases], [("pass", "2 of 2 runs")] * 9)
+        self.assertEqual(results["E22"].status, "not-run")
+        self.assertEqual(next(c for c in results["E22"].checks if c.name == "5 of 5 runs per prompt").detail, "needs 5 repeats, ran 2")
+        self.assertEqual(len([b for b in self.transport.bodies if b["forwardedProps"]["orion"]["action"] == "ask"]), 18)
+
+    def test_e20_without_a_restart_command_leaves_the_lease_case_not_run(self) -> None:
+        """Review F1: with no --restart-cmd nothing killed the controller, so the lease case is not run, with the
+        reason, and E20 is not run although its closed-tab and save-pause parts pass. An agent test that names
+        RUN_INTERRUPTED is no live run (the old fallback reported it "covered", and E20 passed)."""
+        assert self.ctx.agent is not None
+        self.ctx.agent = AgentTarget("fake agent", self.ctx.agent.client, SettledViews(self.run_dir))
+        (self.frontend / "src/features/orion/AssistantApp.unit.test.tsx").write_text("it('restores the thread from the view route', ...)")
+        agent_tests = Path(self.tmp.name) / "agent-tests"
+        agent_tests.mkdir()
+        (agent_tests / "test_contract.py").write_text("def test_run_finished_carries_interrupted(self) -> None:\n    frame = 'RUN_INTERRUPTED'\n")
+        (agent_tests / "test_controller.py").write_text("async def test_expired_lease_is_marked_interrupted_by_the_next_turn(self) -> None:\n    ...\n")
+        self.ctx.agent_tests_root = agent_tests
+        self.ctx.pause_wait_s = 0
+        self.ctx.settle_timeout_s = 5
+        self.assertIsNone(self.ctx.restart_cmd)
+        results = self.run_ids("E20")
+        checks = {c.name: c for c in results["E20"].checks}
+        lease = checks["lease expiry ends Interrupted"]
+        self.assertEqual((lease.status, lease.gate, lease.source), ("not-run", True, "harness"))
+        self.assertIn("no --restart-cmd", lease.detail)
+        live = [c for c in results["E20"].checks if c.gate and c.name != lease.name]
+        self.assertEqual([(c.name, c.status) for c in live if not c.ok], [])
+        self.assertEqual(results["E20"].status, "not-run")
+        unit = checks["lease expiry: the agent's unit test of the rule (not a live run)"]
+        self.assertEqual((unit.status, unit.gate, unit.evidence.get("file")), ("covered", False, "test_controller.py"))
+
     def test_e19_a_lost_confirm_creates_nothing_twice(self) -> None:
         self.ctx.settle_timeout_s = 0.5
         results = self.run_ids("E19")
@@ -239,7 +320,7 @@ class Runner(unittest.TestCase):
         self.assertEqual(results["E8"].status, "not-run")
         self.assertIn("agent unavailable", results["E8"].checks[0].detail)
         self.assertEqual(results["E21"].status, "pass")
-        doc = report.document(self.results, gates(self.results, self.evidence), environment(self.ctx, self.evidence, None, "fake"), None, datetime.now(UTC), datetime.now(UTC))
+        doc = report.document(self.results, gates(self.results, self.evidence, self.ctx.repeats), environment(self.ctx, self.evidence, None, "fake"), None, datetime.now(UTC), datetime.now(UTC))
         json_path, md_path = report.write(doc, Path(self.tmp.name) / "reports")
         written = json.loads(json_path.read_text())
         self.assertEqual(written["schema"], "orion.eval-report/v1")
@@ -264,6 +345,36 @@ class Runner(unittest.TestCase):
             model = RunAgentInputModel.model_validate(body)
             actions.add(model.orion().action)
         self.assertTrue({"ask", "confirm", "consent", "clarify_answer", "edit_plan"} <= actions, actions)
+
+
+class FiveOfFiveGates(unittest.TestCase):
+    """Review F2: the gates the design scores "in 5 of 5 runs" never pass from fewer repeats."""
+
+    def results(self, e16_status: EvalStatus = "pass") -> list[EvalResult]:
+        def result(eid: str, status: EvalStatus = "pass", checks: list[Check] | None = None) -> EvalResult:
+            return EvalResult(eid, eid, "", [], status, checks or [Check(eid, "pass", "")], [], None, [], False, "reference")
+
+        prompts = [Check(f"{j} {p}: ends Complete with all four parts", "pass" if e16_status == "pass" else "fail", "") for j in ("J1", "J2", "J3") for p in ("tool-named", "open-ended")]
+        return [*(result(f"E{i}") for i in range(1, 7)), result("E16", e16_status, prompts), result("E22")]
+
+    def by_gate(self, results: list[EvalResult], repeats: int) -> dict[str, dict[str, Any]]:
+        return {g["gate"]: g for g in gates(results, [], repeats)}
+
+    def test_below_five_repeats_a_pass_is_not_run_with_the_count(self) -> None:
+        for repeats in (1, 4):
+            found = self.by_gate(self.results(), repeats)
+            for name in ("Phrasing parity", "Interpretation present"):
+                self.assertEqual(found[name]["status"], "not-run", (name, repeats))
+                self.assertTrue(found[name]["measured"].endswith(f"; needs 5 repeats, ran {repeats}"), found[name]["measured"])
+            self.assertEqual(found["Reference prompts completed"]["status"], "pass")
+        found = self.by_gate(self.results(), 5)
+        self.assertEqual((found["Phrasing parity"]["status"], found["Phrasing parity"]["measured"]), ("pass", "E1-E6 signature checks and E22"))
+        self.assertEqual((found["Interpretation present"]["status"], found["Interpretation present"]["measured"]), ("pass", "E16"))
+
+    def test_a_failure_at_fewer_repeats_still_fails(self) -> None:
+        found = self.by_gate(self.results("fail"), 1)
+        self.assertEqual(found["Interpretation present"]["status"], "fail")
+        self.assertEqual(found["Reference prompts completed"]["status"], "fail")
 
 
 class Fixtures(unittest.TestCase):

@@ -285,7 +285,7 @@ def run_e13(ctx: EvalContext) -> Outcome:
             runs += prompt_runs
             check = ec.e13_response_hashes(prompt_runs)
             checks.append(Check(f"{journey} {phrasing}: {check.name}", check.status, check.detail, check.evidence, check.source, check.gate))
-    notes = ["Stretch (FR-20 replay). The harness compares each step's responseSha256 across the 5 repeats; a model-free replay through the record is not built."]
+    notes = [f"Stretch (FR-20 replay). The harness compares each step's responseSha256 across the {ctx.repeats} repeats of each prompt (not run below {ec.E13_MIN_RUNS}); a model-free replay through the record is not built."]
     return checks, runs, None, notes
 
 
@@ -326,12 +326,16 @@ def run_e15(ctx: EvalContext) -> Outcome:
 def run_e16(ctx: EvalContext) -> Outcome:
     checks: list[Check] = []
     runs: list[RunEvidence] = []
+    fewest: int | None = None
     for journey in ("J1", "J2", "J3"):
         for phrasing in ("tool-named", "open-ended"):
             prompt_runs = sc.reference_runs(ctx, journey, phrasing)
             runs += prompt_runs
+            fewest = len(prompt_runs) if fewest is None else min(fewest, len(prompt_runs))
             check = ec.e16_complete(prompt_runs)
             checks.append(Check(f"{journey} {phrasing}: {check.name}", check.status, check.detail, check.evidence, check.source))
+    # The row passes "in 5 of 5 runs per prompt": fewer repeats leave it not run, however the runs ended.
+    checks += ec.full_repeats(fewest or 0)
     return checks, runs, None, []
 
 
@@ -360,6 +364,14 @@ def run_e19(ctx: EvalContext) -> Outcome:
         runs.append(ev)
         checks += [Check(f"{name}: {c.name}", c.status, c.detail, c.evidence, c.source, c.gate) for c in [*ec.no_duplicates(ev, 2), *ec.resumed_in_record(ev)]]
     return checks, runs, None, []
+
+
+E20_LEASE_NOT_RUN: Final = (
+    "not run: no --restart-cmd, so the harness never killed the controller mid-run and no lease lapsed "
+    "(in mode A, killing it needs a test Runtime or a StopRuntimeSession call)"
+)
+# The agent tests that end an expired lease Interrupted (test_controller.py, test_engine_actions.py), by name.
+E20_LEASE_TEST: Final = r"def test_\w*expired_lease\w*interrupted"
 
 
 def run_e20(ctx: EvalContext) -> Outcome:
@@ -395,7 +407,10 @@ def run_e20(ctx: EvalContext) -> Outcome:
         runs.append(ev)
         checks += [Check(f"lease expiry: {c.name}", c.status, c.detail, c.evidence, c.source, c.gate) for c in ec.interrupted(ev.view, end.code)]
     else:
-        checks.append(agent_test_coverage("lease expiry ends Interrupted", ctx.agent_tests_root, r"RUN_INTERRUPTED|Interrupted"))
+        # Nothing killed the controller, so no lease lapsed and nothing ended Interrupted: the case was not run.
+        # An agent unit test of the rule is shown beside it, never in its place (it does not gate).
+        checks.append(not_run("lease expiry ends Interrupted", E20_LEASE_NOT_RUN, source="harness"))
+        checks.append(agent_test_coverage("lease expiry: the agent's unit test of the rule (not a live run)", ctx.agent_tests_root, E20_LEASE_TEST, gate=False))
     return checks, runs, None, []
 
 
@@ -418,6 +433,8 @@ def run_e22(ctx: EvalContext) -> Outcome:
             runs += prompt_runs
             sigs = [r.signature for r in prompt_runs]
             checks.append(expect(f"{journey} paraphrase {i + 1} reaches the journey's signature", target is not None and all(s == target for s in sigs), f"{sum(1 for s in sigs if s == target)} of {len(sigs)} runs", signatures=sigs, target=target, question=question))
+    # The row passes "in 5 of 5 runs": fewer repeats leave it not run, however the runs ended.
+    checks += ec.full_repeats(ctx.repeats)
     return checks, runs, None, []
 
 

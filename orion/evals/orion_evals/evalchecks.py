@@ -6,7 +6,7 @@ return `Check`s. Each function's docstring names the design row it implements.
 
 import math
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, Final
 
 from . import extract
 from .canonical import filterset_def_sha256
@@ -40,6 +40,11 @@ from .wire import DATA_STEP_STATUSES, RUN_SCREEN_WORDS
 
 P_REL_TOL = 1e-6  # the oracle's own log-rank against the engine's p
 SAME_ENGINE_REL_TOL = 1e-9  # a value the oracle reads from the same engine (DE table)
+# RFA rev 25 "Evaluation": each reference prompt runs at least 5 times; E16, E22 and the parity and Interpretation
+# gates are "5 of 5 runs". E13 compares hashes across repeats, so it needs at least two runs of a prompt.
+FULL_REPEATS: Final = 5
+E13_MIN_RUNS: Final = 2
+REPEATS_CHECK: Final = f"{FULL_REPEATS} of {FULL_REPEATS} runs per prompt"
 
 
 # --- comparisons ---------------------------------------------------------------------------------
@@ -543,7 +548,10 @@ def e16_complete(runs: Sequence[RunEvidence]) -> Check:
 def e13_response_hashes(runs: Sequence[RunEvidence]) -> Check:
     """E13 (stretch, partial): across the repeats of a prompt, each step's response hash is identical."""
     records = [ev.record for ev in runs]
-    if not runs or any(r is None for r in records):
+    if len(runs) < E13_MIN_RUNS:
+        # One run per prompt gives each step one hash: nothing is compared, and the check could not fail.
+        return not_run("identical response hashes across repeats", f"needs {E13_MIN_RUNS} or more repeats to compare, ran {len(runs)}", source="harness")
+    if any(r is None for r in records):
         return not_run("identical response hashes across repeats", "needs every run's record", source="record")
     per_step: dict[str, set[str | None]] = {}
     for record in records:
@@ -562,6 +570,16 @@ def pair_signatures(name: str, a: Sequence[RunEvidence], b: Sequence[RunEvidence
 
 def repeat_signatures(name: str, runs: Sequence[RunEvidence]) -> Check:
     return signatures_equal(name, [ev.signature for ev in runs])
+
+
+def full_repeats(ran: int) -> list[Check]:
+    """A row that passes only "in 5 of 5 runs" (E16, E22) is not run when fewer runs were made.
+
+    The per-prompt checks still pass or fail on the runs there are (a failure at fewer repeats already misses
+    5 of 5), but a pass at 1 or 2 repeats is no pass of the row: this gating check keeps it not run."""
+    if ran >= FULL_REPEATS:
+        return []
+    return [not_run(REPEATS_CHECK, f"needs {FULL_REPEATS} repeats, ran {ran}", source="harness", needed=FULL_REPEATS, ran=ran)]
 
 
 # --- E19, E20, E24 ---------------------------------------------------------------------------------

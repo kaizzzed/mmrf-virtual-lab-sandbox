@@ -114,11 +114,12 @@ def coverage_all(keys: Sequence[str], frontend_root: Path | None) -> list[Check]
     return [coverage(key, frontend_root) for key in keys]
 
 
-def agent_test_coverage(name: str, agent_tests_root: Path | None, pattern: str) -> Check:
-    """A lease-expiry case the harness cannot drive live is still covered when an agent test names it."""
+def agent_test_coverage(name: str, agent_tests_root: Path | None, pattern: str, *, gate: bool = True) -> Check:
+    """The agent test that names a case (`pattern`, a test name). It is a unit test, not a live run: E20 shows it
+    beside its not-run lease-expiry check with `gate=False`, so it never stands in for the live case."""
     if agent_tests_root is None:
-        return Check(name, "not-covered", "no agent tests mounted (--agent-tests-root)", {}, "harness")
+        return Check(name, "not-covered", "no agent tests mounted (--agent-tests-root)", {}, "harness", gate)
     for path in sorted(agent_tests_root.glob("test_*.py")):
         if re.search(pattern, path.read_text(encoding="utf-8", errors="replace")):
-            return Check(name, "covered", f"covered by agent test {path.name}", {"file": path.name, "pattern": pattern}, "harness")
-    return Check(name, "not-covered", "not covered: no agent test matches", {"pattern": pattern}, "harness")
+            return Check(name, "covered", f"covered by agent test {path.name}", {"file": path.name, "pattern": pattern}, "harness", gate)
+    return Check(name, "not-covered", "not covered: no agent test matches", {"pattern": pattern}, "harness", gate)

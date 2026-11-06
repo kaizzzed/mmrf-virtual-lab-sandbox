@@ -110,16 +110,28 @@ directory) and pass `--fault-agent de_run:timeout=http://<name>:8080/invocations
 
 - `--evals E1,E7` runs a subset (default: all 24). `--repeats` (default 5, E16) repeats each
   reference prompt. E20 waits `--pause-wait-s` (default 300) at the save pause.
+- **Repeats.** E16, E22 and the Phrasing parity and Interpretation present gates are scored "in 5
+  of 5 runs". With fewer repeats they are reported not run (`needs 5 repeats, ran N`), never as a
+  pass; a run that fails still fails them. E13 compares hashes across repeats, so below 2 repeats
+  it is not run. `--repeats 1` is a cheap pass, not a result for these.
 - `--target bff --bff-origin http://frontend:3000` sends the same turns through the fork's
   `POST /api/orion/agui` and reads records from its record and view routes
-  (`--record-source bff`).
-- `--warmup-threads` sends the browser's `warmup` when each thread opens, before its first turn,
-  as the Assistant does (`controller.warmup(threadId)`). In mode A each thread is its own Runtime
-  session, and the warm-up is what starts it: without the flag a thread's first ask is the
-  session's first invocation, and when AgentCore has no pre-started microVM free it waits about
-  7 s for one before the agent runs. The warm-up turn has its own run id, so no check and no plan
-  time includes it; the plan gate's text and the report's `environment.threadWarmup` say which
-  way a run was made. Off by default (mode L has no session to start).
+  (`--record-source bff`). A read that fails on the way (no answer, a timeout, a 5xx, a cut body)
+  is tried 3 times in all; a 4xx such as `RUN_NOT_FOUND` is the route's answer and is not. Every
+  failed read is logged with its HTTP status and BFF error code, or its exception.
+- `--warmup-threads` sends a `warmup` when each thread opens and reads it to its end before the
+  thread's first ask. In mode A each thread is its own Runtime session, and the warm-up is what
+  starts it: without the flag a thread's first ask is the session's first invocation, and when
+  AgentCore has no pre-started microVM free it waits about 7 s for one before the agent runs. The
+  warm-up turn has its own run id, and a plan time runs from the ask's own POST, so no check and
+  no plan time includes the warm-up. With the flag the plan gate says "each thread's warm-up
+  completed before its first ask": a best case, for a user who asks after the warm-up ended. It
+  is not what the browser shows for an ask sent right after a thread opens: the Assistant also
+  warms each thread on open (`controller.warmup(threadId)`), but its clock starts at submit and an
+  ask sent while the warm-up is in flight queues behind it, so that time includes the rest of the
+  warm-up. Without the flag the gate says "no thread warm-up". The report's
+  `environment.threadWarmup` says which way a run was made. Off by default (mode L has no session
+  to start).
 - **E11 faults** need an agent started with `ORION_FAULTS`. Each fault is its own process, so run
   them one at a time: `ORION_FAULTS=de_run:timeout orion/scripts/orion-local.sh up`, then
   `run --evals E11 --fault-agent de_run:timeout=http://orion-agent:8080/invocations@/data/runs`;
@@ -127,8 +139,10 @@ directory) and pass `--fault-agent de_run:timeout=http://<name>:8080/invocations
   reported not run.
 - **E20's lease expiry** needs the controller killed mid-run: pass `--restart-cmd` with an
   operator command the harness may run (it waits `--lease-wait-s`, default 200 s, for the 180 s
-  lease). Without it the case is reported as covered by an agent test that names
-  `RUN_INTERRUPTED`, or not covered.
+  lease). Without it the case is reported not run, with that reason, and so E20 is not run even
+  when its closed-tab and save-pause parts pass. In mode A killing the controller needs a test
+  Runtime or a `StopRuntimeSession` call. The agent's unit test of the rule (found under
+  `--agent-tests-root`) is listed beside it as a non-gating check, never in its place.
 - **E22** needs the real planner (`ORION_PLANNER=bedrock`). With any other planner, read from the
   run records' `environment.planner` (or `--planner`), it is reported "needs Bedrock planner",
   never as a pass.
@@ -154,7 +168,8 @@ each FR it implements. Check sources: `agent` (the stream), `record` (the run re
 (E1–E6 signatures and E22), Interpretation present (E16), 9 of 9 edge cases (E7–E10, E11's
 timeout, refusal and empty count, E17, E18), 100% of the counted set visible, 100% of numbers
 cited, zero writes without confirmation, the plan p95 within 5 s over at least 20 asks, and J3
-count accuracy.
+count accuracy. Phrasing parity and Interpretation present need 5 repeats: below that they are
+not run, with the count (see Repeats above).
 
 **Simulated browser.** The harness has no browser. For Create it follows the contract's steps in
 an in-memory cohort store (`orion_evals/simstore.py`): reuse by `defSha256`, a save ledger keyed

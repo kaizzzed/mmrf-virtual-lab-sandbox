@@ -133,8 +133,8 @@ class EvalContext:
     cache: dict[str, Any] = field(default_factory=dict)
     log: Callable[[str], None] = lambda message: None
     planner: str | None = None
-    # Send the browser's `warmup` when a thread opens, before its first turn (--warmup-threads). Mode A: a
-    # thread is its own Runtime session, and the warm-up is what starts it.
+    # Send a `warmup` when a thread opens and read it to its end before the first turn (--warmup-threads).
+    # Mode A: a thread is its own Runtime session, and the warm-up is what starts it.
     warmup_threads: bool = False
 
     def memo(self, key: str, compute: Callable[[], Any]) -> Any:
