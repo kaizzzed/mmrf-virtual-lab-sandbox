@@ -30,6 +30,16 @@ from .verifier import check_observed, model_text_feedback
 log = logging.getLogger("orion.model")
 WITHHELD_UNVERIFIED: Final = "no interpretation sentence passed verification"
 WITHHELD_UNSCHEMA: Final = "the interpretation did not match its schema"
+WITHHELD_TREATMENT: Final = "this run compares groups defined by a treatment, so ORION writes no interpretation of it"
+
+
+def _treatment_limitation() -> Limitation:
+    return Limitation(
+        code="CLINICAL_ADVICE",
+        text="This run's groups are defined by a treatment, so the answer shows the observed results only: ORION does "
+        "not interpret treatment comparisons, to avoid anything that reads as clinical advice.",
+        unblock="Read the observed results, or ask about groups defined by another field.",
+    )
 
 
 @dataclass(frozen=True)
@@ -109,6 +119,9 @@ async def write_answer(
     """Interpretation and Hypotheses for a run whose steps all finished; never raises ModelRoleError."""
     allow_list = verifier.allow_list(vocab, ledger, plan)
     calls: list[ModelCallRecord] = []
+    if verifier.treatment_defined(facts, ledger, vocab, plan=plan, observed=observed, allow_list=allow_list):
+        # V-SEC for treatment-defined runs: no composer call, so no model text can carry advice.
+        return _withheld(WITHHELD_TREATMENT, None, calls, facts, plan, observed, extra=[_treatment_limitation()])
 
     async def compose(feedback: Sequence[RuleFinding]) -> ComposerResult | ModelRoleError:
         try:

@@ -7,7 +7,7 @@ from typing import Any
 
 from orion_agent.compiler import CompiledPlan, SessionLedger
 from orion_agent.interfaces import ComposerOutput, ComposerResult, ObservedResult, RuleFinding
-from orion_agent.model.answer import WITHHELD_UNVERIFIED, write_answer
+from orion_agent.model.answer import WITHHELD_TREATMENT, WITHHELD_UNVERIFIED, write_answer
 from orion_agent.model.errors import ModelRoleError
 from orion_agent.model.factory import RefusingComposer
 from orion_agent.model.verifier import CodeVerifier
@@ -128,6 +128,34 @@ class WriteAnswerTest(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_SDK, SKIP_REASON)
+class TreatmentRunTest(unittest.TestCase):
+    """A run defined by a treatment gets no model text: skeptics wrote advice in descriptive words alone."""
+
+    def answer_for(self, scope_name: str, composer: Any) -> Any:
+        view, plan = last_view(J3), j3_plan()
+        plan = plan.model_copy(update={"scope": plan.scope.model_copy(update={"name": scope_name})})
+        return run(write_answer(
+            composer, CodeVerifier(), question=view.question, facts=view_facts(view), plan=plan,
+            observed=view_observed(view), ledger=None, vocab=vocabulary(),
+        ))
+
+    def test_a_regimen_scoped_run_is_observed_only_without_a_composer_call(self) -> None:
+        for scope in ("Bortezomib, lenalidomide, dexamethasone", "Bortezomib, lenalidomide, dexamethasone (ORION)"):
+            with self.subTest(scope=scope):
+                composer = ScriptedComposer()  # no replies: any compose call would fail the test
+                outcome = self.answer_for(scope, composer)
+                self.assertEqual(composer.feedback, [], "the composer was not called")
+                self.assertEqual((outcome.status, outcome.withheld_reason, outcome.model_calls), ("ObservedOnly", WITHHELD_TREATMENT, []))
+                self.assertIsNone(outcome.interpretation)
+                self.assertEqual(outcome.follow_ups, [])
+                self.assertIn("CLINICAL_ADVICE", [lim.code for lim in outcome.inserted_limitations])
+
+    def test_a_run_that_names_no_treatment_still_gets_its_interpretation(self) -> None:
+        outcome = answer(ScriptedComposer(GOOD))
+        self.assertEqual(outcome.status, "Complete")
+        self.assertNotIn("CLINICAL_ADVICE", [lim.code for lim in outcome.inserted_limitations])
+
+
 class BedrockAnswerTest(unittest.TestCase):
     """write_answer with the Bedrock composer over a scripted Bedrock, inside the run's model call scope."""
 

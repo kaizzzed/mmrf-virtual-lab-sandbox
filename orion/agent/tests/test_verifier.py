@@ -85,6 +85,22 @@ CASE_SCOPES: dict[str, str | None] = {
 }
 
 
+class TreatmentDefinedTest(unittest.TestCase):
+    """CodeVerifier.treatment_defined: which runs get no model text at all (answer.write_answer withholds it)."""
+
+    def defined(self, scope_name: str | None) -> bool:
+        verifier, view, plan = CodeVerifier(), last_view(J3), j3_plan()
+        if scope_name is not None:
+            plan = plan.model_copy(update={"scope": plan.scope.model_copy(update={"name": scope_name})})
+        allow = verifier.allow_list(vocabulary(), None, plan)
+        return verifier.treatment_defined(view_facts(view), None, vocabulary(), plan=plan, observed=view_observed(view), allow_list=allow)
+
+    def test_runs_named_by_a_regimen_or_a_therapy_value_are_treatment_defined(self) -> None:
+        for case, scope in CASE_SCOPES.items():
+            with self.subTest(case=case, scope=scope):
+                self.assertEqual(self.defined(scope), case != "J")
+
+
 def verdict(case: str) -> str | None:
     """The rule that drops one model text, written "<kind>|<scope>|<text>" as the review probes write it. Kind: S an
     Interpretation statement, Q or A a question or action hypothesis, F or L a follow-up chip's question or label.

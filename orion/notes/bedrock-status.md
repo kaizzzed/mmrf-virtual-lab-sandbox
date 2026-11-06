@@ -763,3 +763,19 @@ This step did not touch stage 3's working-tree changes (`orion/infra`, `helm`, `
 `terraform/.terraform.lock.hcl`) or its deployed resources. orion-agent is left running in Bedrock
 mode: the container created at 01:05:05 UTC holds the credentials exported then. `up --stub`
 returns it to the stubs.
+
+## Fourth check: treatment-defined runs get no model text (2026-11-06, offline)
+
+Two fresh skeptics attacked the allow-list V-SEC above (467 and more probes, offline, no model calls). Advice still got
+through when written only in descriptive words, or carried by a pronoun or ellipsis from an earlier sentence, for
+example "<regimen> could be the plan for the mutated cases.", "Match the mutated cases to <regimen>." and "It may be
+the next step for the mutated cases." A word-level check cannot close this: each round narrows it, none ends it.
+
+The fix is structural. `CodeVerifier.treatment_defined` (the verifier's existing `treatment_run` flag: the run's own
+scope, cohorts or settings name a regimen or a therapy value) is checked in `model/answer.write_answer` before the
+composer is called. Such a run makes no composer call and ends ObservedOnly, with the reason "this run compares
+groups defined by a treatment, so ORION writes no interpretation of it" and a `CLINICAL_ADVICE` limitation. Observed
+and Limitations are still written by code. Every other run is unchanged, and the word-level V-SEC still applies to
+it. No eval or browser E2E scenario defines a run by a treatment, so no measured result changes, and no model call
+was made for this fix. Tests: `test_model_answer.TreatmentRunTest` (fails without the guard) and
+`test_verifier.TreatmentDefinedTest`. Agent suite 767 OK (6 live tests skipped), mypy clean, fixtures current.

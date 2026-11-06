@@ -1194,6 +1194,17 @@ def _run_words(plan: CompiledPlan, ledger: SessionLedger | None) -> str:
 class CodeVerifier:
     """interfaces.Verifier: code rules only, no model call."""
 
+    def treatment_defined(
+        self, facts: Sequence[FactRecord], ledger: SessionLedger | None, vocab: Vocabulary, *,
+        plan: CompiledPlan, observed: ObservedResult, allow_list: Sequence[str],
+    ) -> bool:
+        """The run itself names a treatment (a regimen value or a clinical name) in its scope, cohorts or settings.
+
+        Skeptic rounds showed that, for such a run, advice can be written in descriptive words alone ("<regimen>
+        could be the plan for the mutated cases", "Match the mutated cases to it"), so the answer path withholds
+        model text for these runs entirely instead of trying to tell description from advice word by word."""
+        return self._context(facts, ledger, vocab, plan, observed, allow_list).treatment_run
+
     def allow_list(self, vocab: Vocabulary, ledger: SessionLedger | None, plan: CompiledPlan) -> list[str]:
         """Terms model text may write outside placeholders (V-NUM): ORION's terms with digits
         (log2FC, Gen3 Analysis, six-gene panel), app names, the vocabulary's terms with numerals or
