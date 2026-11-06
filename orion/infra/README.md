@@ -8,9 +8,16 @@ arm64 agent image, and the sandbox patch for mode A. Design: ORION RFA rev 25, A
 
 **Mode A is deployed** (2026-11-05, in the sandbox account, us-east-1): orion-infra stages 1 and 2
 are applied, the sandbox patch is applied and the cluster runs the fork's frontend with ORION on.
-`../notes/mode-a-status.md` has what was run and verified. Sections still marked "Not run" (for
-example the test-Runtime checks) need AWS and have not been run; their commands are for the
-operator, with the sandbox account's profile.
+It is left running on purpose. The live Runtime is `orion_agent` version 4 (image tag
+`97926b08c368`, from `orion/mode-a-rebased` `97926b0`, since 2026-11-06 05:36 UTC; smoke-tested
+only), and the Helm release `synthetic` is at revision 3. The browser E2E and the evals ran on
+version 3 (image `4609db670295`).
+
+- `../notes/mode-a-status.md` has what was run and verified, the timings, the known limits and
+  how to rerun everything.
+- `../notes/mode-a-teardown.md` has the ordered teardown for this deployment.
+- Sections still marked "Not run" (for example the test-Runtime checks) need AWS and have not
+  been run. Their commands are for the operator, with the sandbox account's profile.
 
 | Path | What it is |
 | --- | --- |
@@ -20,7 +27,7 @@ operator, with the sandbox account's profile.
 | `terraform/orion-infra/` | Runtime, Gateway, tool Lambda, S3, Secrets Manager, IAM, Pod Identity, CloudWatch |
 | `terraform/orion-infra/vlab-tools.json` | The `vlab` target's MCP tool schema, generated from the catalog |
 | `gateway_tools.py`, `tests/` | The schema generator and its tests |
-| `patches/sandbox.patch` | The sandbox patch (mode A only, values-gated, off by default). Never applied here |
+| `patches/sandbox.patch` | The sandbox patch (mode A only, values-gated, off by default). Applied and committed on `orion/mode-a` (`66fa5c8`); `../notes/mode-a-teardown.md` step 3 reverts it |
 
 ## Modes
 
@@ -201,7 +208,9 @@ docker run --rm -v $PWD/orion/agent:/app:ro -v $PWD/orion/infra:/infra -w /app -
 ## Deploy order (modes A and H)
 
 Day-2 plan: deploy Runtime, Gateway and Lambda; Pod Identity, egress and the fork; then the
-**12:00 gate: mode A or mode H**. All of it: **Not run (needs AWS).**
+**12:00 gate: mode A or mode H**. Run for mode A on 2026-11-05 and 2026-11-06, with the
+corrections below: two values files for Helm, and the secret imported. Step 6's log retention is
+**not yet applied**. What ran, and in which order: `../notes/mode-a-status.md`.
 
 0. **Before.** The sandbox runs on AWS with HTTPS (`scripts/aws_sandbox.py deploy`, its own
    track), and Bedrock model access for Opus 5.5 and Opus 5 is granted in us-east-1 (A-4, Open
@@ -314,7 +323,11 @@ Day-2 plan: deploy Runtime, Gateway and Lambda; Pod Identity, egress and the for
 
 ### The 12:00 gate
 
-At 12:00 on day 2, take **mode A** only if all four hold; otherwise take **mode H** (cut 3):
+At 12:00 on day 2, take **mode A** only if all four hold; otherwise take **mode H** (cut 3).
+All four held in the live runs, and mode A was taken without cut 1. How each was settled is in
+`../notes/mode-a-status.md`, "The four first-deploy risks". Item 3 rests on the live `de_run`
+calls through the Gateway and CloudFront (at most about 3 s); Open question 15's own cold series
+(below) was not run.
 
 1. The frontend pod gets `orion-bff` credentials through Pod Identity with service-account tokens
    off (Open question 19), and its egress reaches AgentCore and S3.
@@ -446,12 +459,15 @@ Does Wilcoxon DE on the J3 groups finish inside the A4 budget through CloudFront
 | The image with the Compose environment and the current code | Starts and turns healthy on the Compose network |
 | The Runtime's Terraform environment through `Settings.from_env`, `tools.config` and `model.config` | Parses: mode A, bedrock planner and composer, engine executor, Gateway tools, `us.` model profiles |
 | `python -m unittest discover -s tests` in `orion/infra`, `mypy --strict` | Pass |
-| `git apply --check orion/infra/patches/sandbox.patch` in the sandbox | Pass; never applied |
+| `git apply --check orion/infra/patches/sandbox.patch` in the sandbox | Pass; applied later for mode A (`66fa5c8`), and `git apply -R --check` passes on `4609db6` |
 | `helm template` / `helm lint` of the patched chart (scratch copy) | Off: renders byte-identical to the current chart; on: the ServiceAccount, `orion-frontend-egress`, `serviceAccountName` and the six variables only |
 
 ## Teardown
 
-Removes everything the module creates and leaves the sandbox's own stack as it was. **Not run.**
+Removes everything the module creates and leaves the sandbox's own stack as it was. **Not run**:
+the deployment is left up on purpose. `../notes/mode-a-teardown.md` is this procedure for the
+deployed stack, filled in with its names, the Helm rollback revision (1), the last apply's
+variables and the decision on the imported secret (the destroy deletes it).
 
 1. **Sandbox patch first.** `helm upgrade synthetic helm -n mmrf-synthetic --kubeconfig
    generated/aws/kubeconfig --values generated/aws/values.json --wait` (no `orion-values.json`, so
@@ -464,9 +480,16 @@ Removes everything the module creates and leaves the sandbox's own stack as it w
 
    ```sh
    terraform plan -var-file=stage.tfvars <same -var flags> -var ecr_force_delete=true \
-     -var bucket_force_destroy=true -out=force.tfplan     # expect 2 in-place updates, nothing else
+     -var bucket_force_destroy=true -out=force.tfplan     # expect 6 in-place updates, nothing else
    terraform apply force.tfplan
    ```
+
+   The 6 are the two flags (`aws_ecr_repository.agent`, `aws_s3_bucket.runs`) and four policies
+   whose documents read the bucket's or the repository's ARN, so their reads move to the apply
+   and the plan shows `policy -> (known after apply)`: `aws_iam_role_policy.bff`, `.gateway[0]`,
+   `.runtime` and `aws_s3_bucket_policy.runs`. The apply writes the same documents again. Any
+   other change, or a policy with a changed statement, means the variables differ from the last
+   apply.
 
    Or empty the ECR repository and every object version in the bucket by hand first.
 3. **Destroy** in `orion/infra/terraform/orion-infra`, with the same variables as the last apply:

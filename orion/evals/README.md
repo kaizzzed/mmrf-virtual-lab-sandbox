@@ -60,6 +60,24 @@ and tokens (`usage`) and measures NFR-01 timings (`timings --mode warm`). `evals
 --repeats 1` is the cheap pass; `timings --mode cold` and `--mode cold-warmup` idle past the cache
 TTL before each ask. Results: `orion/notes/bedrock-evals.md`. Every ask calls Bedrock.
 
+**Mode A, the hosted stack.** The harness runs on the host's `python3` (standard library only)
+and reaches the hosted BFF through a loopback port-forward of the sandbox's `identity` service.
+That injects the synthetic session, so the oracle needs no credential. The run:
+
+```sh
+cd orion/evals && python3 -m orion_evals run --target bff --bff-origin http://127.0.0.1:3082 \
+  --record-source bff --oracle-origin http://127.0.0.1:3082 --repeats 5 \
+  --frontend-root ../../.sources/frontend --agent-tests-root ../agent/tests --e2e-script ../scripts/e2e-mode-l.mjs
+```
+
+- **E11 and E20's lease expiry are reported not run.** The deployed Runtime has no fault agents,
+  and killing its controller needs a test Runtime.
+- **`usage` reads records only from `--run-dir`.** Copy the report's records from S3 into
+  `<dir>/runs/` first.
+- **Run it apart from the browser E2E.** Both share the Runtime, which skews the plan times.
+
+Results, the full procedure and its limits: `orion/notes/mode-a-status.md`.
+
 - `python -m orion_evals timings` drives the agent like the browser (`orion_evals/timings.py`) and
   reports per ask the plan-visible time (the gate's firstPlanS), the "Writing interpretation" wait
   (first snapshot with Observed to the first with Interpretation) and each model call's time, tokens

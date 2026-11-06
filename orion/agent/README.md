@@ -280,6 +280,31 @@ after 7 to 11 s in the browser. The evals do not measure that path
 (`orion/notes/bedrock-status.md`, Known limit 1). Timings warm and cold, call counts and tokens:
 `orion/notes/bedrock-evals.md` ("Final proof on the final code" for these runs).
 
+## Mode A: on AgentCore Runtime
+
+The same image runs as the AgentCore Runtime `orion_agent`. It is built for arm64 with the named
+contexts and deployed by `orion/infra` (`../infra/README.md`). The Runtime sets `ORION_MODE=A`,
+records in S3 and `ORION_TOOLS=gateway`. Each thread is its own Runtime session
+(`orion-<threadId>`). The deployed version is 4, image `97926b08c368` (this branch's commits
+rebased onto `orion/bedrock` `bf0a8b7`, the treatment-run guard; smoke-tested only). The results
+below ran on version 3, image `4609db670295`.
+
+Two Gateway rules came from the first live calls:
+
+- **Null-valued arguments are left out.** The Gateway's tool schema cannot say "or null", and it
+  refused an explicit null. Every nullable Input field defaults to None, and the recorded request
+  keeps its nulls.
+- **Credentials resolve once.** The SigV4 signer resolves its credentials once and signs with the
+  same refreshable credentials. A signing failure is a retryable `HTTP_ERROR`.
+
+Results: `orion/notes/mode-a-status.md`. In brief, on version 3:
+
+- the browser end to end passes 15 of 15 scenarios with 118 checks;
+- the evals give 22 pass, with E11 and E20's lease expiry not run (they need a test Runtime);
+- the plan p95 gate fails at 8.08 s, mostly on Bedrock planner time.
+
+Teardown: `orion/notes/mode-a-teardown.md`.
+
 ## How a run executes
 
 - **Plan first.** The plan snapshot (scope line, rows, Queued steps, run cohorts) is sent before
