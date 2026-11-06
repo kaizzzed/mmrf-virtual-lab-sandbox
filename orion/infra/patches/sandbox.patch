@@ -12,7 +12,7 @@
      "url": "https://github.com/theMMRF/guppy.git",
 --- a/helm/values.yaml
 +++ b/helm/values.yaml
-@@ -30,3 +30,25 @@
+@@ -30,3 +30,26 @@
    default:
      requests: {cpu: 100m, memory: 128Mi}
      limits: {memory: 1Gi}
@@ -33,7 +33,8 @@
 +  # if the day-1 test shows the frontend pod gets no credentials without it.
 +  automountServiceAccountToken: false
 +  egress:
-+    # HTTPS to public AWS endpoints (AgentCore Runtime, S3), never to private or link-local ranges.
++    # TCP 443 to any public IPv4 host, not only the AgentCore Runtime and S3 (an accepted residual
++    # risk: orion/infra/README.md, "Residual risks"). Private and link-local ranges stay closed.
 +    exceptCidrs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
 +    # The EKS Pod Identity Agent on the node.
 +    podIdentityAgentCidr: 169.254.170.23/32
@@ -95,7 +96,7 @@
 +    matchLabels: {app.kubernetes.io/name: frontend, app.kubernetes.io/instance: {{ .Release.Name }}}
 +  policyTypes: [Egress]
 +  egress:
-+    # InvokeAgentRuntime, StopRuntimeSession and S3 GetObject on run records, over HTTPS.
++    # HTTPS to any public IPv4 host, for AgentCore and S3 (a residual risk, orion/infra/README.md).
 +    - to:
 +        - ipBlock:
 +            cidr: 0.0.0.0/0

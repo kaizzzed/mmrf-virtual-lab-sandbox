@@ -9,10 +9,13 @@ resource "aws_eks_addon" "pod_identity" {
   addon_version = var.pod_identity_addon_version
 }
 
+# Session tags stay on: orion-bff's trust (iam.tf) admits only the kubernetes-namespace and
+# kubernetes-service-account tags of this association, so with them off the pod gets no credentials.
 resource "aws_eks_pod_identity_association" "bff" {
-  cluster_name    = var.eks_cluster_name
-  namespace       = var.kubernetes_namespace
-  service_account = var.frontend_service_account
-  role_arn        = aws_iam_role.bff.arn
-  depends_on      = [aws_eks_addon.pod_identity]
+  cluster_name         = var.eks_cluster_name
+  namespace            = var.kubernetes_namespace
+  service_account      = var.frontend_service_account
+  role_arn             = aws_iam_role.bff.arn
+  disable_session_tags = false
+  depends_on           = [aws_eks_addon.pod_identity]
 }

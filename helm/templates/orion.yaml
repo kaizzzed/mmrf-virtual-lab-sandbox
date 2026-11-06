@@ -22,7 +22,7 @@ spec:
     matchLabels: {app.kubernetes.io/name: frontend, app.kubernetes.io/instance: {{ .Release.Name }}}
   policyTypes: [Egress]
   egress:
-    # InvokeAgentRuntime, StopRuntimeSession and S3 GetObject on run records, over HTTPS.
+    # HTTPS to any public IPv4 host, for AgentCore and S3 (a residual risk, orion/infra/README.md).
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

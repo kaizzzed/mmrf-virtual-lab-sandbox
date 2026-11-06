@@ -6,9 +6,11 @@ arm64 agent image, and the sandbox patch for mode A. Design: ORION RFA rev 25, A
 "Observability and evaluation"), and "Delivery cut" (C-13, C-18, C-26, C-27, C-28). Wire contract:
 `../contracts/README.md` v1.2 ("BFF routes", "Where records live"), which wins where they differ.
 
-**Everything marked "Not run" needs AWS and has not been run.** Nothing here has created an AWS
-resource or called an AWS API. Commands in those sections are for the operator, with the
-sandbox account's profile, on the day.
+**Mode A is deployed** (2026-11-05, in the sandbox account, us-east-1): orion-infra stages 1 and 2
+are applied, the sandbox patch is applied and the cluster runs the fork's frontend with ORION on.
+`../notes/mode-a-status.md` has what was run and verified. Sections still marked "Not run" (for
+example the test-Runtime checks) need AWS and have not been run; their commands are for the
+operator, with the sandbox account's profile.
 
 | Path | What it is |
 | --- | --- |
@@ -82,6 +84,24 @@ docker buildx build --platform linux/arm64 --provenance=false --sbom=false --pus
   --build-context golden=orion/golden --build-context sandbox-config=config orion/agent
 ```
 
+**Keep the live and the previous Runtime tags.** The repository's lifecycle expires untagged images
+only (7 days after the push), never a tag: a lifecycle rule cannot see which image a Runtime version
+runs, and a Runtime version names its image by tag, so an expired tag breaks a rollback to that
+version and any microVM that pulls it. Prune tags by hand, and never delete the image of the live
+version or of the previous one (the rollback target). List the tags in use first:
+
+```sh
+RID=$(terraform -chdir=orion/infra/terraform/orion-infra output -raw runtime_id)
+for v in $(aws bedrock-agentcore-control list-agent-runtime-versions --agent-runtime-id "$RID" \
+    --query 'agentRuntimes[].agentRuntimeVersion' --output text); do
+  aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id "$RID" --agent-runtime-version "$v" \
+    --query '[agentRuntimeVersion, agentRuntimeArtifact.containerConfiguration.containerUri]' --output text
+done
+aws ecr describe-images --repository-name orion/agent --query 'imageDetails[].[imageTags[0], imagePushedAt]' --output text
+# Only for a tag no kept version uses:
+# aws ecr batch-delete-image --repository-name orion/agent --image-ids imageTag=<old tag>
+```
+
 ## The orion-infra module
 
 A root module with local state in `terraform/orion-infra/` (gitignored), separate from the
@@ -92,11 +112,11 @@ has `aws_bedrockagentcore_agent_runtime` (with `server_protocol = "AGUI"`),
 
 | Piece | Resources |
 | --- | --- |
-| Agent | ECR repository `orion/agent` (immutable tags, scan on push, keep 10); Runtime `orion_agent` (PUBLIC, AGUI, arm64 image) and endpoint `orion_live` |
+| Agent | ECR repository `orion/agent` (immutable tags, scan on push; the lifecycle expires untagged images after 7 days and never a tag); Runtime `orion_agent` (PUBLIC, AGUI, arm64 image) and endpoint `orion_live` |
 | Tools | Gateway `orion-vlab` (MCP, `AWS_IAM` inbound); target `vlab` (Lambda, tool schema from S3); Lambda `orion-vlab-tools` (arm64, 58 s, X-Ray active); stretch target `kg` off |
 | Data | Bucket `orion-runs-<account>-<region>`: SSE-S3, versioning, public access blocked, bucket owner enforced, TLS only, 30-day expiry under `orion/`; secret `orion/vlab-basic`, created empty |
 | Identity | Roles `orion-runtime`, `orion-bff`, `orion-gateway`, `orion-vlab-tools`; the `eks-pod-identity-agent` add-on and one association (`mmrf-synthetic/orion-frontend` → `orion-bff`) |
-| Logs | `/aws/lambda/orion-vlab-tools`; vended application logs for the Runtime and the Gateway; optional X-Ray trace delivery |
+| Logs | `/aws/lambda/orion-vlab-tools`; vended application logs for the Runtime and the Gateway; optional X-Ray trace delivery; all 30 days (`log_retention_days`). The Runtime's stdout goes to service-created `/aws/bedrock-agentcore/runtimes/<runtime_id>-<endpoint>` groups this module does not own: they never expire until deploy step 6 sets their retention |
 
 Every name, ARN and model id is a variable (`variables.tf`). The ones you must set:
 `sandbox_account_id`, `vlab_origin` (the sandbox's `https_url` output), and in stage 2
@@ -107,13 +127,47 @@ Every name, ARN and model id is a variable (`variables.tf`). The ones you must s
 | Principal | Granted | Never |
 | --- | --- | --- |
 | `orion-bff` (Pod Identity; mode H developers through `bff_extra_trusted_principal_arns`) | `bedrock-agentcore:InvokeAgentRuntime` and `StopRuntimeSession` on the Runtime and its endpoint; `s3:GetObject` on `orion/runs/*` | Bedrock, S3 writes, Gateway, secrets |
-| `orion-runtime` | `bedrock_invoke_actions` on the planner, composer and fallback models; `InvokeGateway` on the one Gateway; `s3:GetObject`/`PutObject` on `orion/runs/*` and `orion/threads/*`, `ListBucket` on the bucket (no prefix condition: a GetObject has no `s3:prefix`, so a conditioned grant turns a missing record or ledger into 403, and `run_store.py` treats only 404 as missing); logs, X-Ray, metrics in `bedrock-agentcore`, ECR pull, workload token | The Basic secret (granted only under cut 1, `tool_transport = "in_process"`) |
+| `orion-runtime` | `bedrock_invoke_actions` on the planner, composer and fallback inference profiles, and on their foundation models in every Region only through those profiles (condition `bedrock:InferenceProfileArn`; the `us.` profiles route to us-east-1, us-east-2 and us-west-2, and the `*` Region also covers a `global.` profile's Region-less model ARN); `InvokeGateway` on the one Gateway; `s3:GetObject`/`PutObject` on `orion/runs/*` and `orion/threads/*`, `ListBucket` on the bucket (no prefix condition: a GetObject has no `s3:prefix`, so a conditioned grant turns a missing record or ledger into 403, and `run_store.py` treats only 404 as missing); logs, X-Ray, metrics in `bedrock-agentcore`, ECR pull, workload token | A direct `InvokeModel` on a foundation model in any Region (a base id, with the mantle client, is granted in `region` only); the Basic secret (granted only under cut 1, `tool_transport = "in_process"`) |
 | `orion-gateway` | `lambda:InvokeFunction` on the tool Lambda (and the kg Lambda when enabled); `s3:GetObject` on its tool schema | Everything else |
 | `orion-vlab-tools` | `secretsmanager:GetSecretValue` on `orion/vlab-basic`; its own log group; X-Ray | Bedrock, S3, Gateway |
 
 `terraform output iam_actions` lists every granted action per principal for review. The BFF
 cannot list the bucket, so a missing record reads as 403, not 404: the view and record routes
 must answer `RUN_NOT_FOUND` for both `NoSuchKey` and `AccessDenied` on `orion/runs/<runId>.json`.
+
+### Trust policies
+
+Each role an AgentCore resource or a pod assumes can be assumed only by the one resource that uses
+it, in the sandbox account (`aws:SourceAccount`) and Region:
+
+| Role | Assumed by | Conditions |
+| --- | --- | --- |
+| `orion-runtime` | `bedrock-agentcore.amazonaws.com` | `aws:SourceArn` ArnLike `arn:aws:bedrock-agentcore:<region>:<account>:runtime/<runtime_name>-*`: the Runtime and its endpoints (`runtime/<id>/runtime-endpoint/<name>`). A Runtime name has no hyphen, so no other Runtime, and no Gateway, code interpreter or browser, matches. (AgentCore's guide shows `<account>:*`; this is narrower.) |
+| `orion-gateway` | `bedrock-agentcore.amazonaws.com` | `aws:SourceArn` ArnLike `...:gateway/<gateway_name in lower case>-*`, the guide's pattern (a Gateway id is its name in lower case, a hyphen and 10 characters). It also admits a Gateway whose name starts with `orion-vlab-`; do not create one with this role |
+| `orion-bff` | `pods.eks.amazonaws.com` (`sts:AssumeRole`, `sts:TagSession`) | `aws:SourceArn` = the sandbox cluster; `aws:RequestTag/kubernetes-namespace` = `kubernetes_namespace` and `aws:RequestTag/kubernetes-service-account` = `frontend_service_account` (the EKS guide's conditions), so only `mmrf-synthetic/orion-frontend` gets credentials, whatever other association names the role. The association keeps session tags on (`disable_session_tags = false`): with them off, the frontend gets no credentials. Mode H developers are a separate statement (`bff_extra_trusted_principal_arns`) |
+| `orion-vlab-tools` | `lambda.amazonaws.com` | None (Lambda's standard execution-role trust) |
+
+A test Runtime or a second workspace with its own `runtime_name` and `gateway_name` gets roles that
+trust only its own names.
+
+### Residual risks
+
+Accepted for the synthetic-data sandbox, and not fixed here:
+
+- **The frontend pod can reach any public HTTPS host.** The patch's NetworkPolicy
+  `orion-frontend-egress` allows TCP 443 to `0.0.0.0/0` minus `orion.egress.exceptCidrs` (10/8,
+  172.16/12, 192.168/16, 169.254/16), and TCP 80 only to the Pod Identity Agent at
+  169.254.170.23. That admits every public IPv4 address, not only the AgentCore Runtime and S3
+  endpoints the BFF needs: those have no fixed addresses a NetworkPolicy can name, and nothing else
+  narrows it (the node security group, the subnet's network ACL and the route to the internet
+  gateway all allow egress; the VPC has no endpoints, Network Firewall or DNS Firewall). The pod is
+  the one that holds `orion-bff` credentials, but those can only invoke and stop the one Runtime and
+  read run records. The 443 rule adds no route to private or link-local addresses (other pods, nodes,
+  IMDS); the chart's existing `sandbox-only` policy still decides which pods of the release it reaches. Closing it is a sandbox Terraform change (an S3 gateway endpoint and a
+  `bedrock-agentcore` interface endpoint, then 443 only to the endpoint ENIs and the S3 prefix list),
+  out of scope for ORION.
+- **The Gateway role's name prefix.** `orion-gateway` also trusts a Gateway named `orion-vlab-<more>`
+  (see "Trust policies"); creating one with that role needs `iam:PassRole`.
 
 ### Environment it sets
 
@@ -202,9 +256,40 @@ Day-2 plan: deploy Runtime, Gateway and Lambda; Pod Identity, egress and the for
      --content-type application/json --accept text/event-stream \
      --payload fileb:///tmp/orion-infra/warmup.json /tmp/orion-infra/warmup.sse && cat /tmp/orion-infra/warmup.sse
    ```
-7. **Sandbox patch (mode A only; needs MMRF's approval, Open question 14).** Push the fork's final
-   ORION commit and set it in the patch's `sources.json` hunk (it pins `b260945`, the fork's HEAD
-   when the patch was written, which is not yet on any remote). Then, in the sandbox checkout:
+
+   Then **set retention on the Runtime's stdout log groups.** AgentCore creates
+   `/aws/bedrock-agentcore/runtimes/<runtime_id>-<endpoint>` itself, one per endpoint, on first use,
+   with no expiry, and this module does not manage them (Terraform would have to import each group
+   after its first call). They hold run ids, outcomes, error codes and short answer fragments, so
+   give them the 30 days of the module's own groups and of the run records:
+
+   ```sh
+   RID=$(terraform output -raw runtime_id)
+   for ep in "$(terraform output -raw runtime_qualifier)" DEFAULT; do
+     aws logs put-retention-policy --log-group-name "/aws/bedrock-agentcore/runtimes/$RID-$ep" --retention-in-days 30
+   done
+   aws logs describe-log-groups --log-group-name-prefix "/aws/bedrock-agentcore/runtimes/$RID-" \
+     --query 'logGroups[].[logGroupName, retentionInDays]' --output text   # every group: 30
+   ```
+
+   For the Runtime deployed on 2026-11-05 (`orion_agent-RE0ngY6qRl`, endpoints `orion_live` and
+   `DEFAULT`) that is exactly:
+
+   ```sh
+   aws logs put-retention-policy --region us-east-1 \
+     --log-group-name /aws/bedrock-agentcore/runtimes/orion_agent-RE0ngY6qRl-orion_live --retention-in-days 30
+   aws logs put-retention-policy --region us-east-1 \
+     --log-group-name /aws/bedrock-agentcore/runtimes/orion_agent-RE0ngY6qRl-DEFAULT --retention-in-days 30
+   ```
+
+   A group that does not exist yet answers `ResourceNotFoundException`: run the command again after
+   that endpoint's first call. Repeat for every new Runtime id (a test Runtime, or a redeploy after
+   teardown) and for any new endpoint. The policy stays on a group across Runtime versions.
+7. **Sandbox patch (mode A only; needs MMRF's approval, Open question 14).** The patch's
+   `sources.json` hunk pins the frontend to the fork `kaizzzed/mmrf-data-commons` at `3fc0e6a`
+   (`3fc0e6aec6737b30e012dab1dae51828336c376d`), the head of the fork's `orion/mode-l` branch (also
+   tag `orion-mode-l`). To ship a newer frontend, push it to the fork first and set the new commit in
+   that hunk. Then, in the sandbox checkout:
 
    ```sh
    git apply orion/infra/patches/sandbox.patch
@@ -353,7 +438,7 @@ Does Wilcoxon DE on the J3 groups finish inside the A4 budget through CloudFront
 | Check | Result |
 | --- | --- |
 | `terraform fmt -recursive -check`, `init -backend=false`, `validate` in `terraform/orion-infra` | Pass (hashicorp/aws 6.72.0) |
-| `terraform/orion-infra/tests/orion_infra.tftest.hcl` (mocked provider, plan only) | Pass, 9 of 9 (`terraform test`, Terraform 1.17.1). The mock gives `aws_iam_policy_document` a valid JSON `json`, since the role and bucket policy arguments reject a random string at plan time |
+| `terraform/orion-infra/tests/orion_infra.tftest.hcl` (mocked provider, plan only) | Pass, 11 of 11 (`terraform test`, Terraform 1.17.1), including the least-privilege checks: models only through the inference profiles, the three trust policies, session tags on, and an untagged-only ECR lifecycle. The mock gives `aws_iam_policy_document` a valid JSON `json`, since the role and bucket policy arguments reject a random string at plan time |
 | `docker compose -f compose.yaml -f orion/compose.orion.yaml config --quiet` | Pass; read only, nothing started (print with `--no-interpolate`: an interpolated print shows exported AWS credentials) |
 | `bash -n orion/scripts/orion-local.sh` | Pass; the script itself was not run |
 | `docker buildx build --platform linux/arm64 --load` as `orion-agent:arm64-check` | Pass: arm64, uid 10001, healthy on `/ping`, warmup turn answered, no mounts needed |

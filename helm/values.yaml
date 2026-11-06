@@ -47,7 +47,8 @@ orion:
   # if the day-1 test shows the frontend pod gets no credentials without it.
   automountServiceAccountToken: false
   egress:
-    # HTTPS to public AWS endpoints (AgentCore Runtime, S3), never to private or link-local ranges.
+    # TCP 443 to any public IPv4 host, not only the AgentCore Runtime and S3 (an accepted residual
+    # risk: orion/infra/README.md, "Residual risks"). Private and link-local ranges stay closed.
     exceptCidrs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
     # The EKS Pod Identity Agent on the node.
     podIdentityAgentCidr: 169.254.170.23/32

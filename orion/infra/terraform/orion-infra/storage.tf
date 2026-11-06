@@ -114,16 +114,20 @@ resource "aws_ecr_repository" "agent" {
   }
 }
 
+# Expire untagged images only. A lifecycle rule cannot see which image a Runtime version runs, so a
+# count rule over tagged images would in time expire the live or the rollback image. Tagged images
+# are pruned by hand, keeping the live and the previous Runtime version's tags (README, "Agent").
 resource "aws_ecr_lifecycle_policy" "agent" {
   repository = aws_ecr_repository.agent.name
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep the 10 most recent agent images"
+      description  = "Expire untagged agent images after 7 days; tagged images are never expired"
       selection = {
-        tagStatus   = "any"
-        countType   = "imageCountMoreThan"
-        countNumber = 10
+        tagStatus   = "untagged"
+        countType   = "sinceImagePushed"
+        countUnit   = "days"
+        countNumber = 7
       }
       action = { type = "expire" }
     }]
