@@ -128,7 +128,7 @@ class E2eCoverageTests(unittest.TestCase):
         summary = re.search(r"const summaryText = `\$\{JSON\.stringify\(\{([^}]*)", text)
         self.assertIsNotNone(summary, "the summary is written from one object literal")
         assert summary is not None
-        self.assertEqual([k.split(":")[0].strip() for k in summary.group(1).split(",")][:5], ["origin", "model", "at", "results", "skipped"])
+        self.assertEqual([k.split(":")[0].strip() for k in summary.group(1).split(",")][:6], ["origin", "model", "mode", "at", "results", "skipped"])
         self.assertIn("skipped.push(id)", text)
 
 
