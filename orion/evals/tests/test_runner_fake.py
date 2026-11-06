@@ -29,6 +29,11 @@ from orion_evals.runner import environment, gates, run_evals
 from orion_evals.sse import parse_text
 
 HEX32 = re.compile(r"^[0-9a-f]{32}$")
+WARMED = (
+    'data: {"type":"RUN_STARTED","threadId":"warmthread0000000000000000000000","runId":"warmrun0000000000000000000000000"}\n\n'
+    'data: {"type":"RUN_FINISHED","threadId":"warmthread0000000000000000000000","runId":"warmrun0000000000000000000000000",'
+    '"result":{"status":"Warmed","code":null}}\n\n'
+)
 PROMPTS = load_prompts()
 REF = PROMPTS["reference"]
 
@@ -144,6 +149,38 @@ class Runner(unittest.TestCase):
         # Both phrasings of each run were asked twice (repeats = 2), and only once each across E1 and E2.
         asks = [b for b in self.transport.bodies if b["forwardedProps"]["orion"]["action"] == "ask"]
         self.assertEqual(len(asks), 4)
+        self.assertEqual([contract_problems(b) for b in self.transport.bodies], [[] for _ in self.transport.bodies])
+
+    def test_threads_are_not_warmed_unless_asked(self) -> None:
+        self.run_ids("E1")
+        self.assertNotIn("warmup", [b["forwardedProps"]["orion"]["action"] for b in self.transport.bodies])
+        plan = next(g for g in gates(self.results, self.evidence) if g["gate"].startswith("Plan visible"))
+        self.assertTrue(plan["measured"].endswith("; no thread warm-up"), plan["measured"])
+        self.assertFalse(environment(self.ctx, self.evidence, None, "fake")["threadWarmup"])
+
+    def test_warmup_threads_warms_each_thread_before_its_first_turn_and_times_only_asks(self) -> None:
+        self.transport.routes["warmup"] = WARMED
+        self.ctx.warmup_threads = True
+        results = self.run_ids("E1", "E2", "E5")
+        self.assertEqual(results["E5"].status, "pass")
+        by_thread: dict[str, list[str]] = {}
+        for body in self.transport.bodies:
+            by_thread.setdefault(body["threadId"], []).append(body["forwardedProps"]["orion"]["action"])
+        # One warm-up per thread, first, on its own run id; the turns after it are what they were without it.
+        self.assertEqual(len(by_thread), 8)  # J1 and J3, two phrasings x 2 repeats each (E2 reuses E1's runs)
+        for actions in by_thread.values():
+            self.assertEqual(actions[0], "warmup")
+            self.assertNotIn("warmup", actions[1:])
+        warm_runs = {b["runId"] for b in self.transport.bodies if b["forwardedProps"]["orion"]["action"] == "warmup"}
+        self.assertFalse(warm_runs & {ev.run_id for ev in self.evidence})
+        # The warm-up is in the thread's turns but never in a run's: the plan gate times asks only, with the
+        # same target, and says the threads were warmed.
+        self.assertTrue(all(any(t.action == "warmup" for t in ev.turns) for ev in self.evidence))
+        self.assertNotIn("warmup", {t.action for ev in self.evidence for t in ev.run_turns})
+        plan = next(g for g in gates(self.results, self.evidence) if g["gate"].startswith("Plan visible"))
+        self.assertTrue(plan["measured"].endswith("asks; each thread warmed when it opened, as the browser does"), plan["measured"])
+        self.assertEqual(plan["target"], "<= 5 s over at least 20 runs")
+        self.assertTrue(environment(self.ctx, self.evidence, None, "fake")["threadWarmup"])
         self.assertEqual([contract_problems(b) for b in self.transport.bodies], [[] for _ in self.transport.bodies])
 
     def test_j3_with_create_in_the_simulated_browser(self) -> None:

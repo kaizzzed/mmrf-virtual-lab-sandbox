@@ -121,6 +121,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         prompts=prompts,
         log=_log,
         planner=args.planner,
+        warmup_threads=args.warmup_threads,
     )
     specs = select(args.evals.split(",") if args.evals else None)
     fingerprint = None
@@ -287,6 +288,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--agent-tests-root", default=env("ORION_EVAL_AGENT_TESTS_ROOT"), help="orion/agent/tests, to find lease tests")
     run.add_argument("--e2e-script", default=env("ORION_EVAL_E2E_SCRIPT"), help="orion/scripts/e2e-mode-l.mjs, to find browser E2E steps")
     run.add_argument("--planner", default=env("ORION_EVAL_PLANNER"), help="override the planner name read from the records")
+    run.add_argument("--warmup-threads", action="store_true", default=env("ORION_EVAL_WARMUP_THREADS") == "1",
+                     help="send the browser's warmup when each thread opens (mode A: it starts the thread's Runtime session)")
     oracle_args(run)
     run.set_defaults(func=cmd_run)
 

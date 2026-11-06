@@ -5,6 +5,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from . import wire
 from .canonical import filterset_from_definition
 from .checks import expect
 from .client import TurnResult
@@ -29,7 +30,13 @@ def target(ctx: EvalContext, fault: str | None = None) -> AgentTarget:
 
 def new_thread(ctx: EvalContext, label: str, store: SimulatedCohortStore | None = None, fault: str | None = None) -> EvalThread:
     agent = target(ctx, fault)
-    return EvalThread(agent.client, store or ctx.store(), agent.records, label)
+    thread = EvalThread(agent.client, store or ctx.store(), agent.records, label)
+    if ctx.warmup_threads:
+        # As the browser does when a thread opens (AssistantApp: controller.warmup(threadId)). In mode A the
+        # warm-up starts the thread's Runtime session, so its first ask is not the one that waits for a new
+        # microVM. A failed warm-up only makes the first answer slower: its result is not checked.
+        thread.send(wire.new_id(), wire.warmup())
+    return thread
 
 
 def require(turn: TurnResult) -> TurnResult:

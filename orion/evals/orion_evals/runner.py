@@ -152,7 +152,11 @@ def gates(results: Sequence[EvalResult], evidence: Sequence[RunEvidence]) -> lis
         status = "not-run"
     else:
         status = "pass" if p95 is not None and p95 <= PLAN_P95_TARGET_S else "fail"
-    out.append(_gate("Plan visible p95 (Proposal)", f"<= {PLAN_P95_TARGET_S:.0f} s over at least {PLAN_MIN_RUNS} runs", status, f"p95 {'n/a' if p95 is None else f'{p95:.2f} s'} over {len(times)} asks"))
+    # Whether each thread was warmed before its first ask (--warmup-threads) changes what the time holds in
+    # mode A (a new thread is a new Runtime session), so the gate says so.
+    warmed = any(t.action == "warmup" for ev in evidence for t in ev.turns)
+    condition = "; each thread warmed when it opened, as the browser does" if warmed else "; no thread warm-up"
+    out.append(_gate("Plan visible p95 (Proposal)", f"<= {PLAN_P95_TARGET_S:.0f} s over at least {PLAN_MIN_RUNS} runs", status, f"p95 {'n/a' if p95 is None else f'{p95:.2f} s'} over {len(times)} asks{condition}"))
     out.append(_gate("Count accuracy", "J3 group sizes equal a direct API computation", _status_of(by_id, ["E5", "E6"]), "E5, E6 group-size checks"))
     return out
 
@@ -191,5 +195,6 @@ def environment(ctx: EvalContext, evidence: Sequence[RunEvidence], fingerprint: 
         "oracleAuthenticated": None if ctx.oracle is None else ctx.oracle.gw.authenticated,
         "cohortStore": f"{SIMULATED} (in memory, defSha256 per the shared vectors)",
         "repeats": ctx.repeats,
+        "threadWarmup": ctx.warmup_threads,
         "frontendRoot": None if ctx.frontend_root is None else str(ctx.frontend_root),
     }

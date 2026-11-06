@@ -113,6 +113,13 @@ directory) and pass `--fault-agent de_run:timeout=http://<name>:8080/invocations
 - `--target bff --bff-origin http://frontend:3000` sends the same turns through the fork's
   `POST /api/orion/agui` and reads records from its record and view routes
   (`--record-source bff`).
+- `--warmup-threads` sends the browser's `warmup` when each thread opens, before its first turn,
+  as the Assistant does (`controller.warmup(threadId)`). In mode A each thread is its own Runtime
+  session, and the warm-up is what starts it: without the flag a thread's first ask is the
+  session's first invocation, and when AgentCore has no pre-started microVM free it waits about
+  7 s for one before the agent runs. The warm-up turn has its own run id, so no check and no plan
+  time includes it; the plan gate's text and the report's `environment.threadWarmup` say which
+  way a run was made. Off by default (mode L has no session to start).
 - **E11 faults** need an agent started with `ORION_FAULTS`. Each fault is its own process, so run
   them one at a time: `ORION_FAULTS=de_run:timeout orion/scripts/orion-local.sh up`, then
   `run --evals E11 --fault-agent de_run:timeout=http://orion-agent:8080/invocations@/data/runs`;
