@@ -1,6 +1,7 @@
 """Harness fixes found when the harness first ran against the finished agent (mode L, 2026-11-05)."""
 
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -114,6 +115,21 @@ class E2eCoverageTests(unittest.TestCase):
         for key in E2E_CHECKS:
             with self.subTest(key):
                 self.assertEqual(e2e_coverage(key, script).status, "covered")
+
+    def test_the_browser_e2e_summary_records_its_skipped_scenarios(self) -> None:
+        """Review finding F5: a stub run's "4 skipped" was printed to the console only, so the summary file the notes
+        cite could not back it. The summary object written to summary-<model>-<stamp>.json now carries them."""
+        candidates = [os.environ.get("ORION_EVAL_E2E_SCRIPT"), "/orion-scripts/e2e-mode-l.mjs",
+                      str(Path(__file__).resolve().parents[2] / "scripts" / "e2e-mode-l.mjs")]
+        script = next((Path(c) for c in candidates if c and Path(c).is_file()), None)
+        if script is None:
+            self.skipTest("orion/scripts is not mounted (ORION_EVAL_E2E_SCRIPT or /orion-scripts)")
+        text = script.read_text(encoding="utf-8")
+        summary = re.search(r"const summaryText = `\$\{JSON\.stringify\(\{([^}]*)", text)
+        self.assertIsNotNone(summary, "the summary is written from one object literal")
+        assert summary is not None
+        self.assertEqual([k.split(":")[0].strip() for k in summary.group(1).split(",")][:5], ["origin", "model", "at", "results", "skipped"])
+        self.assertIn("skipped.push(id)", text)
 
 
 if __name__ == "__main__":

@@ -1341,7 +1341,8 @@ try {
 // summary.json is the latest run in either mode; summary-<model>-<UTC stamp>.json keeps every run, so a stub run
 // never overwrites the evidence of a Bedrock one (and the reverse).
 const finishedAt = new Date().toISOString();
-const summaryText = `${JSON.stringify({origin, model: MODEL, at: finishedAt, results}, null, 2)}\n`;
+// skipped: the scenarios this mode did not run (the Bedrock-only ones in stub mode), so the file alone backs the count.
+const summaryText = `${JSON.stringify({origin, model: MODEL, at: finishedAt, results, skipped: skipped.map(id => ({id, reason: 'needs ORION_E2E_MODEL=bedrock'}))}, null, 2)}\n`;
 const keptSummary = `summary-${MODEL}-${finishedAt.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}.json`;
 await writeFile(new URL('summary.json', shotsDir), summaryText);
 await writeFile(new URL(keptSummary, shotsDir), summaryText);

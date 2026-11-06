@@ -85,20 +85,28 @@ class TimingsTest(unittest.TestCase):
                 timings.run_timings(AgentClient(transport), DirRecordSource(Path(tmp)), [], mode="hot", rounds=1, idle_s=0, log=print)
 
     def test_usage_sums_each_run_once_from_its_record(self) -> None:
+        """Review finding F1 (notes call totals): usage() left out the run E3's reuse check drives, named only in
+        evidence.run, so every report's total was short by its 2 calls."""
         def call(run: str, role: str, n: int, elapsed: int, output: int, write: int = 0, model: str = "us.anthropic.claude-opus-5-5") -> dict[str, Any]:
             return {"callId": f"{run}.{role}.c{n}" if role == "planner" else f"{run}.v1.{role}.c{n}", "role": role, "model": model,
                     "fallback": model.endswith("opus-5"), "effort": "low" if role == "planner" else "medium", "attempt": 1,
                     "elapsedMs": elapsed, "outcome": "ok", "inputTokens": 100, "outputTokens": output, "cacheReadTokens": 12000 - write,
                     "cacheWriteTokens": write}
 
-        a, b, c = "a" * 32, "b" * 32, "c" * 32
+        a, b, c, d = "a" * 32, "b" * 32, "c" * 32, "d" * 32
         records = {
             a: [call(a, "planner", 1, 3000, 200, write=12000), call(a, "composer", 1, 9000, 700)],
             b: [call(b, "planner", 1, 4000, 250), call(b, "composer", 1, 20000, 1700), call(b, "composer", 2, 18000, 1600)],
+            d: [call(d, "planner", 1, 2900, 132), call(d, "composer", 1, 7700, 560)],
         }
+        # E3's FR-08 reuse run (d) is named only by its checks' evidence; E1's evidence names a run label and an eval run.
+        reuse = [{"name": "an identical saved cohort is reused", "evidence": {"run": d}},
+                 {"name": "an identical existing cohort is reused, not duplicated", "evidence": {"run": d}}]
         report = {"startedAt": "2026-11-05T00:00:00+00:00", "evals": [
             {"id": "E1", "runs": [{"runId": a, "turns": [{"action": "ask", "runId": a, "firstPlanS": 3.1}]},
-                                  {"runId": b, "turns": [{"action": "ask", "runId": b, "firstPlanS": 4.2}, {"action": "confirm", "runId": b}]}]},
+                                  {"runId": b, "turns": [{"action": "ask", "runId": b, "firstPlanS": 4.2}, {"action": "confirm", "runId": b}]}],
+             "checks": [{"evidence": {"runs": [{"run": "J1 open-ended run 1"}]}}, {"evidence": {"run": a}}, {"evidence": None}]},
+            {"id": "E3", "runs": [], "checks": reuse},
             {"id": "E16", "runs": [{"runId": a, "turns": [{"action": "ask", "runId": a, "firstPlanS": 3.1}]}]},
             {"id": "E11", "runs": [{"runId": c, "turns": []}]},
         ]}
@@ -107,11 +115,12 @@ class TimingsTest(unittest.TestCase):
             for run_id, calls in records.items():
                 (Path(tmp) / "runs" / f"{run_id}.json").write_text(json.dumps({"runId": run_id, "modelCalls": calls}))
             used = timings.usage(report, Path(tmp))
-        self.assertEqual((used["runs"], used["runsWithoutRecord"], used["runsWithModelCalls"], used["modelCalls"]), (3, 1, 2, 5))
-        self.assertEqual((used["planner"]["calls"], used["planner"]["laterCalls"], used["planner"]["cacheWriteCalls"]), (2, 0, 1))
-        self.assertEqual((used["composer"]["calls"], used["composer"]["laterCalls"]), (3, 1))
+        self.assertEqual((used["runs"], used["runsFromChecks"], used["runsWithoutRecord"], used["runsWithModelCalls"], used["modelCalls"]),
+                         (4, 1, 1, 3, 7))
+        self.assertEqual((used["planner"]["calls"], used["planner"]["laterCalls"], used["planner"]["cacheWriteCalls"]), (3, 0, 1))
+        self.assertEqual((used["composer"]["calls"], used["composer"]["laterCalls"]), (4, 1))
         self.assertEqual(used["composer"]["laterCallElapsedS"], {"n": 1, "p50": 18.0, "p95": 18.0, "max": 18.0})
-        self.assertEqual(used["tokens"]["outputTokens"], 200 + 700 + 250 + 1700 + 1600)
+        self.assertEqual(used["tokens"]["outputTokens"], 200 + 700 + 250 + 1700 + 1600 + 132 + 560)
         self.assertEqual(used["planVisibleS"]["n"], 2)
         self.assertEqual(used["planner"]["efforts"], ["low"])
 

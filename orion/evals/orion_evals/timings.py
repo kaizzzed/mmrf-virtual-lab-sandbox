@@ -20,6 +20,7 @@ elapsed times and tokens. Warm-up calls make no record, and E11's fault agents c
 
 import json
 import math
+import re
 import statistics
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -203,9 +204,17 @@ def _record(run_dir: Path, run_id: str) -> JsonObj | None:
     return data if isinstance(data, dict) else None
 
 
+_RUN_ID: Final = re.compile(r"[0-9a-f]{32}")
+
+
 def usage(report: Mapping[str, Any], run_dir: Path) -> JsonObj:
-    """Model calls and tokens of every run an eval report drove (each run once: E13 and E16 reuse E1–E6's)."""
+    """Model calls and tokens of every run an eval report drove (each run once: E13 and E16 reuse E1–E6's).
+
+    An eval's `runs` are the runs its gates score. A check may drive one more run that only its own evidence names
+    (`evidence.run`, such as E3's FR-08 reuse run with the race cohort already saved); those runs are counted too,
+    and `runsFromChecks` says how many there were. Plan times come from the eval runs' turns only."""
     runs: list[str] = []
+    from_checks: list[str] = []
     plan_times: dict[str, float] = {}
     for result in report.get("evals", []):
         for run in result.get("runs") or []:
@@ -215,6 +224,13 @@ def usage(report: Mapping[str, Any], run_dir: Path) -> JsonObj:
             for turn in run.get("turns") or []:
                 if turn.get("action") == "ask" and turn.get("firstPlanS") is not None and turn.get("runId"):
                     plan_times[str(turn["runId"])] = float(turn["firstPlanS"])
+    for result in report.get("evals", []):
+        for check in result.get("checks") or []:
+            evidence = check.get("evidence") if isinstance(check, Mapping) else None
+            named = evidence.get("run") if isinstance(evidence, Mapping) else None
+            if isinstance(named, str) and _RUN_ID.fullmatch(named) and named not in runs:
+                runs.append(named)
+                from_checks.append(named)
     calls: list[JsonObj] = []
     missing = with_calls = 0
     for run_id in runs:
@@ -228,6 +244,7 @@ def usage(report: Mapping[str, Any], run_dir: Path) -> JsonObj:
     return {
         "report": report.get("startedAt"),
         "runs": len(runs),
+        "runsFromChecks": len(from_checks),
         "runsWithoutRecord": missing,
         "runsWithModelCalls": with_calls,
         "modelCalls": len(calls),

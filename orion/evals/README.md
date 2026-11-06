@@ -67,7 +67,8 @@ TTL before each ask. Results: `orion/notes/bedrock-evals.md`. Every ask calls Be
   J1:open-ended,J3:tool-named`, `--idle-s` (default 330, past the 5-minute TTL). Writes
   `reports/timings-<mode>-<time>.json`.
 - `python -m orion_evals usage reports/orion-evals-<time>.json` sums the `modelCalls` of every run
-  the report drove (each run once): calls per role, later calls (repairs, plans after a
+  the report drove (each run once), including a run that only a check's `evidence.run` names (E3's
+  FR-08 reuse run; `runsFromChecks` counts them): calls per role, later calls (repairs, plans after a
   clarification, re-composes), outcomes, models, efforts, times and tokens.
 
 **The evals, mode L, by hand** (mode L is up with `orion/scripts/orion-local.sh up`). The agent's run volume is mounted read-only so record-based

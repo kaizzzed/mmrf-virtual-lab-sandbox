@@ -199,6 +199,39 @@ allow-list keeps a vocabulary term that contains a digit ("t(4;14): Present") on
 itself names it (its scope, a cohort name or a plan setting), as the contract's "Numbers on screen"
 allows; any other such term in model text is re-composed, then dropped (V-NUM).
 
+No few-shot example gives an eval away (C-31). `model/eval_prompts.py` lists every eval,
+reference and fixture prompt, the held-out paraphrases and out-of-kind questions included, and
+`tests/test_model_prompts.py` refuses an example that equals or nearly equals one, holds one with a
+word or two changed (runs of n − 1 to n + 2 of its words, at least 4), or touches the topic of an
+out-of-kind or Venn question (clustering and heatmaps, protein domains, UMAP and other embeddings,
+set overlaps), and keeps Unsupported examples off those evals' apps. `orion-prompts@5` replaced the
+two stage 1 examples that this caught: a clustering question (E23's topic) and E12's question with
+one word inserted. V-SEC reads a regimen that the run itself uses (a regimen-defined cohort) as a
+name only where the text uses it as the name of a group ("the <regimen> (ORION) cohort", "cases
+receiving <regimen>", "in <regimen>", "<regimen> and the remaining cases"), never as the answer
+("It is <regimen>"), alone, or as the bare object of a verb ("Consider <regimen> and …"); any other
+mention is checked as in a run that does not use it. A sentence that names it, every model text
+of such a run, and any text with a treatment noun ("regimen") may use only the plain descriptive
+words in `lexicon.DESCRIPTIVE_WORDS` (sizes, members, and comparisons of what the run measured
+with a named group), so a benefit, outcome or advice claim fails whatever its wording ("may
+thrive", "may outlive the others", "Begin … on <regimen>"); the verifier also reads the frames
+that descriptive words can still build (the regimen offered to or tried on a group, cases placed
+in its group, a survival comparison with no comparison group). Regimen short names ("VRd"),
+brand names and care words ("maintenance") are clinical words, and the rules read text as a
+reader sees it (no zero-width characters or look-alike letters). The guard's topics also cover
+E12's question (the size of "my cohort") and E17's (a drug for a patient with a named mutation),
+and their common rewordings.
+
+**The V-SEC fix of the third review.** The second review's name rule let through advice that
+bb7c6e0 rejected, such as "Try <regimen> and see whether the mutated cases respond" and
+"Consider <regimen> (ORION) for these cases". It also let through benefit claims about a
+described group ("Patients receiving <regimen> may live longer"). With the descriptive-word rule
+above, all 52 of the review's probe cases fail, and so do about 130 later rewordings. Tests added:
+`tests/test_verifier.py` `VSecRegimenTextTest` (131 bypasses, 87 other advice cases, 47
+descriptive texts that pass, 17 borderline texts that stay failing), 3 more V-SEC tests and 2
+C-31 guard tests, so the suite went from 753 to 764 tests. `VSecRegimenTextTest` fails 171 times
+on bb7c6e0's verifier.
+
 The composer's prompt names V-SEC's word families with their inflections (`CAUSAL_WORDS`,
 `CLINICAL_WORDS`: "driven", "respond to" were the forms that cost re-composes) and says that the gene
 that defines a cohort appears only inside the cohort's whole name ("KRAS mutated (ORION)", never
@@ -215,18 +248,37 @@ stub run, checks the model's text (verified, citing facts, equal to the record) 
 checks its wording, and adds Stop while planning and while writing, and a plan-card edit that
 re-composes. Results, browser timings and limits: `orion/notes/bedrock-status.md`.
 
-Measured on 2026-11-05 through the Compose agent (us-east-1), `orion/scripts/evals-bedrock.sh`, 5
-repeats: all 24 evals pass, E22's held-out paraphrases included, and every gate passes, the
-plan-visible p95 at 4.19 s over 94 asks against the 5 s **Proposal** (it was 5.71 s before the
-compact planner schema). Planner calls take about 1.4 s plus 10 ms per output token at effort
-`low` (12.1K cached prefix tokens; J3's plan is about 240 tokens and 4 s, J1's about 120 and
-2.7 s); composer calls about 8 s for J2, about 8 or 14 s for J1 (adaptive thinking is bimodal
-there) and about 20 s for J3 at effort `medium` (19.8 s at p50 over 25 calls with the shipped
-`orion-prompts@4`; one earlier run's 11.6 s was not reproduced). 0 of 88 answers were
-re-composed at `@4` (19 of 88 before the composer prompt change). A cold prompt cache adds
-nothing measurable to the plan time. A question asked while the Assistant's opening warm-up
-turn runs waits for it, so its plan shows after 7 to 11 s in the browser; the evals do not
-measure that path (`orion/notes/bedrock-status.md`, Known limit 1). Timings warm and cold, call counts and tokens: `orion/notes/bedrock-evals.md`.
+Measured on 2026-11-06 through the Compose agent (us-east-1), `orion/scripts/evals-bedrock.sh
+evals`, 5 repeats, with `orion-prompts@5` and the current verifier, the third review's fix
+included (`orion-evals-20261106T010531Z`). All 24 evals pass, E22's held-out paraphrases
+included, and all nine gates pass. The plan-visible p95 was 4.55 s over 94 asks against the 5 s
+**Proposal** (it was 5.71 s before the compact planner schema). None of the 89 answers was
+re-composed, and no sentence was dropped. The browser end to end passes 15 of 15 scenarios
+against the same build (`summary-bedrock-20261106T014241Z.json`).
+
+That gate depends on Bedrock's latency in the window. Over five 5-repeat runs of practically the
+same planner requests it read:
+
+- 4.52 s (pass, `@4`, before the first review round);
+- 5.96 s (fail, `@4`, after it);
+- 7.67 s over 78 asks (fail, `@5`, a run that also met a Bedrock connection outage and failed E20
+  and E22);
+- 4.64 s (pass, `@5`, the second review's code);
+- 4.55 s (pass, the final code).
+
+How NFR-01 is measured or met is still for the team to decide.
+
+Planner calls take about 1.4 s plus 10 ms per output token at effort `low` (12.1K cached prefix
+tokens; J3's plan is about 240 tokens and 4 s, J1's about 120 and 2.7 s). Composer calls take
+about 8 s for J2, about 8 or 14 s for J1 (adaptive thinking is bimodal there), and about 20 s for
+J3 at effort `medium` (20.5 s at p50 over 25 calls in the final run; one earlier run's 11.6 s was
+not reproduced). Re-composes were 0 of 89 answers in the final run and 4 of 89 in the second
+review's `@5` run, all of those for V-NUM number words or a malformed placeholder (19 of 88 before
+the composer prompt change). A cold prompt cache adds nothing measurable to the plan time. A
+question asked while the Assistant's opening warm-up turn runs waits for it, so its plan shows
+after 7 to 11 s in the browser. The evals do not measure that path
+(`orion/notes/bedrock-status.md`, Known limit 1). Timings warm and cold, call counts and tokens:
+`orion/notes/bedrock-evals.md` ("Final proof on the final code" for these runs).
 
 ## How a run executes
 
