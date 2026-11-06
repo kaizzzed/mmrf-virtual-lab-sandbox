@@ -8,6 +8,8 @@
 *.tfvars.json
 crash.log
 crash.*.log
+# Deploy and allowlist guard logs (scripts/allowlist-guard.log): redacted, but local only.
+*.log
 override.tf
 override.tf.json
 *_override.tf

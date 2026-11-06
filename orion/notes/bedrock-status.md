@@ -1,10 +1,12 @@
 # ORION stage 2 (Bedrock only): status
 
-As of 2026-11-06, 01:55 UTC. The last section, "Final proof on the final code (2026-11-06,
-00:54–01:43 UTC)", is the latest check: every offline gate, the stub runs and the Bedrock runs, on
-the code as it stands. The sandbox is on `orion/bedrock`, stacked on `orion/mode-l`, at bb7c6e0.
-That commit holds stage 2 and its review round; it is committed locally, not tagged or pushed.
-The fixes of the second and third reviews are in the working tree, not committed:
+As of 2026-11-06, 01:55 UTC. The section "Final proof on the final code (2026-11-06,
+00:54–01:43 UTC)" is the latest check with model runs: every offline gate, the stub runs and the
+Bedrock runs, on the code as it stood. The sandbox was on `orion/bedrock`, stacked on
+`orion/mode-l`, at bb7c6e0. That commit holds stage 2 and its review round. The fixes of the second
+and third reviews were then in the working tree; they are committed as `0c3fded`, and stage 2 ends
+at `bf0a8b7` ("Fourth check" below), tagged `orion-bedrock` and merged into `main` (PR #3). They
+touch:
 
 - `orion/agent`: `model/prompts.py`, `model/eval_prompts.py`, `model/verifier.py`,
   `model/lexicon.py` and their tests;
@@ -12,8 +14,8 @@ The fixes of the second and third reviews are in the working tree, not committed
 - `orion/scripts/e2e-mode-l.mjs`, these notes and the agent README.
 
 "Second review: C-31 and V-SEC fixes" and "Third review: V-SEC on text about a regimen" have the
-detail. `orion/contracts` is as committed. The working tree's `orion/infra`, `helm`,
-`sources.json` and `terraform` changes are stage 3's, not stage 2's. The frontend fork is
+detail. `orion/contracts` was as committed. The working tree's `orion/infra`, `helm`,
+`sources.json` and `terraform` changes were stage 3's, not stage 2's. The frontend fork was
 unchanged at 3fc0e6a. The agent version is 0.2.0,
 with prompts `orion-prompts@5`. Stage 2 means:
 
@@ -32,8 +34,8 @@ The stubs stay the Compose default. Bedrock is opt-in. All data is synthetic.
 reviews' fixes included: 24 of 24 evals and all nine gates in the 5-repeat run, and 15 of 15
 browser scenarios. NFR-01's plan p95 passed there at 4.55 s, but it has failed in two of five
 5-repeat runs, each time on slow Bedrock answers, so it stays a decision for the team.** These
-checks back the verdict. All of them ran on the working tree as it stands, with `orion-prompts@5`
-("Final proof on the final code", the last section):
+checks back the verdict. All of them ran on the working tree as it stood, with `orion-prompts@5`
+("Final proof on the final code"):
 
 - **Evals, Bedrock, 5 repeats:** 24 of 24 pass and 9 of 9 gates pass
   (`orion-evals-20261106T010531Z`, 01:05–01:36 UTC on 2026-11-06), the plan-visible p95 at 4.55 s
@@ -592,10 +594,12 @@ All commands run from the sandbox root, with `export PATH=$HOME/.docker/bin:$PAT
 - **Bedrock E2E:** `orion/scripts/orion-local.sh up --bedrock`, then
   `ORION_E2E_MODEL=bedrock node orion/scripts/e2e-mode-l.mjs`. It takes about 6 to 7 minutes and
   makes about 80 Bedrock calls (after each review round: 39 recorded calls and 19 warm-up turns
-  of two calls each, if none was retried). Expect "15 of 15 scenarios passed; 118 checks".
+  of two calls each, if none was retried). Expect "15 of 15 scenarios passed; 118 checks" (stage 2;
+  stage 4 adds the `nav` and `delete` scenarios, 2 and 9 checks).
 - **Stub E2E:** `orion/scripts/orion-local.sh up --stub`, then `node orion/scripts/e2e-mode-l.mjs`.
-  It takes about 1 minute and makes no AWS call. Expect "11 of 11 scenarios passed; 72 checks;
-  4 skipped"; the summary file lists the skipped scenarios under `skipped`.
+  It takes about 1 minute and makes no AWS call. Expect "13 of 13 scenarios passed; 83 checks;
+  4 skipped" (11 of 11 and 72 checks before stage 4); the summary file lists the skipped scenarios
+  under `skipped`.
 - **Bedrock evals:** `orion/scripts/evals-bedrock.sh evals --repeats 1` (about 15 minutes) or
   `orion/scripts/evals-bedrock.sh evals` (5 repeats). See `orion/notes/bedrock-evals.md`.
 - **Offline gates on the final code** (2026-11-06, 00:54–00:56 UTC, the final proof's working
@@ -708,7 +712,7 @@ The final proof below ran this code on the stubs and on Bedrock. No model text w
 
 ## Final proof on the final code (2026-11-06, 00:54–01:43 UTC)
 
-This is the last check of stage 2. It ran on the working tree as it stands: bb7c6e0 plus the
+This is the last check of stage 2 with model runs. It ran on the working tree as it stood: bb7c6e0 plus the
 second and third reviews' fixes, with `orion-prompts@5`. Every gate passed, so no code, prompt,
 verifier rule, contract rule, check or gate changed. This step edited only these notes,
 `bedrock-evals.md` and the agent README.

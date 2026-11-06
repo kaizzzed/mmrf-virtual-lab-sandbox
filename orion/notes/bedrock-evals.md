@@ -12,8 +12,8 @@ The real-model evals of 2026-11-05. The agent ran locally in Compose with in-pro
 The E11 fault agents ran the stubs and made no model call.
 
 **Latest: the final code passes on Bedrock, 24 of 24 evals and all nine gates.** The 5-repeat run
-`orion-evals-20261106T010531Z` (2026-11-06, 01:05–01:36 UTC) ran on the working tree as it stands:
-bb7c6e0 plus the second review's fixes and the third review's V-SEC and C-31 fixes
+`orion-evals-20261106T010531Z` (2026-11-06, 01:05–01:36 UTC) ran on the working tree as it stood
+(since committed as `0c3fded`): bb7c6e0 plus the second review's fixes and the third review's V-SEC and C-31 fixes
 (`bedrock-status.md`, "Third review: V-SEC on text about a regimen"), with prompts
 `orion-prompts@5`. The plan-visible p95 was 4.55 s over 94 asks, no answer was re-composed, and the
 browser end to end passed 15 of 15 scenarios on the same container. The next section, "Final proof
@@ -57,7 +57,7 @@ orion/scripts/evals-bedrock.sh usage                # model calls and tokens of 
 
 ## Final proof on the final code (`orion-prompts@5`, 2026-11-06, 00:54–01:43 UTC)
 
-This step ran every check of stage 2 on the working tree as it stands: bb7c6e0, the second
+This step ran every check of stage 2 on the working tree as it stood: bb7c6e0, the second
 review's fixes and the third review's (`model/verifier.py`, `model/lexicon.py`,
 `model/eval_prompts.py` and their tests). It changed no code, prompt, check or gate, because
 nothing failed. `orion-local.sh up --stub` and then `up --bedrock` rebuilt orion-agent from the
