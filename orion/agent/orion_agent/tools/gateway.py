@@ -5,8 +5,12 @@ is signed for the service `bedrock-agentcore` with botocore's SigV4 signer, whic
 already has). One client keeps one MCP session: `initialize`, then `notifications/initialized`,
 then `tools/call` per tool call. A response is JSON or a server-sent event stream; both are read
 in full (a tool result is at most 6 MB). A 404 on a session the server has dropped starts a new
-session once. Credentials come from botocore's chain at run time (the Runtime's execution role)
-and are never logged; tests inject them.
+session once. Credentials come from botocore's chain (the Runtime's execution role), resolved once
+per signer through one botocore Session and then kept: each POST signs with
+`get_frozen_credentials()`, so botocore refreshes them ahead of expiry instead of every POST
+walking the chain (an IMDS round trip). The first resolution and a refresh run off the event loop.
+A credential or signing failure is `GatewaySigningError` (no request was sent; retryable like a
+dropped connection). Credentials are never logged; tests inject them.
 
 What the Gateway Lambda returns is the ToolResult JSON (camelCase); Gateway carries it as the
 tool result's text content (or structuredContent). `parse_tool_result` reads it back.
@@ -15,6 +19,7 @@ tool result's text content (or structuredContent). `parse_tool_result` reads it 
 import asyncio
 import itertools
 import json
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
@@ -49,39 +54,108 @@ def validate_gateway_url(url: str) -> str:
     raise GatewayConfigError("ORION_GATEWAY_URL must be an https *.amazonaws.com URL (http only on loopback, for tests)")
 
 
+class GatewaySigningError(Exception):
+    """No usable AWS credentials, or SigV4 signing failed, so the POST was not sent.
+
+    Transient, not a configuration or input error: the credential endpoint can be slow or briefly
+    unreachable (botocore gives IMDS 1 s and one attempt), so a read retries it like a dropped
+    connection. The message names the cause's type only, never a credential value.
+    """
+
+
 class Signer(Protocol):
     def sign(self, method: str, url: str, headers: Sequence[tuple[str, str]], body: bytes) -> list[tuple[str, str]]: ...
 
+    def refresh_due(self) -> bool:
+        """True when the next `sign` may wait on the credential endpoint (so it runs off the event loop)."""
+        ...
+
 
 CredentialsProvider = Callable[[], Any]
+"""Returns a botocore credentials object (Credentials or RefreshableCredentials), or None for none yet.
+BotocoreSigner calls it until it returns one, then keeps that object."""
 
 
-def default_credentials() -> Any:
-    """botocore's credential chain (environment, container role, instance role). AWS only."""
-    import botocore.session  # type: ignore[import-untyped]
+class SessionCredentials:
+    """botocore's credential chain (environment, container role, instance role) through one Session. AWS only.
 
-    credentials = botocore.session.get_session().get_credentials()
-    if credentials is None:
-        raise GatewayConfigError("no AWS credentials for signing Gateway calls")
-    return credentials
+    The Session is made on the first call and kept, so a chain that found nothing is asked again on
+    the same Session (botocore caches only a found credential); the RefreshableCredentials it returns
+    refresh themselves.
+    """
+
+    def __init__(self) -> None:
+        self._session: Any = None
+
+    def __call__(self) -> Any:
+        if self._session is None:
+            import botocore.session  # type: ignore[import-untyped]
+
+            self._session = botocore.session.Session()
+        return self._session.get_credentials()
 
 
 class BotocoreSigner:
-    """SigV4 for `bedrock-agentcore` in `region`, by botocore.auth.SigV4Auth."""
+    """SigV4 for `bedrock-agentcore` in `region`, by botocore.auth.SigV4Auth.
 
-    def __init__(self, region: str, credentials: CredentialsProvider = default_credentials, *, service: str = SIGV4_SERVICE) -> None:
+    `credentials` (botocore's chain by default) is resolved on the first sign and kept; every sign
+    then takes `get_frozen_credentials()`, which refreshes inside botocore's advisory and mandatory
+    windows. botocore 1.43 keeps the current credentials when an advisory refresh raises, but an
+    instance-metadata provider that answers nothing (`{}`) raises CredentialRetrievalError even in the
+    advisory window; that surfaces as GatewaySigningError, a retryable transport error. A miss is not kept: the
+    next sign resolves again.
+    """
+
+    def __init__(self, region: str, credentials: CredentialsProvider | None = None, *, service: str = SIGV4_SERVICE) -> None:
         self._region = region
-        self._credentials = credentials
+        self._provider: CredentialsProvider = credentials if credentials is not None else SessionCredentials()
         self._service = service
+        self._source: Any = None
+        self._resolving = threading.Lock()
+
+    def refresh_due(self) -> bool:
+        source = self._source
+        if source is None:
+            return True
+        needed = getattr(source, "refresh_needed", None)
+        if not callable(needed):
+            return False
+        try:
+            return bool(needed())
+        except Exception:
+            return True  # let sign() find out, off the loop
+
+    def _frozen(self) -> Any:
+        if self._source is None:
+            with self._resolving:
+                if self._source is None:
+                    try:
+                        source = self._provider()
+                    except Exception as error:
+                        raise GatewaySigningError(f"resolving AWS credentials failed ({type(error).__name__})") from error
+                    if source is None:
+                        raise GatewaySigningError("no AWS credentials for signing Gateway calls")
+                    self._source = source
+        source = self._source
+        try:
+            frozen = source.get_frozen_credentials() if hasattr(source, "get_frozen_credentials") else source
+        except Exception as error:  # a mandatory refresh that failed, or refreshed credentials still expired
+            raise GatewaySigningError(f"refreshing AWS credentials failed ({type(error).__name__})") from error
+        if frozen is None or not getattr(frozen, "access_key", None) or not getattr(frozen, "secret_key", None):
+            raise GatewaySigningError("the AWS credentials for signing Gateway calls are incomplete")
+        return frozen
 
     def sign(self, method: str, url: str, headers: Sequence[tuple[str, str]], body: bytes) -> list[tuple[str, str]]:
         from botocore.auth import SigV4Auth  # type: ignore[import-untyped]
         from botocore.awsrequest import AWSRequest  # type: ignore[import-untyped]
+        from botocore.exceptions import BotoCoreError  # type: ignore[import-untyped]
 
-        source = self._credentials()
-        frozen = source.get_frozen_credentials() if hasattr(source, "get_frozen_credentials") else source
+        frozen = self._frozen()
         request = AWSRequest(method=method, url=url, data=body, headers=dict(headers))
-        SigV4Auth(frozen, self._service, self._region).add_auth(request)
+        try:
+            SigV4Auth(frozen, self._service, self._region).add_auth(request)
+        except BotoCoreError as error:
+            raise GatewaySigningError(f"SigV4 signing failed ({type(error).__name__})") from error
         return [(str(name), str(value)) for name, value in request.headers.items()]
 
 
@@ -180,7 +254,10 @@ class McpGatewayClient:
             headers.append((PROTOCOL_HEADER, self._negotiated))
         if self._session_id is not None:
             headers.append(("Mcp-Session-Id", self._session_id))
-        signed = self._signer.sign("POST", self.url, headers, body)
+        if self._signer.refresh_due():  # the first resolution or a refresh may wait on IMDS: not on the loop
+            signed = await asyncio.to_thread(self._signer.sign, "POST", self.url, headers, body)
+        else:
+            signed = self._signer.sign("POST", self.url, headers, body)
         return await self._transport.send("POST", self.url, signed, body, timeout_s=timeout_s, max_bytes=MAX_GATEWAY_RESPONSE_BYTES)
 
     async def _open_session(self, timeout_s: float) -> None:
@@ -213,7 +290,8 @@ class McpGatewayClient:
                 await self._open_session(timeout_s)
 
     async def call_tool(self, name: str, arguments: JsonValue, *, timeout_s: float, clock: Callable[[], float]) -> McpCallResult:
-        """tools/call; raises McpError for a JSON-RPC or HTTP failure, HttpError for no response."""
+        """tools/call; raises McpError for a JSON-RPC or HTTP failure, HttpError for no response,
+        GatewaySigningError when a POST could not be signed (nothing sent)."""
         deadline = clock() + timeout_s
         await self._ensure_session(timeout_s)
         for renewed in (False, True):

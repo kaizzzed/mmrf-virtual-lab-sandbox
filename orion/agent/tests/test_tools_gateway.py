@@ -4,22 +4,29 @@ MCP server that checks every signature. Credentials are random per test run; not
 import asyncio
 import json
 import secrets
+import threading
 import unittest
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar
+from unittest import mock
 
 from botocore.auth import SigV4Auth  # type: ignore[import-untyped]
 from pydantic import JsonValue
 from botocore.awsrequest import AWSRequest  # type: ignore[import-untyped]
-from botocore.credentials import Credentials  # type: ignore[import-untyped]
+from botocore.credentials import Credentials, RefreshableCredentials  # type: ignore[import-untyped]
+from botocore.exceptions import CredentialRetrievalError  # type: ignore[import-untyped]
 from test_tools_fakes import RUN_ID, FakeTransport, LocalServer, ManualClock, Received, Reply, goldens
 
+from orion_agent.settings import Settings
 from orion_agent.tools.base import ToolResult
-from orion_agent.tools.client import GatewayToolClient, without_nulls
+from orion_agent.tools.client import GatewayToolClient, make_tool_client, without_nulls
+from orion_agent.tools.config import ToolConfig
 from orion_agent.tools.gateway import (
     BotocoreSigner,
     GatewayConfigError,
+    GatewaySigningError,
     McpGatewayClient,
     parse_tool_result,
     validate_gateway_url,
@@ -108,11 +115,11 @@ def text_result(gateway: FakeGateway, payload: Any, *, is_error: bool = False) -
 
 
 async def with_gateway(gateway: FakeGateway, body: Callable[[GatewayToolClient], Coroutine[Any, Any, T]], *, signer_credentials: Credentials | None = None,
-                       clock: ManualClock | None = None, **options: Any) -> T:
+                       clock: ManualClock | None = None, provider: Callable[[], Any] | None = None, **options: Any) -> T:
     async with LocalServer(gateway) as server:
         gateway.url = server.url("/mcp")
         creds = signer_credentials or gateway.credentials
-        mcp = McpGatewayClient(gateway.url, H11Transport(), BotocoreSigner(REGION, lambda: creds))
+        mcp = McpGatewayClient(gateway.url, H11Transport(), BotocoreSigner(REGION, provider or (lambda: creds)))
         clock = clock or ManualClock()
         client = GatewayToolClient(mcp, clock=clock.clock(), **options)
         return await body(client)
@@ -302,6 +309,148 @@ class GatewayPartsTests(unittest.TestCase):
             if name == "top_mutated_genes":
                 full = model.model_validate({"filter0": None, "geneCount": 3})
                 self.assertEqual(model.model_validate(without_nulls(full.model_dump(mode="json", by_alias=True))), full)
+
+
+def off_loop() -> bool:
+    """True in a worker thread: asyncio.run drives the event loop on the main thread."""
+    return threading.current_thread() is not threading.main_thread()
+
+
+def fail_once(fail: Callable[[], Any], then: Any) -> Callable[[], Any]:
+    """A credentials provider whose first call is `fail()` and every later call returns `then`."""
+    calls: list[int] = []
+
+    def provider() -> Any:
+        calls.append(1)
+        return fail() if len(calls) == 1 else then
+
+    return provider
+
+
+def role_credentials(credentials: Credentials, wall: list[datetime], expires_in: timedelta, refresh: Callable[[], dict[str, Any]]) -> Any:
+    """Temporary credentials as botocore's role providers return them, on a wall clock the test moves."""
+    return RefreshableCredentials(credentials.access_key, credentials.secret_key, credentials.token, wall[0] + expires_in, refresh, "test-role",
+                                  time_fetcher=lambda: wall[0])
+
+
+def metadata(credentials: Credentials, expiry: datetime) -> dict[str, Any]:
+    return {"access_key": credentials.access_key, "secret_key": credentials.secret_key, "token": credentials.token, "expiry_time": expiry.isoformat()}
+
+
+class GatewaySignerCredentialsTests(unittest.TestCase):
+    """GW-SIGNER-CREDS-PER-POST: credentials resolve once per signer (not per POST), refresh in botocore's
+    window off the event loop, and a miss is a retryable transport error rather than INVALID_INPUT."""
+
+    def test_one_botocore_session_and_one_resolution_sign_every_post(self) -> None:
+        gateway = FakeGateway(fake_credentials(token=True))
+        made: list[list[bool]] = []  # per Session: one entry per chain resolution, True when off the loop
+
+        class Session:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.resolutions: list[bool] = []
+                made.append(self.resolutions)
+
+            def get_credentials(self) -> Any:
+                self.resolutions.append(off_loop())
+                return gateway.credentials
+
+        async def three() -> list[Any]:
+            async with LocalServer(gateway) as server:
+                gateway.url = server.url("/mcp")
+                client = make_tool_client(Settings(mode="A", tools="gateway"), config=ToolConfig(gateway_url=gateway.url), http=H11Transport(),
+                                          goldens=goldens(), clock=ManualClock().clock())
+                assert isinstance(client, GatewayToolClient)
+                self.assertEqual(made, [])  # building the client resolves nothing
+                return [await count(client, step) for step in ("s2", "s3", "s4")]
+
+        with mock.patch("botocore.session.Session", Session):
+            outcomes = run(three())
+        self.assertEqual([o.result.status for o in outcomes], ["ok", "ok", "ok"])
+        # initialize, notifications/initialized and three tools/call: five POSTs, every one signed and verified.
+        self.assertEqual((gateway.initializations, len(gateway.calls), gateway.rejected), (1, 3, 0))
+        self.assertEqual(made, [[True]])  # one Session, one chain resolution, off the event loop
+
+    def test_role_credentials_refresh_in_botocores_window_off_the_loop(self) -> None:
+        first, second = fake_credentials(token=True), fake_credentials(token=True)
+        gateway = FakeGateway(first)
+        wall = [datetime(2026, 11, 5, 12, 0, tzinfo=UTC)]
+        refreshes: list[bool] = []
+
+        def refresh() -> dict[str, Any]:
+            refreshes.append(off_loop())
+            if len(refreshes) == 1:
+                raise CredentialRetrievalError(provider="test-role", error_msg="advisory refresh failed")
+            return metadata(second, wall[0] + timedelta(hours=1))
+
+        role = role_credentials(first, wall, timedelta(hours=1), refresh)
+        provider = mock.Mock(return_value=role)
+
+        async def four(client: GatewayToolClient) -> list[Any]:
+            outcomes = [await count(client, "s2")]
+            wall[0] += timedelta(minutes=48)  # 12 min left: advisory window; the refresh fails and the current key still signs
+            outcomes.append(await count(client, "s3"))
+            wall[0] += timedelta(minutes=7)  # 5 min left: mandatory window; the refresh succeeds
+            gateway.credentials = second  # the old key no longer verifies
+            outcomes += [await count(client, "s4"), await count(client, "s5")]
+            return outcomes
+
+        with self.assertLogs("botocore.credentials", "WARNING"):  # botocore's note on the failed advisory refresh
+            outcomes = run(with_gateway(gateway, four, provider=provider))
+        self.assertEqual([o.result.status for o in outcomes], ["ok"] * 4)
+        self.assertEqual((gateway.rejected, gateway.initializations, len(gateway.calls)), (0, 1, 4))
+        self.assertEqual(refreshes, [True, True])  # both refreshes ran in a worker thread; none after the new key
+        self.assertEqual(provider.call_count, 1)  # resolved once; botocore refreshed the same object
+
+    def test_a_credential_miss_is_a_retryable_transport_error_not_invalid_input(self) -> None:
+        def no_role() -> Any:
+            raise CredentialRetrievalError(provider="iam-role", error_msg="timed out")
+
+        def missed_refresh(gw: FakeGateway) -> Callable[[], Any]:
+            # Role credentials 5 min from expiry (botocore's mandatory window). IMDS answers a refresh it
+            # could not serve with {} (1 s timeout, one attempt), on which botocore raises.
+            wall = [datetime(2026, 11, 5, 12, 0, tzinfo=UTC)]
+            refresh = fail_once(dict, metadata(gw.credentials, wall[0] + timedelta(hours=1)))
+            role = role_credentials(fake_credentials(token=True), wall, timedelta(minutes=5), refresh)
+            return lambda: role
+
+        cases: dict[str, Callable[[FakeGateway], Callable[[], Any]]] = {
+            "the chain found nothing": lambda gw: fail_once(lambda: None, gw.credentials),
+            "the chain raised": lambda gw: fail_once(no_role, gw.credentials),
+            "a mandatory refresh missed": missed_refresh,
+        }
+        for label, make_provider in cases.items():
+            with self.subTest(label):
+                gateway = FakeGateway(fake_credentials(token=True))
+                clock = ManualClock()
+                with self.assertLogs("orion_agent.tools", "WARNING") as logs:
+                    outcome = run(with_gateway(gateway, count, provider=make_provider(gateway), clock=clock))
+                first = outcome.attempts[0].error
+                assert first is not None
+                self.assertEqual([a.status for a in outcome.attempts], ["error", "ok"])  # cohort_count is a read: A4 retries it
+                self.assertEqual((first.code, first.retryable, first.http_status), ("HTTP_ERROR", True, None))
+                self.assertIn("was not sent", first.message)
+                self.assertEqual(clock.sleeps, [1.0])  # the dropped-connection backoff
+                self.assertEqual((gateway.initializations, len(gateway.calls), gateway.rejected), (1, 1, 0))  # the failed attempt sent nothing
+                for text in (first.message, *logs.output):
+                    self.assertNotIn(gateway.credentials.access_key, text)
+                    self.assertNotIn(gateway.credentials.secret_key, text)
+
+    def test_the_signer_resolves_once_and_raises_a_signing_error_not_a_config_error(self) -> None:
+        creds = fake_credentials(token=True)
+        provider = mock.Mock(side_effect=[None, creds, AssertionError("resolved twice")])
+        signer = BotocoreSigner(REGION, provider)
+        url, headers = "https://gw.amazonaws.com/mcp", [("Content-Type", "application/json")]
+        self.assertTrue(signer.refresh_due())
+        with self.assertRaises(GatewaySigningError) as raised:
+            signer.sign("POST", url, headers, b"{}")
+        self.assertNotIsInstance(raised.exception, ValueError)  # not GatewayConfigError, not INVALID_INPUT
+        self.assertTrue(signer.refresh_due())  # a miss is not kept
+        for _ in range(3):
+            self.assertIn(f"Credential={creds.access_key}/", dict(signer.sign("POST", url, headers, b"{}"))["Authorization"])
+        self.assertEqual(provider.call_count, 2)
+        self.assertFalse(signer.refresh_due())  # static credentials: nothing to wait for
+        with self.assertRaises(GatewaySigningError):
+            BotocoreSigner(REGION, lambda: Credentials("", "")).sign("POST", url, headers, b"{}")
 
 
 if __name__ == "__main__":
