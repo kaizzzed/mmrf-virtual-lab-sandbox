@@ -1,21 +1,28 @@
 """Every resume action and the controller's edge cases (contract "Actions", "Checks, in order", E7, E10, E19, E20, E24)."""
 
 import asyncio
+import unittest
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
 from bedrock_agentcore.runtime import AGUIApp
 from pydantic import JsonValue
-from support import action_body, ask_body, asgi_call, check_stream, context
+from support import action_body, ask_body, asgi_call, check_stream, context, vocabulary
 from test_engine_fakes import J3_QUESTION, CGS, FakeComposer, FakePlanner, FakeTools, fixture_frames, j1_ir, j3_ir, orion_of, shape
 from test_engine_streams import EngineCase
+from test_model_mock import FALLBACK, HAS_SDK, PRIMARY, SKIP_REASON, ScriptedBedrock, config, refusal
 
 from orion_agent import controller as controller_module
 from orion_agent import ir
+from orion_agent.compiler import CompiledPlan, SessionLedger
 from orion_agent.events import iso_utc, utc_now
 from orion_agent.ids import new_id
+from orion_agent.interfaces import Clarification, ComposerResult, ObservedResult, PlannerResult, RuleFinding
 from orion_agent.lease import Lease
-from orion_agent.models import ConfirmPending, StateSnapshotFrame
+from orion_agent.model.calls import current_scope
+from orion_agent.models import CohortContext, ConfirmPending, FactRecord, ModelCallRecord, StateSnapshotFrame
 from orion_agent.run_store import RunRecord, RunStore
 
 CONSENT_QUESTION = "Use OncoMatrix to plot survival by CGS risk category"
@@ -23,6 +30,36 @@ SAVED_HIGH: dict[str, JsonValue] = {
     "id": "saved-high", "name": "High risk patients",
     "filters": {"mode": "and", "root": {CGS: {"operator": "in", "field": CGS, "operands": ["High risk"]}}}, "caseCount": 339,
 }
+
+
+def _failed_attempt(role: Any, plan_version: int | None = None) -> None:
+    """A role that recorded a failed attempt in the run's model call scope and now waits out a retry backoff."""
+    scope = current_scope()
+    assert scope is not None
+    scope.add([ModelCallRecord(
+        call_id=scope.next_call_id(role, plan_version), role=role, model="us.anthropic.claude-opus-5", fallback=True, effort="high",
+        attempt=1, started_at=iso_utc(utc_now()), elapsed_ms=30_000, outcome="error", stop_reason=None, input_tokens=None,
+        output_tokens=None, cache_read_tokens=None, cache_write_tokens=None,
+    )])
+
+
+@dataclass
+class BackoffPlanner(FakePlanner):
+    async def plan(
+        self, question: str, cohort_context: CohortContext, ledger: SessionLedger | None, *, clarification: Clarification | None = None
+    ) -> PlannerResult:
+        _failed_attempt("planner")
+        return await super().plan(question, cohort_context, ledger, clarification=clarification)
+
+
+@dataclass
+class BackoffComposer(FakeComposer):
+    async def compose(
+        self, question: str, facts: Sequence[FactRecord], plan: CompiledPlan, observed: ObservedResult, *, allow_list: Sequence[str],
+        ledger: SessionLedger | None, feedback: Sequence[RuleFinding] = (),
+    ) -> ComposerResult:
+        _failed_attempt("composer", plan.version)
+        return await super().compose(question, facts, plan, observed, allow_list=allow_list, ledger=ledger, feedback=feedback)
 
 
 def consent_ir() -> ir.Plan:
@@ -127,6 +164,50 @@ class ResumeTests(EngineCase):
         check_stream(self, (await ask).text, expect_run_id=run_id)
         calls = self.record(run_id)["modelCalls"]
         self.assertEqual([(c["callId"], c["outcome"]) for c in calls], [(f"{run_id}.planner.c1", "cancelled")])
+
+    async def test_a_cancel_after_a_recorded_attempt_takes_the_next_call_id(self) -> None:
+        """A Stop in a retry backoff: the scope holds the failed attempt but no cancelled entry. The one the
+        controller adds follows it, with the role's model and effort, so every callId stays unique (sdk-2)."""
+        for role in ("planner", "composer"):
+            with self.subTest(role=role):
+                planner = BackoffPlanner([j1_ir()], block=True) if role == "planner" else FakePlanner([j1_ir()])
+                composer = BackoffComposer(block=True) if role == "composer" else FakeComposer()
+                _, app = self.build(planner=planner, composer=composer)
+                thread_id, run_id = new_id(), new_id()
+                ask = asyncio.create_task(asgi_call(app, "POST", "/invocations", ask_body(thread_id, run_id)))
+                started = planner.started if role == "planner" else composer.started
+                await asyncio.wait_for(started.wait(), 5)
+                frames = await self.turn(app, action_body(thread_id, run_id, {"action": "cancel"}), run_id)
+                self.assertEqual(self.last_view(frames).status, "Cancelled")
+                check_stream(self, (await ask).text, expect_run_id=run_id)
+                prefix = f"{run_id}.planner" if role == "planner" else f"{run_id}.v1.composer"
+                calls = [c for c in self.record(run_id)["modelCalls"] if c["callId"].startswith(prefix)]
+                self.assertEqual(
+                    [(c["callId"], c["model"], c["effort"], c["attempt"], c["outcome"]) for c in calls],
+                    [(f"{prefix}.c1", "us.anthropic.claude-opus-5", "high", 1, "error"),
+                     (f"{prefix}.c2", "us.anthropic.claude-opus-5", "high", 2, "cancelled")],
+                )
+                ids = [c["callId"] for c in self.record(run_id)["modelCalls"]]
+                self.assertEqual(len(ids), len(set(ids)))
+
+    @unittest.skipUnless(HAS_SDK, SKIP_REASON)
+    async def test_a_refusal_whose_fallback_fails_ends_planner_declined_with_its_reason(self) -> None:
+        """sdk-1 through the controller: a "Could not plan" card naming why, not INTERNAL_ERROR."""
+        from orion_agent.model.planner import BedrockPlanner
+
+        bedrock = ScriptedBedrock({PRIMARY: [refusal(PRIMARY)], FALLBACK: [403]})
+        _, app = self.build(planner=BedrockPlanner(bedrock.client(), config(), vocabulary()))
+        thread_id, run_id = new_id(), new_id()
+        frames = await self.turn(app, ask_body(thread_id, run_id), run_id)
+        self.assertEqual(frames[-1]["type"], "RUN_ERROR")
+        self.assertEqual(frames[-1]["code"], "PLANNER_DECLINED")
+        record = self.record(run_id)
+        self.assertEqual((record["status"], record["code"]), ("Failed", "PLANNER_DECLINED"))
+        texts = [lim["text"] for lim in record["answer"]["limitations"]]
+        self.assertIn("ORION could not plan this question. Claude Opus 5.5 declined to plan this question, "
+                      "and the fallback model could not be reached.", texts)
+        self.assertEqual([(c["callId"], c["model"], c["outcome"]) for c in record["modelCalls"]],
+                         [(f"{run_id}.planner.c1", PRIMARY, "refused"), (f"{run_id}.planner.c2", FALLBACK, "error")])
 
     async def test_cancel_while_answering_keeps_observed_and_withholds(self) -> None:
         composer = FakeComposer(block=True)

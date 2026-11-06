@@ -14,7 +14,7 @@ from typing import Final, Literal
 from ..models import Code, ModelCallRecord, ModelRole
 
 ErrorKind = Literal[
-    "timeout", "rate_limited", "unavailable", "rejected", "server_error", "invalid_output", "missing_scope"
+    "timeout", "rate_limited", "unavailable", "rejected", "server_error", "invalid_output", "missing_scope", "credentials"
 ]
 
 _REASONS: Final[dict[ErrorKind, str]] = {
@@ -25,6 +25,7 @@ _REASONS: Final[dict[ErrorKind, str]] = {
     "server_error": "Bedrock returned an error for the {role} model call",
     "invalid_output": "the {role} model's output failed validation twice",
     "missing_scope": "the {role} model call had no run to record it in",
+    "credentials": "no AWS credentials were available for the {role} model call",
 }
 
 

@@ -10,7 +10,7 @@ from orion_agent import ir
 from orion_agent.interfaces import Clarification
 from orion_agent.models import ModelCallRecord
 from support import context, vocabulary
-from test_model_mock import FALLBACK, HAS_SDK, PRIMARY, RUN_ID, SKIP_REASON, ScriptedBedrock, config, message, refusal, run
+from test_model_mock import FALLBACK, HAS_SDK, PRIMARY, RUN_ID, SKIP_REASON, ScriptedBedrock, config, message, refusal, run, status_reply
 
 J1_IR = {"output": {"kind": "plan", "analyses": [{"kind": "survival_compare", "split_term": "cgs_risk_key_criteria.cgs_risk_category",
                                                    "split_values": ["High risk", "Standard risk"]}]}}
@@ -114,6 +114,51 @@ class BedrockPlannerTest(unittest.TestCase):
         self.assertEqual([c.outcome for c in result.model_calls], ["refused", "refused"])
         self.assertIn("Claude Opus 5.5 and its fallback, Claude Opus 5, declined", result.decline_reason)
 
+    def test_a_refusal_whose_fallback_call_fails_is_a_decline_and_lifts_the_pin(self) -> None:
+        """anthropic 2.5.0's non-streaming refusal fallback returns the failed hop's response, and the SDK
+        raises its status: the refusal is lost unless the client keeps it (sdk-1)."""
+        for status in (403, 404, 500):
+            with self.subTest(status=status):
+                bedrock = ScriptedBedrock({PRIMARY: [refusal(PRIMARY), reply()], FALLBACK: [status]})
+                planner = self.planner(bedrock)
+                result = self.plan(planner)
+                self.assertIsNone(result.output)
+                self.assertTrue(result.declined)
+                self.assertEqual(result.decline_reason,
+                                 "Claude Opus 5.5 declined to plan this question, and the fallback model could not be reached.")
+                self.assertEqual([(c.model, c.fallback, c.attempt, c.outcome) for c in result.model_calls],
+                                 [(PRIMARY, False, 1, "refused"), (FALLBACK, True, 1, "error")])
+                # The run's next call starts at Claude Opus 5.5 again, not at the fallback that failed.
+                again = self.plan(planner)
+                self.assertEqual([(c.model, c.outcome) for c in again.model_calls], [(PRIMARY, "ok")])
+                self.assertEqual([b["model"] for b in bedrock.requests], [PRIMARY, FALLBACK, PRIMARY])
+
+    def test_a_refusal_whose_fallback_fails_on_every_retry_is_a_decline(self) -> None:
+        bedrock = ScriptedBedrock({PRIMARY: [refusal(PRIMARY)], FALLBACK: [500, 500]})
+        result = self.plan(self.planner(bedrock, max_retries=1))
+        self.assertTrue(result.declined)
+        self.assertEqual([(c.model, c.attempt, c.outcome) for c in result.model_calls],
+                         [(PRIMARY, 1, "refused"), (FALLBACK, 1, "error"), (FALLBACK, 2, "error")])
+
+    def test_attempts_are_numbered_per_model_within_a_call(self) -> None:
+        """The fallback hop runs inside the SDK attempt that was refused, so it shares the primary's retry
+        budget (config.py's worst case); its first attempt is attempt 1 on its own model (sdk-4)."""
+        late = ScriptedBedrock({PRIMARY: [500, refusal(PRIMARY)], FALLBACK: [500]})
+        result = self.plan(self.planner(late, max_retries=1))
+        self.assertTrue(result.declined)
+        self.assertEqual([(c.model, c.attempt, c.outcome) for c in result.model_calls],
+                         [(PRIMARY, 1, "error"), (PRIMARY, 2, "refused"), (FALLBACK, 1, "error")])
+        served_late = ScriptedBedrock({PRIMARY: [500, refusal(PRIMARY)], FALLBACK: [reply(model=FALLBACK)]})
+        result = self.plan(self.planner(served_late, max_retries=1))
+        self.assertEqual(result.serving_model, FALLBACK)
+        self.assertEqual([(c.model, c.attempt, c.outcome) for c in result.model_calls],
+                         [(PRIMARY, 1, "error"), (PRIMARY, 2, "refused"), (FALLBACK, 1, "ok")])
+        early = ScriptedBedrock({PRIMARY: [refusal(PRIMARY)], FALLBACK: [500, reply(model=FALLBACK)]})
+        served = self.plan(self.planner(early, max_retries=1))
+        self.assertIsInstance(served.output, ir.Plan)
+        self.assertEqual([(c.model, c.attempt, c.outcome) for c in served.model_calls],
+                         [(PRIMARY, 1, "refused"), (FALLBACK, 1, "error"), (FALLBACK, 2, "ok")])
+
     def test_no_fallback_configured_declines_on_the_first_refusal(self) -> None:
         from orion_agent.model.planner import BedrockPlanner
 
@@ -168,10 +213,18 @@ class BedrockPlannerTest(unittest.TestCase):
 
         from orion_agent.model.errors import ModelRoleError
 
-        for reply_, kind in ((httpx2.ConnectError("down"), "unavailable"), (400, "rejected"), (500, "server_error")):
-            with self.subTest(kind=kind), self.assertRaises(ModelRoleError) as raised:
+        cases: tuple[tuple[Any, str, str], ...] = (
+            (httpx2.ConnectError("down"), "unavailable", "Bedrock could not be reached for the planner model call"),
+            (400, "rejected", "Bedrock rejected the planner model request (HTTP 400)"),
+            (500, "server_error", "Bedrock returned an error for the planner model call (HTTP 500)"),
+            # Bedrock's ModelTimeoutException (408) and ModelErrorException (424) are the model's, not a rejection (sdk-5).
+            (408, "timeout", "the planner model did not answer in time (HTTP 408)"),
+            (424, "server_error", "Bedrock returned an error for the planner model call (HTTP 424)"),
+        )
+        for reply_, kind, reason in cases:
+            with self.subTest(kind=kind, reply=reply_), self.assertRaises(ModelRoleError) as raised:
                 self.plan(self.planner(ScriptedBedrock({PRIMARY: [reply_]})))
-            self.assertEqual(raised.exception.kind, kind)
+            self.assertEqual((raised.exception.kind, raised.exception.reason), (kind, reason))
 
     def test_an_error_after_a_repair_carries_both_calls(self) -> None:
         from orion_agent.model.errors import ModelRoleError
@@ -206,6 +259,76 @@ class BedrockPlannerTest(unittest.TestCase):
         [record] = run(stop())
         self.assertEqual(record.outcome, "cancelled")
 
+    def test_a_cancel_in_the_sdk_retry_backoff_is_recorded_as_the_next_attempt(self) -> None:
+        """The SDK sleeps between attempts outside the middlewares, so no HTTP attempt sees that cancel; the
+        aborted call still gets its own cancelled entry with a fresh callId (sdk-2)."""
+        from orion_agent.model.calls import model_call_scope
+
+        bedrock = ScriptedBedrock({PRIMARY: [status_reply(500, retry_after_s=5)]})
+        planner = self.planner(bedrock, max_retries=1)
+
+        async def stop() -> list[ModelCallRecord]:
+            with model_call_scope(RUN_ID) as scope:
+                task = asyncio.create_task(planner.plan(QUESTION, context(), None))
+                while not scope.records and not bedrock.requests:
+                    await asyncio.sleep(0.01)
+                await asyncio.sleep(0.2)  # the 500 came back; the SDK now sleeps 5 s before its retry
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                return scope.records
+
+        records = run(stop())
+        self.assertEqual(len(bedrock.requests), 1)
+        self.assertEqual([(r.call_id, r.model, r.attempt, r.outcome) for r in records],
+                         [(f"{RUN_ID}.planner.c1", PRIMARY, 1, "error"), (f"{RUN_ID}.planner.c2", PRIMARY, 2, "cancelled")])
+
+    def test_unresolved_aws_credentials_are_a_model_role_error_with_the_call_recorded(self) -> None:
+        """anthropic 2.5.0 signs each request with boto3 and raises a plain RuntimeError when no credential
+        resolves, before any HTTP attempt (sdk-3)."""
+        from unittest import mock
+
+        import httpx2
+        from anthropic import DefaultAsyncHttpxClient
+
+        from orion_agent.model.calls import model_call_scope
+        from orion_agent.model.client import ModelClient
+        from orion_agent.model.config import ModelConfig
+        from orion_agent.model.errors import ModelRoleError
+        from orion_agent.model.planner import BedrockPlanner
+
+        bedrock = ScriptedBedrock({})
+        client = ModelClient(region="us-east-1", fallback_model="us.anthropic.claude-opus-5", max_retries=1, base_url="http://runtime.invalid",
+                             http_client=DefaultAsyncHttpxClient(transport=httpx2.MockTransport(bedrock.handle)))
+        planner = BedrockPlanner(client, ModelConfig(planner="bedrock"), vocabulary())
+
+        async def call() -> Any:
+            with mock.patch("boto3.Session.get_credentials", return_value=None):
+                with model_call_scope(RUN_ID) as scope:
+                    try:
+                        await planner.plan(QUESTION, context(), None)
+                    except ModelRoleError as error:
+                        return error, scope.records
+                    return None, scope.records
+
+        error, records = run(call())
+        self.assertIsInstance(error, ModelRoleError)
+        self.assertEqual([(r.call_id, r.model, r.attempt, r.outcome) for r in records],
+                         [(f"{RUN_ID}.planner.c1", "us.anthropic.claude-opus-5-5", 1, "error")])
+        self.assertEqual(error.model_calls, records)
+        self.assertEqual((error.kind, error.code, error.reason), ("credentials", "INTERNAL_ERROR", "no AWS credentials were available for the planner model call"))
+        self.assertIn("could not resolve credentials", error.detail)
+        self.assertFalse(error.retryable)
+        self.assertEqual(bedrock.requests, [])
+
+        async def warm() -> Any:
+            with mock.patch("boto3.Session.get_credentials", return_value=None):
+                return await planner.warm_up()
+
+        with self.assertLogs("orion.model", "WARNING"):
+            warmed = run(warm())
+        self.assertEqual((warmed.outcome, warmed.detail), ("error", "no AWS credentials were available for the planner model call"))
+
     def test_no_scope_is_a_missing_scope_error(self) -> None:
         from orion_agent.model.errors import ModelRoleError
 
@@ -238,6 +361,30 @@ class BedrockPlannerTest(unittest.TestCase):
                            "Wilcoxon on NRAS-mutant against other cases, top 10 genes by adjusted p-value")
         de = stated.output.analyses[0]
         self.assertEqual((de.method, de.rank_by, de.top_n), ("wilcoxon", "adjusted_p", 10))
+
+    def test_a_cohort_name_the_question_does_not_state_is_dropped(self) -> None:
+        """A2: the planner returns codes and ids, never display text. A name the question does not state would
+        reach the plan card, the save and the composer's allowed terms unverified
+        (security-planner-cohort-name-unverified); code templates name the cohort instead."""
+        from orion_agent.model.planner import keep_stated
+
+        question = "Differential expression between patients with and without a KRAS mutation"
+        raw: dict[str, Any] = {"kind": "plan", "cohorts": [
+            {"ref": "tested", "def": {"kind": "mutation_tested", "within": "base"}},
+            {"ref": "kras_mut", "def": {"kind": "gene_mutated", "gene": "KRAS", "within": "tested"},
+             "name": "Should receive sotorasib 960 mg daily"},
+            {"ref": "kras_wt", "def": {"kind": "difference", "a": "tested", "b": "kras_mut"}, "name": "KRAS mutation"}],
+            "analyses": [{"kind": "differential_expression", "group1": "kras_wt", "group2": "kras_mut"}]}
+        output = ir.PLANNER_OUTPUT.validate_python(raw)
+        kept = keep_stated(output, question)
+        assert isinstance(kept, ir.Plan)
+        self.assertEqual([c.name for c in kept.cohorts], [None, None, "KRAS mutation"])
+        named = keep_stated(output, "Expression of the cohort I call 'Should receive sotorasib 960 mg daily' against the rest")
+        assert isinstance(named, ir.Plan)
+        self.assertEqual(named.cohorts[1].name, "Should receive sotorasib 960 mg daily")
+        bedrock = ScriptedBedrock({PRIMARY: [reply({"output": raw})]})
+        planned = self.plan(self.planner(bedrock), question)
+        self.assertEqual([c.name for c in planned.output.cohorts], [None, None, "KRAS mutation"])
 
     def test_a_clarification_answer_is_held(self) -> None:
         output = {"output": {"kind": "plan", "analyses": [{"kind": "survival_compare", "split_term": "diagnoses.iss_stage"}]}}

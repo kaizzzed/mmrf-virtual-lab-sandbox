@@ -27,13 +27,19 @@ documents base `anthropic.*` ids. So the default client is `runtime` with the `u
 premium, routing across all regions). interfaces.PLANNER_MODEL and REFUSAL_FALLBACK_MODEL equal
 the `runtime` defaults below (tests/test_contract.py keeps them so); this module does not read them.
 
-Worst case of one role call: (max_retries + 1) attempts of `timeout_s` on the primary model, then
-the same on the fallback model after a refusal: 2 x 2 x 30 s for the planner with the defaults.
+Worst case of one role call. The refusal fallback runs inside one of the SDK's (max_retries + 1)
+attempts: the primary's refusal and the fallback hop share that attempt, and the attempts after
+it start at the pinned fallback. So a call makes at most max_retries + 2 HTTP requests of
+`timeout_s` each: 3 x 30 s = 90 s for the planner with the defaults. The fallback gets only the
+attempts left after the refusal (none when the refusal came on the last one); a refusal whose
+fallback call then fails ends as a decline, not an error (client.py).
 
-The effort and timeout defaults are the design's starting points, not measured values: tuning them
-against NFR-01 (plan visible within 5 s, p95 over at least 20 warm and cold runs) needs Bedrock
-and is a day-2 task. The record's `ModelCallRecord.effort` takes only `low`, `medium` and `high`,
-so those are the efforts this setting accepts.
+The effort and timeout defaults are the design's starting points. Measured against NFR-01 on
+2026-11-05 (orion/notes/bedrock-evals.md): at effort low the plan-visible p95 is 4.19 s over 94
+asks, so the efforts stay as the design sets them. A planner attempt stalled until the 30 s timeout
+twice in about 250 calls (the SDK retry then answered in seconds); a shorter planner timeout is
+left to the team. The record's `ModelCallRecord.effort` takes only `low`, `medium` and `high`, so
+those are the efforts this setting accepts.
 """
 
 import os

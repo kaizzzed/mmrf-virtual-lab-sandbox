@@ -362,6 +362,21 @@ class Verifier(Protocol):
         allow_list: Sequence[str],
     ) -> VerifierResult: ...
 
+    def treatment_defined(
+        self,
+        facts: Sequence[FactRecord],
+        ledger: SessionLedger | None,
+        vocab: Vocabulary,
+        *,
+        plan: CompiledPlan,
+        observed: ObservedResult,
+        allow_list: Sequence[str],
+    ) -> bool:
+        """Whether the run's own scope, cohorts or settings are defined by a treatment (a regimen or
+        therapy value): such a run gets no model-written text at all (V-SEC), only Observed and
+        Limitations, because no word list can tell a description of a treatment group from advice."""
+        ...
+
 
 # --- Session ledger ------------------------------------------------------------------------------
 

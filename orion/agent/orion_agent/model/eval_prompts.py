@@ -2,8 +2,10 @@
 
 A4: "No eval prompt appears among them, including the held-out paraphrases and out-of-kind
 questions." `tests/test_model_prompts.py` checks that no planner or composer example equals or
-nearly equals any text here. The held-out paraphrases (E22), the edge questions and the
-out-of-kind questions (E23) have no text in the RFA; their texts are the eval harness's
+nearly equals any text here, holds one with a word or two changed, or touches the topic of an
+out-of-kind, Venn, cohort-size or drug-choice question (EVAL_TOPICS: E23, E18, E12, E17). The
+held-out paraphrases (E22), the edge questions and the out-of-kind questions (E23) have no text
+in the RFA; their texts are the eval harness's
 (orion/evals/prompts.json), copied here so the exclusion covers them; `python -m orion_evals prompts
 --check-agent` lists any the harness adds later.
 """
@@ -98,9 +100,61 @@ EVAL_PROMPTS: Final[tuple[EvalPrompt, ...]] = (
 # Genes and names the evals use that an example must not mention at all.
 EVAL_ONLY_TERMS: Final = ("IDH1",)
 
+# The topics of the questions whose expected answer is the same whatever the wording: the out-of-kind questions (E23)
+# and the Venn diagram (E18), Unsupported, the size of "my cohort" (E12), and a drug for a gene-mutated patient
+# (E17), Clinical advice. An example on one of these topics hands the model that eval's answer even when its text is
+# far from the eval's ("Cluster these patients by their expression profiles" scores ratio 0.63 and Jaccard 0.29
+# against E23's "Cluster the samples by their gene expression and show a heatmap"), so no example text may touch
+# them. The E17 topic is its question (which drug or treatment for a patient with a named mutation); a
+# clinical-advice example on other specifics, such as the planner's dose of a named drug for "my patient", keeps the
+# Clinical advice reason taught without it. Patterns match the normalized text (normalize(): lower case, "k-means"
+# as "k means", "2D" as "2d").
+EVAL_TOPICS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("evals outOfKind; E23: clustering and heatmaps",
+     (r"\bclust\w*", r"\bheat ?maps?\b", r"\bdendrograms?\b", r"\bhierarchical\b", r"\bk ?means\b", r"\bunsupervised\b",
+      r"\b(?:expression|molecular|transcriptional|transcriptomic) (?:sub)?(?:types?|groups?|classes|clusters?)\b",
+      r"\bexpression (?:similarity|profiles?|patterns?)\b", r"\bexpression based\b", r"\bsimilar\w*\b.*\bexpression\b",
+      r"\b(?:group|split|sort|divide|separate|partition)\w* (?:the )?(?:samples|patients|cases)\b.*\bby (?:their |its |the )?expression\b",
+      r"\bpartition\w*\b.*\b(?:expression|subtypes?)\b")),
+    ("evals outOfKind; E23: protein domains and lollipop plots",
+     (r"\bproteins?\b", r"\bdomains?\b", r"\blollipops?\b", r"\bneedles?\b", r"\bamino acids?\b", r"\bproteinpaint\b",
+      r"\b(?:along|across) the (?:\w+ )?(?:gene|sequence|protein|transcript)\b(?! panel)",
+      r"\bwhere (?:the |its )?(?:\w+ )?mutations (?:fall|sit|lie|are|occur|cluster)\b",
+      r"\b(?:positions?|locations?) of (?:the |its )?(?:\w+ )?mutations\b")),
+    ("evals outOfKind; E23: UMAP and other embeddings",
+     (r"\bumap\b", r"\bt ?sne\b", r"\bembed\w*", r"\bdimension\w*", r"\bprincipal components?\b", r"\bpca\b", r"\b[23] ?d\b")),
+    ("R3 edge case; E18: Venn diagrams and set overlaps",
+     (r"\bvenn\b", r"\boverlap\w*", r"\bset operations?\b", r"\bintersect\w*", r"\bunion of\b",
+      r"\b(?:cases|patients|samples|people|subjects|members|which|who)\b.*\b(?:in|to|of|by) both\b.*\b(?:cohorts?|groups?)\b",
+      r"\b(?:shared by|shared between|common to|in common)\b.*\b(?:cohorts?|groups?)\b",
+      r"\b(?:cohorts?|groups?)\b.*\b(?:share|in common)\b")),
+    ("evals edge; E12: the size of my cohort",
+     (r"\bhow many (?:cases|patients|samples|people|subjects)\b.*\bmy (?:\w+ )?cohort\b",
+      r"\bmy (?:\w+ )?cohort\b.*\b(?:contains?|holds?|has|have)\b.*\b(?:cases|patients|samples)\b",
+      r"\b(?:does|do) my (?:\w+ )?cohort (?:contain|hold|have)\b",
+      r"\bcount\w* (?:the |all |up )?(?:\w+ )?(?:cases|patients|samples)\b.*\bmy (?:\w+ )?cohort\b",
+      r"\b(?:size of|how (?:big|large) is) my (?:\w+ )?cohort\b",
+      r"\b(?:number|count) of (?:the |all )?(?:cases|patients|samples|people|subjects)\b.*\bmy (?:\w+ )?cohort\b",
+      r"\b(?:case|patient|sample) count\b.*\bmy (?:\w+ )?cohort\b")),
+    ("R3 edge case; E17: a drug or treatment for a gene-mutated patient",
+     (r"\b(?:which|what)\b(?: \w+){0,3} (?:drugs?|treatments?|therap\w*|medications?|medicines?|regimens?)\b.*"
+      r"\b(?:mutated|mutant|mutation|mutations|positive|carriers?)\b",
+      r"\b(?:mutated|mutant|mutation|mutations|positive|carriers?)\b.*\b(?:which|what)\b(?: \w+){0,3} "
+      r"(?:drugs?|treatments?|therap\w*|medications?|medicines?|regimens?)\b",
+      r"\b(?:mutated|mutant) patients?\b.*\b(?:get|receive|take|be given|be treated)\b",
+      r"\bpatients? (?:with|carrying|who (?:has|have|carries|carry)) (?:an? |the )?(?:\w+ )?(?:mutation|mutations|variant|variants)\b"
+      r".*\b(?:get|receive|take|be given|be treated|drugs?|treatments?|therap\w*|medications?|medicines?|regimens?)\b")),
+)
+
 # Two texts this close are the same prompt for C-31's purpose.
 NEAR_DUPLICATE_RATIO: Final = 0.8
 NEAR_DUPLICATE_JACCARD: Final = 0.6
+# An eval prompt embedded in a longer example, with a word or two inserted or changed, is found by comparing it with
+# every run of the example's words about its length: from max(MIN_WINDOW_TOKENS, n - 1) to n + 2 words for an eval
+# prompt of n words. "How many cases are in my saved cohort …" holds E12's "How many cases are in my cohort?" with one
+# word inserted (ratio 0.91, Jaccard 0.88 on its first eight words). The floor keeps a shared three-word phrase
+# ("by ISS stage") from counting as a copy.
+MIN_WINDOW_TOKENS: Final = 4
 
 
 def normalize(text: str) -> str:
@@ -120,15 +174,44 @@ def similarity(a: str, b: str) -> tuple[float, float]:
     return SequenceMatcher(None, na, nb).ratio(), jaccard
 
 
-def matching_eval_prompt(text: str) -> EvalPrompt | None:
-    """The eval prompt `text` equals, nearly equals or contains, if any."""
+def _near(text: str, prompt: str) -> bool:
+    ratio, jaccard = similarity(text, prompt)
+    return ratio >= NEAR_DUPLICATE_RATIO or jaccard >= NEAR_DUPLICATE_JACCARD
+
+
+def _embeds(words: list[str], target: str) -> bool:
+    """Whether a run of `words` about as long as `target` nearly equals it (MIN_WINDOW_TOKENS)."""
+    n = len(target.split())
+    for size in range(max(MIN_WINDOW_TOKENS, n - 1), n + 3):
+        if size >= len(words):
+            break
+        if any(_near(" ".join(words[i : i + size]), target) for i in range(len(words) - size + 1)):
+            return True
+    return False
+
+
+def eval_topic(text: str) -> str | None:
+    """The E23, E18, E12 or E17 topic `text` touches (EVAL_TOPICS), if any."""
     normalized = normalize(text)
+    for topic, patterns in EVAL_TOPICS:
+        if any(re.search(pattern, normalized) for pattern in patterns):
+            return topic
+    return None
+
+
+def matching_eval_prompt(text: str) -> EvalPrompt | None:
+    """The eval prompt `text` equals, nearly equals or contains (also with a word or two changed), or the eval topic
+    it touches, if any."""
+    normalized = normalize(text)
+    words = normalized.split()
     for prompt in EVAL_PROMPTS:
         target = normalize(prompt.text)
-        ratio, jaccard = similarity(text, prompt.text)
         contains = len(target.split()) >= 4 and f" {target} " in f" {normalized} "
-        if normalized == target or contains or ratio >= NEAR_DUPLICATE_RATIO or jaccard >= NEAR_DUPLICATE_JACCARD:
+        if normalized == target or contains or _near(text, prompt.text) or _embeds(words, target):
             return prompt
+    topic = eval_topic(text)
+    if topic is not None:
+        return EvalPrompt(text, f"touches an eval topic: {topic}")
     if any(term.casefold() in text.casefold() for term in EVAL_ONLY_TERMS):
         return EvalPrompt(text, "mentions an eval-only term")
     return None

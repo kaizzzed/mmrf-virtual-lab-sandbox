@@ -874,13 +874,24 @@ class Controller:
             for i, c in enumerate(calls, start=1)
         ]
 
-    def _cancelled_call(self, record: RunRecord, role: Literal["planner", "composer"], version: int | None, started_at: str, started: float) -> ModelCallRecord:
+    def _cancelled_call(
+        self, record: RunRecord, role: Literal["planner", "composer"], version: int | None, started_at: str, started: float,
+        recorded: Sequence[ModelCallRecord] = (),
+    ) -> ModelCallRecord:
+        """The aborted call's `cancelled` entry when the role recorded none (a role outside the model call scope).
+
+        Its callId follows the record's calls and the scope's (`recorded`, not yet in the record), so every
+        callId stays unique; its model and effort are the role's last recorded call's, when there is one."""
         loop = asyncio.get_running_loop()
         prefix = model_call_id(record.run_id, role, 1, version).rsplit(".c", 1)[0]
-        taken = sum(1 for c in record.model_calls if c.call_id.startswith(prefix + ".c"))
+        taken = sum(1 for c in [*record.model_calls, *recorded] if c.call_id.startswith(prefix + ".c"))
+        last = next((c for c in reversed(recorded) if c.role == role), None)
         return ModelCallRecord(
-            call_id=model_call_id(record.run_id, role, taken + 1, version), role=role, model=PLANNER_MODEL, fallback=False,
-            effort="low" if role == "planner" else "medium", attempt=1, started_at=started_at,
+            call_id=model_call_id(record.run_id, role, taken + 1, version), role=role,
+            model=last.model if last else PLANNER_MODEL, fallback=last.fallback if last else False,
+            effort=last.effort if last else ("low" if role == "planner" else "medium"),
+            # After a failed attempt the abort landed in the retry's backoff: the next attempt of that call.
+            attempt=min(last.attempt + 1, 4) if last and last.outcome == "error" else 1, started_at=started_at,
             elapsed_ms=max(int((loop.time() - started) * 1000), 0), outcome="cancelled", stop_reason=None,
             input_tokens=None, output_tokens=None, cache_read_tokens=None, cache_write_tokens=None,
         )
@@ -919,7 +930,7 @@ class Controller:
         recorded = scope.records()
         if aborted:
             calls = recorded if any(c.outcome == "cancelled" for c in recorded) else [
-                *recorded, self._cancelled_call(record, "planner", None, started_at, started)
+                *recorded, self._cancelled_call(record, "planner", None, started_at, started, recorded)
             ]
             await writer.stage(partial(_keep_model_calls, calls=calls))
             return await self._end_stopped(handle)
@@ -945,7 +956,10 @@ class Controller:
         if handle.stop.is_set():
             return await self._end_stopped(handle)
         if output is None:
-            note = Limitation(code="PLANNER_DECLINED", text="ORION could not plan this question: both models declined.", unblock="Rephrase the question.")
+            # The planner's own reason when it gave one: which models declined, or that the fallback could not be reached.
+            why = (result.decline_reason or "").strip()
+            text = f"ORION could not plan this question. {why.rstrip('.')}." if why else "ORION could not plan this question: both models declined."
+            note = Limitation(code="PLANNER_DECLINED", text=text, unblock="Rephrase the question.")
             return await self._finish(handle, "Failed", "PLANNER_DECLINED", [note])
         if isinstance(output, ir.Unsupported):
             stop = self._compiler_call("unsupported", output)
@@ -1262,7 +1276,7 @@ class Controller:
         recorded = scope.records()
         if aborted:
             calls = recorded if any(c.outcome == "cancelled" for c in recorded) else [
-                *recorded, self._cancelled_call(record, "composer", plan.version, started_at, started)
+                *recorded, self._cancelled_call(record, "composer", plan.version, started_at, started, recorded)
             ]
             await writer.stage(partial(_keep_model_calls, calls=calls))
             if handle.edit is not None and not handle.stop.is_set():
