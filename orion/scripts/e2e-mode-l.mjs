@@ -524,11 +524,14 @@ class Scenario {
     const {planner, composer} = record.environment;
     expect(record.environment, `the agent runs the ${planner} planner and the ${composer} composer; ORION_E2E_MODEL is ${MODEL}, ORION_E2E_MODE is ${MODE}`)
       .toMatchObject({mode: MODE, planner: MODEL, composer: MODEL, toolTransport: TRANSPORT});
-    // The executor's four pure functions run inside the agent in every mode; every server tool goes
-    // through the mode's transport (TOOLS.md section 3).
+    // The executor's four pure functions run inside the agent in every mode (TOOLS.md section 3); the
+    // one client step, save_cohorts, is the browser's write, recorded with transport `client` in every
+    // mode (TOOLS.md section 4); every server tool goes through the mode's transport.
     const PURE_FUNCTIONS = new Set(['set_operation', 'check_subset', 'rank_top_n', 'derive_km_median']);
+    const CLIENT_STEPS = new Set(['save_cohorts']);
+    const expectedTransport = tool => (PURE_FUNCTIONS.has(tool) ? 'in_process' : CLIENT_STEPS.has(tool) ? 'client' : TRANSPORT);
     for (const call of record.calls) {
-      expect(call.transport, `${call.tool} transport`).toBe(PURE_FUNCTIONS.has(call.tool) ? 'in_process' : TRANSPORT);
+      expect(call.transport, `${call.tool} transport`).toBe(expectedTransport(call.tool));
     }
     const calls = BEDROCK ? `, ${checkModelCalls(record)}` : '';
     this.pass(`run record ${runId.slice(0, 8)}… via the record route: ${record.status}, ${record.calls.length} calls, ${record.facts.length} facts, environment mode ${MODE} (${TRANSPORT}), ${MODEL} planner and composer${calls}`);
