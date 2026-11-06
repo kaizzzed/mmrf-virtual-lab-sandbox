@@ -15,6 +15,7 @@ import http.client
 import json
 import secrets
 import socket
+import sys
 import threading
 import time
 import urllib.parse
@@ -30,6 +31,10 @@ DEFAULT_AGENT_URL: Final = "http://orion-agent:8080/invocations"
 READ_TIMEOUT_S: Final = 90.0  # heartbeats arrive every 15 s while an invocation streams
 TURN_TIMEOUT_S: Final = 900.0
 POST_TERMINAL_GRACE_S: Final = 2.0
+# A BFF record or view read that fails on the way (no answer, a timeout, a 5xx, a cut body) is tried again;
+# a 4xx is the route's answer (RUN_NOT_FOUND, UNAUTHENTICATED) and is not. Every failure is logged.
+RECORD_FETCH_ATTEMPTS: Final = 3
+RECORD_FETCH_BACKOFF_S: Final = 1.0
 
 Target = Literal["agent", "bff"]
 EventHook = Callable[[dict[str, Any], "TurnResult"], "str | None"]
@@ -356,34 +361,87 @@ class DirRecordSource:
         return str(self._path(run_id))
 
 
-class BffRecordSource:
-    """`GET /api/orion/runs/<runId>/record` and `/view` on the fork's BFF."""
+def _stderr(message: str) -> None:
+    print(f"[orion-evals] {message}", file=sys.stderr, flush=True)
 
-    def __init__(self, origin: str, timeout_s: float = 30.0) -> None:
+
+def _bff_code(text: str) -> str | None:
+    """The `error.code` of a BffError body, if the body is one."""
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
+
+
+class BffRecordSource:
+    """`GET /api/orion/runs/<runId>/record` and `/view` on the fork's BFF.
+
+    A read that fails on the way is tried `attempts` times in all; each failure is logged with its HTTP status
+    (and BFF error code) or its exception, so a run whose record could not be read says why."""
+
+    def __init__(
+        self,
+        origin: str,
+        timeout_s: float = 30.0,
+        *,
+        attempts: int = RECORD_FETCH_ATTEMPTS,
+        backoff_s: float = RECORD_FETCH_BACKOFF_S,
+        log: Callable[[str], None] = _stderr,
+    ) -> None:
         parts = urllib.parse.urlsplit(origin)
         if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
             raise ValueError("an http(s) origin without credentials")
+        if attempts < 1:
+            raise ValueError("attempts is at least 1")
         self.origin = origin.rstrip("/")
         self.name = f"bff:{self.origin}"
         self._parts = parts
         self._timeout = timeout_s
+        self._attempts = attempts
+        self._backoff_s = backoff_s
+        self._log = log
 
-    def _get(self, path: str) -> dict[str, Any] | None:
+    def _get_once(self, path: str) -> tuple[dict[str, Any] | None, str | None, bool]:
+        """(data, failure, transient): the parsed object, or why there is none and whether to try again."""
         parts = self._parts
         connection_type = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
         conn = connection_type(parts.hostname or "", parts.port, timeout=self._timeout)
         try:
             conn.request("GET", path, headers={"Accept": "application/json"})
             response = conn.getresponse()
-            text = response.read().decode("utf-8")
+            body = response.read()
             if response.status != 200:
-                return None
+                code = _bff_code(body.decode("utf-8", errors="replace"))  # only for the log line
+                return None, f"HTTP {response.status}" + (f" {code}" if code else ""), response.status >= 500 or response.status == 429
+            try:
+                text = body.decode("utf-8")  # a record or view body must be valid UTF-8, as before
+            except UnicodeDecodeError as error:
+                return None, f"HTTP 200 with a body that is not UTF-8 ({error})", False
             data = json.loads(text)
-            return data if isinstance(data, dict) else None
-        except (OSError, http.client.HTTPException, json.JSONDecodeError):
-            return None
+            if not isinstance(data, dict):
+                return None, f"HTTP 200 but not a JSON object ({type(data).__name__})", False
+            return data, None, False
+        except json.JSONDecodeError as error:
+            return None, f"HTTP 200 with a body that is not JSON ({error})", True
+        except (OSError, http.client.HTTPException) as error:
+            return None, f"{type(error).__name__}: {error}", True
         finally:
             conn.close()
+
+    def _get(self, path: str) -> dict[str, Any] | None:
+        for attempt in range(1, self._attempts + 1):
+            data, failure, transient = self._get_once(path)
+            if failure is None:
+                return data
+            again = transient and attempt < self._attempts
+            self._log(f"BFF GET {path} failed: {failure} (attempt {attempt} of {self._attempts}{', trying again' if again else ''})")
+            if not again:
+                return None
+            time.sleep(self._backoff_s * attempt)
+        return None
 
     def _route(self, run_id: str, kind: str, thread_id: str | None) -> str:
         query = f"?threadId={thread_id}" if thread_id else ""

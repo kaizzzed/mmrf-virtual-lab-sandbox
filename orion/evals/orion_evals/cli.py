@@ -56,12 +56,12 @@ def _records(kind: str, run_dir: str | None, bff_origin: str | None) -> RecordSo
     if kind == "dir" and run_dir:
         return DirRecordSource(Path(run_dir))
     if kind == "bff" and bff_origin:
-        return BffRecordSource(bff_origin)
+        return BffRecordSource(bff_origin, log=_log)
     if kind == "auto":
         if run_dir and Path(run_dir, "runs").is_dir():
             return DirRecordSource(Path(run_dir))
         if bff_origin:
-            return BffRecordSource(bff_origin)
+            return BffRecordSource(bff_origin, log=_log)
         # A fresh run volume has no runs/ until the first run writes it: without a BFF it is the only source.
         if run_dir and Path(run_dir).is_dir():
             return DirRecordSource(Path(run_dir))
@@ -121,6 +121,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         prompts=prompts,
         log=_log,
         planner=args.planner,
+        warmup_threads=args.warmup_threads,
     )
     specs = select(args.evals.split(",") if args.evals else None)
     fingerprint = None
@@ -133,7 +134,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     mode = "L (agent direct)" if args.target == "agent" else f"BFF {bff_origin}"
     doc = report.document(
         results,
-        gates(results, evidence),
+        gates(results, evidence, ctx.repeats),
         environment(ctx, evidence, fingerprint, mode),
         {"fingerprint": fingerprint, "values": {k: to_json(v) for k, v in ctx.cache.items() if k.startswith("oracle:")}} if oracle else None,
         started,
@@ -281,12 +282,17 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--pause-wait-s", type=float, default=float(env("ORION_EVAL_PAUSE_WAIT_S", "300")), help="E20: time left at the save pause")
     run.add_argument("--settle-timeout-s", type=float, default=600.0)
     run.add_argument("--lease-wait-s", type=float, default=200.0, help="E20: wait after the restart for the 180 s lease to lapse")
-    run.add_argument("--restart-cmd", default=env("ORION_EVAL_RESTART_CMD"), help="E20: an operator command that kills the agent's controller mid-run")
+    run.add_argument("--restart-cmd", default=env("ORION_EVAL_RESTART_CMD"),
+                     help="E20: an operator command that kills the agent's controller mid-run (without it the lease-expiry case is not run)")
     run.add_argument("--turn-timeout-s", type=float, default=900.0)
     run.add_argument("--frontend-root", default=env("ORION_EVAL_FRONTEND_ROOT"), help="the fork's root, to find browser tests")
-    run.add_argument("--agent-tests-root", default=env("ORION_EVAL_AGENT_TESTS_ROOT"), help="orion/agent/tests, to find lease tests")
+    run.add_argument("--agent-tests-root", default=env("ORION_EVAL_AGENT_TESTS_ROOT"),
+                     help="orion/agent/tests, to name the lease-expiry unit test (shown, never counted as the live case)")
     run.add_argument("--e2e-script", default=env("ORION_EVAL_E2E_SCRIPT"), help="orion/scripts/e2e-mode-l.mjs, to find browser E2E steps")
     run.add_argument("--planner", default=env("ORION_EVAL_PLANNER"), help="override the planner name read from the records")
+    run.add_argument("--warmup-threads", action="store_true", default=env("ORION_EVAL_WARMUP_THREADS") == "1",
+                     help="send a warmup when each thread opens and wait for it to end before the first ask (mode A: it "
+                          "starts the thread's Runtime session; plan times are then a best case, not the browser's)")
     oracle_args(run)
     run.set_defaults(func=cmd_run)
 

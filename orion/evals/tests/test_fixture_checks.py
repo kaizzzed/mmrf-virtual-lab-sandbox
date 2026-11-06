@@ -139,6 +139,25 @@ class J1(unittest.TestCase):
         self.assertEqual(ec.e13_response_hashes([a, c]).status, "fail")
         self.assertEqual(ec.e13_response_hashes([a, fixture_evidence("d", J1_STREAM)]).status, "not-run")
 
+    def test_e13_is_not_run_below_two_repeats(self) -> None:
+        """Review F2: one run per prompt gives each step one hash, so "differing []" could never fail."""
+        one = ec.e13_response_hashes([fixture_evidence("a", J1_STREAM, record=self.record)])
+        self.assertEqual(one.status, "not-run")
+        self.assertEqual(one.detail, "needs 2 or more repeats to compare, ran 1")
+        self.assertEqual(ec.e13_response_hashes([]).status, "not-run")
+
+    def test_a_five_of_five_row_is_not_run_below_five_repeats(self) -> None:
+        """Review F2: E16 and E22 pass only in 5 of 5 runs, so fewer repeats add a gating not-run check."""
+        self.assertEqual(ec.full_repeats(5), [])
+        self.assertEqual(ec.full_repeats(6), [])
+        [short] = ec.full_repeats(1)
+        self.assertEqual((short.name, short.status, short.gate, short.detail), ("5 of 5 runs per prompt", "not-run", True, "needs 5 repeats, ran 1"))
+        complete = ec.e16_complete([fixture_evidence("run 1", J1_STREAM)])
+        self.assertEqual(complete.status, "pass")
+        self.assertEqual(outcome([complete, *ec.full_repeats(1)]), "not-run")
+        stub = ec.e16_complete([fixture_evidence("stub", ("j1-stub.events.jsonl", "ask"))])
+        self.assertEqual(outcome([stub, *ec.full_repeats(1)]), "fail", "a failure at fewer repeats still fails")
+
     def test_e14_scope_line(self) -> None:
         checks = ec.e14_scope(self.ev, "All cases", 1000, j1_expected())
         self.assertEqual(failing(checks), [])

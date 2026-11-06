@@ -5,6 +5,7 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from . import wire
 from .canonical import filterset_from_definition
 from .checks import expect
 from .client import TurnResult
@@ -29,7 +30,15 @@ def target(ctx: EvalContext, fault: str | None = None) -> AgentTarget:
 
 def new_thread(ctx: EvalContext, label: str, store: SimulatedCohortStore | None = None, fault: str | None = None) -> EvalThread:
     agent = target(ctx, fault)
-    return EvalThread(agent.client, store or ctx.store(), agent.records, label)
+    thread = EvalThread(agent.client, store or ctx.store(), agent.records, label)
+    if ctx.warmup_threads:
+        # The browser sends a warm-up when a thread opens (AssistantApp: controller.warmup(threadId)); in mode A
+        # it starts the thread's Runtime session. The harness reads the warm-up to its end before the first ask,
+        # so that ask never waits on it: its plan time is a best case. A browser ask sent while the warm-up is
+        # still in flight queues behind it, and the browser's time includes that wait. A failed warm-up only
+        # makes the first answer slower: its result is not checked.
+        thread.send(wire.new_id(), wire.warmup())
+    return thread
 
 
 def require(turn: TurnResult) -> TurnResult:

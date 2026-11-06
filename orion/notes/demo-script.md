@@ -9,6 +9,9 @@ step states", the storyboard and the interaction rules).
 All data is synthetic. Every answer ends with the notice "Synthetic sandbox — all data is
 fabricated and has no clinical meaning." Say so once at the start.
 
+Section 7 runs the same demo on the hosted stack in mode A (AgentCore on AWS, through
+CloudFront). Its status is in `mode-a-status.md`.
+
 ## 0. Before the demo (15 minutes before)
 
 1. **Stack up.** The sandbox stack (`mmrf-synthetic`) is healthy, then mode L is up:
@@ -201,3 +204,124 @@ The design's cut list, in order, and what the demo does if that cut was taken.
 3. **Check.** `orion/scripts/orion-local.sh status` is healthy, the oracle fingerprint is
    unchanged (`python -m orion_evals oracle`), and a new private window shows the six starters
    with `Scope: All cases · 1,000 cases`.
+
+## 7. Mode A: the same demo on AWS
+
+Mode A is the hosted sandbox with ORION on. Each piece runs in AWS:
+
+- the agent runs in the AgentCore Runtime `orion_agent` (version 4 since 2026-11-06 05:36 UTC,
+  endpoint `orion_live`);
+- each data call goes through the AgentCore Gateway `orion-vlab` to the Lambda
+  `orion-vlab-tools`, which reads this same hosted stack through CloudFront;
+- run records are in S3;
+- the planner and composer are Claude Opus 5.5 on Bedrock, as in the Bedrock setup of section 0.
+
+The screens, words, numbers and beats are those of sections 1–3. Only the waits differ. What was
+verified, and the timings below, are in `mode-a-status.md`. The resources stay up until the user
+runs `mode-a-teardown.md`.
+
+### Before the demo (15 minutes before)
+
+1. **Is it up?** These are read-only operator checks with the user's AWS profile. The stack itself
+   runs on its own roles, so expired operator credentials do not stop it.
+
+   ```sh
+   aws bedrock-agentcore-control get-agent-runtime-endpoint --region us-east-1 \
+     --agent-runtime-id orion_agent-RE0ngY6qRl --endpoint-name orion_live --query '{status: status, live: liveVersion}'
+   ```
+
+   Expect READY at live version 4.
+2. **Open it in your own browser.** Use a fresh private window, at least 720 px wide, at the
+   sandbox's `https_url` (`terraform -chdir=terraform output -raw https_url`) followed by
+   `/?app=Assistant`.
+   - The site asks for the team login. Only you type it.
+   - The login is in `generated/aws/access.json`. Open that file only on your own screen, never
+     while sharing, and never paste it into a chat.
+   - You should see the banner and the six starters, with the scope chip reading
+     `Scope: All cases · 1,000 cases`.
+3. **Rehearse one question through the real path.** Ask J1.
+   - The plan card shows.
+   - The rows tick off one by one.
+   - "Writing interpretation" appears before the Interpretation.
+
+   That is the check that CloudFront streams the answer and does not buffer it. The user made it
+   on 2026-11-05. An automated rehearsal runs through the operator's loopback port-forward, never
+   during the demo (`mode-a-status.md`, "How to rerun everything"):
+   `SANDBOX_ORIGIN=http://127.0.0.1:3081 ORION_E2E_MODEL=bedrock ORION_E2E_MODE=A node
+   orion/scripts/e2e-mode-l.mjs j1-open j3`.
+4. **Today's numbers** are the oracle values of section 0, step 3. The hosted stack's fingerprint
+   `80ac2c93…` matched the oracle in mode A (`orion-evals-20261106T040956Z`).
+5. **No deploys on demo day.**
+   - `aws_sandbox.py deploy` re-runs Helm with `values.json` alone, which turns ORION off.
+   - A new Runtime version makes its first call wait about 9.5 s.
+   - If one was unavoidable, ask one rehearsal question after it.
+
+### Waits to expect
+
+| Moment | Expect (final mode A run, 2026-11-06, Runtime version 3) |
+| --- | --- |
+| Opening the Assistant, or **New thread** | A warm-up turn of about 5 s runs in the background. Each thread is its own Runtime session |
+| A question asked in those first 5 s | The plan shows after 8–11.5 s: the question waits for the warm-up |
+| A question asked after that (a typed question, a chip) | The plan shows after about 4 s |
+| A plan-card edit (version 2) | 0.3 s |
+| "Writing interpretation", J1 or J2 | 7–11 s |
+| "Writing interpretation", J3 | About 22 s |
+| J3's `de_run` (row 6) | 1–3 s |
+| A cold microVM (rare: 3 of 91 eval asks, all while a second test run shared the Runtime) | 7–9 s more before the plan |
+
+The habit that removes most of the wait: after opening the Assistant or clicking **New thread**,
+talk for five seconds (the scope chip, the starters), then click the starter.
+
+The 5 s plan target (NFR-01) is a **Proposal**, and mode A misses it for a thread's first question
+(`mode-a-status.md`, Known limits 1). Do not promise it.
+
+### What to show, on top of sections 1–3
+
+- **The same three journeys.** The numbers are the same, read from the same fixture.
+- **Where it ran.** Click a chip (for example "Row 1 · s2 cohort_count"), then **Export the run
+  record as JSON**. The record's `environment` reads mode `A` and `toolTransport` `gateway`.
+  - Server reads such as `cohort_count` went through the Gateway (transport `gateway`).
+  - The four computed steps (set operations, subset check, ranking, the Kaplan–Meier median) ran
+    inside the agent (`in_process`).
+  - `save_cohorts` is the browser's own (`client`), and runs only inside Create.
+- **Say it in one sentence:** the agent runs in Amazon Bedrock AgentCore Runtime. Every data call
+  goes through AgentCore Gateway to a Lambda that reads this same hosted sandbox, and every run is
+  recorded in S3.
+- **Stop works as in mode L.** Press Stop while "Writing interpretation" (about 8 s, so easy to
+  hit) or while "Planning" (about 4 s). Stop during J3's `de_run` (1–3 s) is tight: prefer the
+  writing moment.
+- **Optional: a reload.** Reload at J3's save pause or during `de_run`. The thread restores and
+  the run finishes.
+
+### What to avoid
+
+- **Running the evals or the browser E2E against the hosted stack during the demo.** They share
+  the Runtime. All three cold microVMs of the final evals happened while a second test run was
+  going.
+- **Showing the team login** (`generated/aws/access.json`, `aws_sandbox.py credentials`), or
+  typing it on a shared screen.
+- **Using the operator's loopback port-forward (`127.0.0.1:3081`) for the audience.** It needs
+  `kubectl` and the EKS API allowlist, which a changed public IP breaks. It also dropped one
+  connection in testing. The audience uses CloudFront, which is not IP-restricted.
+- **Continuing a thread left idle for more than 15 minutes.** The Runtime recycles an idle
+  session's microVM after 900 s, so the next question pays a fresh start (not measured). Click
+  **New thread** and wait five seconds instead.
+- **Narrating the direction of a fold change**, as in mode L.
+- **Reading a treatment question's "Interpretation withheld" as a failure.** Since version 4, a
+  run whose groups are defined by a treatment ends Observed only, with the reason that it compares
+  groups defined by a treatment. That is by design (`mode-a-status.md`, "The version 4 smoke").
+
+### If mode A fails on stage
+
+| Symptom | Fallback |
+| --- | --- |
+| The hosted site does not load, or answers fail (Failed, or "Interpretation withheld" on every answer) | Switch to mode L on the local stack (sections 0–3, `http://localhost:3080/?app=Assistant`), in the setup you rehearsed |
+| A viewer fails to mount | As in section 5: the card keeps its frozen table; open the full tool with **Open with this cohort** |
+| "How do we know it works on AWS?" | `mode-a-status.md`: 15 of 15 browser scenarios and 118 checks, and the evals (22 pass, E11 and E20 not run, the plan gate's miss), on Runtime version 3; version 4 had a smoke test. The beat screenshots in `orion/notes/screenshots/e2e/` are from that mode A run (2026-11-06, 04:09–04:19 UTC) |
+
+### Reset between rehearsals
+
+- **The browser.** Close the private window. As in mode L, threads live in that tab's
+  sessionStorage and saved cohorts in that browser, so a new private window starts clean.
+- **The records.** Run records stay in S3 and expire after 30 days. There is nothing to reset, and
+  nothing to delete.

@@ -7,7 +7,8 @@ from collections.abc import Sequence
 from typing import Any
 
 from . import HARNESS_VERSION
-from .checks import Check, JsonObj, counted_set_visible, expect, not_run, numbers_cited, writes_confirmed
+from .checks import Check, JsonObj, counted_set_visible, expect, not_run, numbers_cited, outcome, writes_confirmed
+from .evalchecks import FULL_REPEATS, REPEATS_CHECK
 from .evals import BY_ID, EDGE_GATE, EvalSpec
 from .evidence import AgentUnavailable, EvalContext, EvalResult, RunEvidence, ScenarioStop
 from .oracle import OracleError
@@ -15,6 +16,7 @@ from .simstore import LABEL as SIMULATED
 
 PLAN_P95_TARGET_S = 5.0
 PLAN_MIN_RUNS = 20
+WARMED_CONDITION = "each thread's warm-up completed before its first ask"
 
 
 def select(ids: Sequence[str] | None) -> list[EvalSpec]:
@@ -103,7 +105,16 @@ def _share(checks: Sequence[Check]) -> tuple[str, str]:
     return status, f"{len(passed)} of {len(ran)} runs" + ("" if ran else " (no record or answer to check)")
 
 
-def gates(results: Sequence[EvalResult], evidence: Sequence[RunEvidence]) -> list[JsonObj]:
+def _over_repeats(status: str, measured: str, repeats: int) -> tuple[str, str]:
+    """A gate the design scores "in 5 of 5 runs" cannot pass from fewer: a pass becomes not run, with the count.
+    A failure stands (it already misses 5 of 5)."""
+    if repeats >= FULL_REPEATS:
+        return status, measured
+    return ("not-run" if status == "pass" else status), f"{measured}; needs {FULL_REPEATS} repeats, ran {repeats}"
+
+
+def gates(results: Sequence[EvalResult], evidence: Sequence[RunEvidence], repeats: int) -> list[JsonObj]:
+    """The R4 gates; `repeats` is how many times each reference prompt ran (`--repeats`)."""
     by_id = {r.id: r for r in results}
     reference = [ev for ev in evidence if ev.label.startswith(("J1 ", "J2 ", "J3 "))]
     out: list[JsonObj] = []
@@ -111,10 +122,14 @@ def gates(results: Sequence[EvalResult], evidence: Sequence[RunEvidence]) -> lis
     if e16 is None:
         out.append(_gate("Reference prompts completed", "6 of 6", "not-run", "E16 not run"))
     else:
-        complete = [c for c in e16.checks if c.status == "pass"]
-        out.append(_gate("Reference prompts completed", "6 of 6", e16.status, f"{len(complete)} of {len(e16.checks)} prompts Complete in every run"))
-    out.append(_gate("Phrasing parity", "identical signatures in 5 of 5 runs per prompt and per pair, plus the held-out paraphrases", _status_of(by_id, ["E1", "E2", "E3", "E4", "E5", "E6", "E22"]), "E1-E6 signature checks and E22"))
-    out.append(_gate("Interpretation present", "every reference run Complete with Interpretation, 5 of 5 per prompt", "not-run" if e16 is None else e16.status, "E16"))
+        # "6 of 6, scripted demo run": the per-prompt checks, without E16's own 5-of-5 repeats check.
+        prompts = [c for c in e16.checks if c.name != REPEATS_CHECK]
+        complete = [c for c in prompts if c.status == "pass"]
+        out.append(_gate("Reference prompts completed", "6 of 6", outcome(prompts), f"{len(complete)} of {len(prompts)} prompts Complete in every run"))
+    status, measured = _over_repeats(_status_of(by_id, ["E1", "E2", "E3", "E4", "E5", "E6", "E22"]), "E1-E6 signature checks and E22", repeats)
+    out.append(_gate("Phrasing parity", "identical signatures in 5 of 5 runs per prompt and per pair, plus the held-out paraphrases", status, measured))
+    status, measured = _over_repeats("not-run" if e16 is None else e16.status, "E16", repeats)
+    out.append(_gate("Interpretation present", "every reference run Complete with Interpretation, 5 of 5 per prompt", status, measured))
     edge_items: list[tuple[str, str]] = []
     for eid in EDGE_GATE:
         result = by_id.get(eid)
@@ -152,7 +167,19 @@ def gates(results: Sequence[EvalResult], evidence: Sequence[RunEvidence]) -> lis
         status = "not-run"
     else:
         status = "pass" if p95 is not None and p95 <= PLAN_P95_TARGET_S else "fail"
-    out.append(_gate("Plan visible p95 (Proposal)", f"<= {PLAN_P95_TARGET_S:.0f} s over at least {PLAN_MIN_RUNS} runs", status, f"p95 {'n/a' if p95 is None else f'{p95:.2f} s'} over {len(times)} asks"))
+    # Whether each thread was warmed before its first ask (--warmup-threads) changes what the time holds in
+    # mode A (a new thread is a new Runtime session), so the gate says what was measured. The harness waits for
+    # the warm-up to end before it asks, and the time starts at the ask's POST: a best case. The browser's clock
+    # starts at submit, and an ask sent while the warm-up is still in flight waits for the rest of it, so the
+    # gate never calls this browser parity.
+    warmed = any(t.action == "warmup" for ev in evidence for t in ev.turns)
+    condition = f"; {WARMED_CONDITION}" if warmed else "; no thread warm-up"
+    # NFR-01 asks for warm and cold runs; a sample where every ask waited for its thread's warm-up is a best
+    # case with no cold first ask, so it informs but never passes the gate (a fail stays a fail).
+    if warmed and status == "pass":
+        status = "not-run"
+        condition += " (a best case: NFR-01 needs runs without an awaited warm-up)"
+    out.append(_gate("Plan visible p95 (Proposal)", f"<= {PLAN_P95_TARGET_S:.0f} s over at least {PLAN_MIN_RUNS} runs", status, f"p95 {'n/a' if p95 is None else f'{p95:.2f} s'} over {len(times)} asks{condition}"))
     out.append(_gate("Count accuracy", "J3 group sizes equal a direct API computation", _status_of(by_id, ["E5", "E6"]), "E5, E6 group-size checks"))
     return out
 
@@ -191,5 +218,6 @@ def environment(ctx: EvalContext, evidence: Sequence[RunEvidence], fingerprint: 
         "oracleAuthenticated": None if ctx.oracle is None else ctx.oracle.gw.authenticated,
         "cohortStore": f"{SIMULATED} (in memory, defSha256 per the shared vectors)",
         "repeats": ctx.repeats,
+        "threadWarmup": ctx.warmup_threads,
         "frontendRoot": None if ctx.frontend_root is None else str(ctx.frontend_root),
     }

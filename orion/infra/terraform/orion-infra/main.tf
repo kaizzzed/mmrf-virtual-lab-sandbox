@@ -21,15 +21,23 @@ locals {
   )
 
   # Bedrock resources for the planner, composer and fallback ids. A cross-Region inference profile
-  # (us., eu., apac., global. ...) needs the profile and the foundation model in every Region it routes to.
+  # (us., eu., apac., global. ...) needs the profile and the foundation model in every Region it routes
+  # to (us. routes to us-east-1, us-east-2 and us-west-2; global. also needs the Region-less model ARN,
+  # which the * Region matches). The foundation model is granted only through these profiles
+  # (bedrock:InferenceProfileArn), so it can never be called directly in any Region. A base id (the
+  # mantle client) is granted as the foundation model in var.region.
   profile_pattern = "^(us|eu|apac|global|us-gov|jp|au|ca)\\."
   model_ids       = distinct([var.planner_model_id, var.composer_model_id, var.fallback_model_id])
-  model_arns = distinct(flatten([
-    for id in local.model_ids : can(regex(local.profile_pattern, id)) ? [
-      "arn:aws:bedrock:${var.region}:${local.account}:inference-profile/${id}",
-      "arn:aws:bedrock:*::foundation-model/${replace(id, "/^[a-z-]+\\./", "")}",
-    ] : ["arn:aws:bedrock:${var.region}::foundation-model/${id}"]
-  ]))
+  profile_ids     = [for id in local.model_ids : id if can(regex(local.profile_pattern, id))]
+  inference_profile_arns = [
+    for id in local.profile_ids : "arn:aws:bedrock:${var.region}:${local.account}:inference-profile/${id}"
+  ]
+  profile_model_arns = distinct([
+    for id in local.profile_ids : "arn:aws:bedrock:*::foundation-model/${replace(id, "/^[a-z-]+\\./", "")}"
+  ])
+  direct_model_arns = [
+    for id in local.model_ids : "arn:aws:bedrock:${var.region}::foundation-model/${id}" if !can(regex(local.profile_pattern, id))
+  ]
 
   # Runtime environment: contract "Where records live", the agent's settings.py, tools/config.py and
   # model/config.py. Each reader ignores the names it does not use.

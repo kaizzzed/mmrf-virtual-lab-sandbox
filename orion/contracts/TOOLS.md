@@ -95,7 +95,7 @@ reuses s1 to s7, re-pauses s8 with a new nonce and reruns s9 and s10 (`j3-edit-a
 (`TOOL_HTTP_TIMEOUT_S`) of it; a multi-request tool gives each request what remains. Behind Gateway
 the Lambda's 58 s (`LAMBDA_TIMEOUT_S`) sits between the two. The step cap is 130 s (`STEP_CAP_S`). Server reads retry
 **once**, with an identical body (the same resolved Input, so every request of the attempt is
-re-sent), on 429, 502, 503, 504 or a timeout; a 429 backs off 10 to 20 s first. Executor functions
+re-sent), on 429, 502, 503, 504, a timeout, a dropped connection, or (behind Gateway) a request that could not be signed because credentials were briefly unavailable; a 429 backs off 10 to 20 s first. Executor functions
 never retry (they are deterministic). Client writes never retry. `kg_query` never retries.
 
 ### Error mapping (every server tool)

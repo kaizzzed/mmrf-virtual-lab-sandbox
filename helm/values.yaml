@@ -30,3 +30,26 @@ resources:
   default:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 1Gi}
+# ORION Workstream 2, mode A only (orion/infra/README.md). Off by default: with enabled false the
+# chart renders exactly as without this block. Fill it from orion-infra's Terraform output
+# helm_values; it holds ARNs and names, never a credential.
+orion:
+  enabled: false
+  mode: A
+  runtimeArn: ''
+  runtimeQualifier: DEFAULT
+  runBucket: ''
+  runPrefix: orion/
+  region: us-east-1
+  # Bound to the orion-bff role by an EKS Pod Identity association (orion-infra).
+  serviceAccountName: orion-frontend
+  # Open question 19: whether Pod Identity works with service-account tokens off. Set true only
+  # if the day-1 test shows the frontend pod gets no credentials without it.
+  automountServiceAccountToken: false
+  egress:
+    # TCP 443 to any public IPv4 host, not only the AgentCore Runtime and S3 (an accepted residual
+    # risk: orion/infra/README.md, "Residual risks"). Private and link-local ranges stay closed.
+    exceptCidrs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
+    # The EKS Pod Identity Agent on the node.
+    podIdentityAgentCidr: 169.254.170.23/32
+    podIdentityAgentPort: 80

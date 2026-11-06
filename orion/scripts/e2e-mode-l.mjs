@@ -10,6 +10,9 @@
 //   node orion/scripts/e2e-mode-l.mjs j1 stop         only scenarios whose id contains a word
 //   SANDBOX_ORIGIN=http://localhost:3080 node orion/scripts/e2e-mode-l.mjs
 //   ORION_E2E_MODEL=bedrock node orion/scripts/e2e-mode-l.mjs     against the Bedrock agent
+//   SANDBOX_ORIGIN=http://127.0.0.1:3081 ORION_E2E_MODEL=bedrock ORION_E2E_MODE=A node orion/scripts/e2e-mode-l.mjs
+//                                                     against the hosted sandbox (mode A), through
+//                                                     kubectl port-forward service/identity 3081:8080
 //
 // Scenarios: j1-open, j1-named (J1 both phrasings, Evidence Inspector), j2 (confirmation card,
 // Create, cohort list, hand-off), j3 (pause with eligible counts, two saves, DE card), edit-stop
@@ -59,6 +62,14 @@ const filters = process.argv.slice(2).map(word => word.toLowerCase());
 const MODEL = (process.env.ORION_E2E_MODEL || 'stub').trim().toLowerCase();
 if (!['stub', 'bedrock'].includes(MODEL)) throw new Error('ORION_E2E_MODEL takes stub or bedrock');
 const BEDROCK = MODEL === 'bedrock';
+// ORION_E2E_MODE names where the agent runs: `L` (the default; the local Compose agent with in-process
+// tools) or `A` (the hosted sandbox: the frontend's BFF calls the AgentCore Runtime, whose tools go
+// through AgentCore Gateway). Mode A is reached through a loopback port-forward of the hosted
+// identity gateway (SANDBOX_ORIGIN=http://127.0.0.1:3081) and always runs the Bedrock models.
+const MODE = (process.env.ORION_E2E_MODE || 'L').trim().toUpperCase();
+if (!['L', 'A'].includes(MODE)) throw new Error('ORION_E2E_MODE takes L or A');
+if (MODE === 'A' && !BEDROCK) throw new Error('ORION_E2E_MODE=A runs the hosted agent, which uses the Bedrock models: set ORION_E2E_MODEL=bedrock');
+const TRANSPORT = MODE === 'A' ? 'gateway' : 'in_process';
 // A4: the inference profiles, never the base model ids (they fail on demand).
 const MODEL_IDS = {primary: 'us.anthropic.claude-opus-5-5', fallback: 'us.anthropic.claude-opus-5'};
 
@@ -511,10 +522,19 @@ class Scenario {
     expect(record.runView.status).toBe(status);
     if (question) expect(record.question).toBe(question);
     const {planner, composer} = record.environment;
-    expect(record.environment, `the agent runs the ${planner} planner and the ${composer} composer; ORION_E2E_MODEL is ${MODEL}`)
-      .toMatchObject({mode: 'L', planner: MODEL, composer: MODEL, toolTransport: 'in_process'});
+    expect(record.environment, `the agent runs the ${planner} planner and the ${composer} composer; ORION_E2E_MODEL is ${MODEL}, ORION_E2E_MODE is ${MODE}`)
+      .toMatchObject({mode: MODE, planner: MODEL, composer: MODEL, toolTransport: TRANSPORT});
+    // The executor's four pure functions run inside the agent in every mode (TOOLS.md section 3); the
+    // one client step, save_cohorts, is the browser's write, recorded with transport `client` in every
+    // mode (TOOLS.md section 4); every server tool goes through the mode's transport.
+    const PURE_FUNCTIONS = new Set(['set_operation', 'check_subset', 'rank_top_n', 'derive_km_median']);
+    const CLIENT_STEPS = new Set(['save_cohorts']);
+    const expectedTransport = tool => (PURE_FUNCTIONS.has(tool) ? 'in_process' : CLIENT_STEPS.has(tool) ? 'client' : TRANSPORT);
+    for (const call of record.calls) {
+      expect(call.transport, `${call.tool} transport`).toBe(expectedTransport(call.tool));
+    }
     const calls = BEDROCK ? `, ${checkModelCalls(record)}` : '';
-    this.pass(`run record ${runId.slice(0, 8)}… via the record route: ${record.status}, ${record.calls.length} calls, ${record.facts.length} facts, environment mode L, ${MODEL} planner and composer${calls}`);
+    this.pass(`run record ${runId.slice(0, 8)}… via the record route: ${record.status}, ${record.calls.length} calls, ${record.facts.length} facts, environment mode ${MODE} (${TRANSPORT}), ${MODEL} planner and composer${calls}`);
     return record;
   }
 
@@ -1281,7 +1301,7 @@ try {
     const {runId, threadId} = await s.ids();
     const record = await s.record(runId, threadId);
     expect(record.status).toBe('Cancelled');
-    expect(record.environment).toMatchObject({mode: 'L', planner: MODEL, composer: MODEL});
+    expect(record.environment).toMatchObject({mode: MODE, planner: MODEL, composer: MODEL, toolTransport: TRANSPORT});
     expect(record.calls.length, 'no tool call').toBe(0);
     expect(record.planVersions.length, 'no plan').toBe(0);
     const planner = record.modelCalls.filter(c => c.role === 'planner');
@@ -1342,13 +1362,13 @@ try {
 // never overwrites the evidence of a Bedrock one (and the reverse).
 const finishedAt = new Date().toISOString();
 // skipped: the scenarios this mode did not run (the Bedrock-only ones in stub mode), so the file alone backs the count.
-const summaryText = `${JSON.stringify({origin, model: MODEL, at: finishedAt, results, skipped: skipped.map(id => ({id, reason: 'needs ORION_E2E_MODEL=bedrock'}))}, null, 2)}\n`;
-const keptSummary = `summary-${MODEL}-${finishedAt.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}.json`;
+const summaryText = `${JSON.stringify({origin, model: MODEL, mode: MODE, at: finishedAt, results, skipped: skipped.map(id => ({id, reason: 'needs ORION_E2E_MODEL=bedrock'}))}, null, 2)}\n`;
+const keptSummary = `summary-${MODE === 'A' ? 'mode-a-' : ''}${MODEL}-${finishedAt.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}.json`;
 await writeFile(new URL('summary.json', shotsDir), summaryText);
 await writeFile(new URL(keptSummary, shotsDir), summaryText);
 const failed = results.filter(r => !r.ok);
 const skip = skipped.length > 0 ? `; ${skipped.length} skipped (${skipped.join(', ')}: they need ORION_E2E_MODEL=bedrock)` : '';
-console.log(`\n${results.length - failed.length} of ${results.length} scenarios passed; ${results.reduce((n, r) => n + r.checks.length, 0)} checks${skip}. Model mode: ${MODEL}. Screenshots, summary.json and ${keptSummary} in ${shotsDir.pathname}`);
+console.log(`\n${results.length - failed.length} of ${results.length} scenarios passed; ${results.reduce((n, r) => n + r.checks.length, 0)} checks${skip}. Model mode: ${MODEL}; agent mode: ${MODE} (${TRANSPORT}). Screenshots, summary.json and ${keptSummary} in ${shotsDir.pathname}`);
 if (BEDROCK) {
   const seconds = ms => (ms === null ? '–' : `${(ms / 1000).toFixed(1)} s`);
   console.log('Browser timings (plan: the ask to the planner\'s card; writing: "Writing interpretation" to the Interpretation):');

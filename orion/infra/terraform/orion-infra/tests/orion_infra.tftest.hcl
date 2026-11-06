@@ -1,6 +1,14 @@
 # Plan-only checks with a mocked AWS provider: no credentials, no AWS call. Run with
 # `terraform test` in this directory (orion/infra/README.md, "Checks"). Every value is synthetic.
-mock_provider "aws" {}
+mock_provider "aws" {
+  # A mocked policy document's json is a random string, which the IAM and S3 policy arguments
+  # reject at plan time; the statements the assertions read are configuration, so they stay real.
+  mock_data "aws_iam_policy_document" {
+    defaults = {
+      json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
+    }
+  }
+}
 
 variables {
   sandbox_account_id  = "123456789012"
@@ -65,7 +73,7 @@ run "mode_a_defaults" {
     error_message = "Run records expire after 30 days."
   }
   assert {
-    condition     = output.iam_actions.bff == ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession", "s3:GetObject"]
+    condition     = output.iam_actions.bff == tolist(["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession", "s3:GetObject"])
     error_message = "The BFF may only invoke and stop the Runtime and read run records."
   }
   assert {
@@ -73,7 +81,11 @@ run "mode_a_defaults" {
     error_message = "The Runtime invokes the Gateway and writes records, and cannot read the Basic secret."
   }
   assert {
-    condition     = output.iam_actions.gateway == ["lambda:InvokeFunction", "s3:GetObject"]
+    condition     = alltrue([for s in data.aws_iam_policy_document.runtime.statement : s.sid != "ListRunRecords" || length(s.condition) == 0])
+    error_message = "The Runtime's ListBucket has no s3:prefix condition, so a missing record or ledger reads as 404, not 403."
+  }
+  assert {
+    condition     = output.iam_actions.gateway == tolist(["lambda:InvokeFunction", "s3:GetObject"])
     error_message = "The Gateway role only invokes the tool Lambda (and reads its tool schema)."
   }
   assert {
@@ -83,6 +95,72 @@ run "mode_a_defaults" {
   assert {
     condition     = aws_eks_pod_identity_association.bff.service_account == "orion-frontend" && aws_eks_pod_identity_association.bff.namespace == "mmrf-synthetic" && length(aws_eks_addon.pod_identity) == 1
     error_message = "Pod Identity binds the frontend's orion-frontend ServiceAccount."
+  }
+  # INFRA-1: the Opus foundation models only through the us. inference profiles.
+  assert {
+    condition     = anytrue([for s in data.aws_iam_policy_document.runtime.statement : s.sid == "PlannerComposerFallbackModels" && length(s.condition) == 0 && s.resources == toset(["arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-5", "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5"])])
+    error_message = "The Runtime invokes the planner, composer and fallback through their two us. inference profiles."
+  }
+  assert {
+    condition     = anytrue([for s in data.aws_iam_policy_document.runtime.statement : s.sid == "ModelsOnlyThroughProfiles" && s.resources == toset(["arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5-5", "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5"]) && length(s.condition) == 1 && alltrue([for c in s.condition : c.test == "StringLike" && c.variable == "bedrock:InferenceProfileArn" && toset(c.values) == toset(["arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5-5", "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-opus-5"])])])
+    error_message = "The Opus foundation models are granted in the profiles' Regions only through the two inference profiles (bedrock:InferenceProfileArn)."
+  }
+  assert {
+    condition     = alltrue([for s in data.aws_iam_policy_document.runtime.statement : length([for r in s.resources : r if strcontains(r, ":foundation-model/")]) == 0 if length(s.condition) == 0 && anytrue([for a in s.actions : startswith(a, "bedrock:")])])
+    error_message = "No unconditioned Runtime statement grants a foundation model: a direct InvokeModel on Opus, in any Region, is not allowed."
+  }
+  # INFRA-2: each AgentCore role trusts only this module's Runtime or Gateway.
+  assert {
+    condition     = length(data.aws_iam_policy_document.runtime_trust.statement) == 1 && alltrue([for s in data.aws_iam_policy_document.runtime_trust.statement : anytrue([for c in s.condition : c.test == "ArnLike" && c.variable == "aws:SourceArn" && c.values == tolist(["arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/orion_agent-*"])]) && anytrue([for c in s.condition : c.test == "StringEquals" && c.variable == "aws:SourceAccount" && c.values == tolist(["123456789012"])])])
+    error_message = "orion-runtime trusts AgentCore only for the Runtime orion_agent (and its endpoints), not any AgentCore resource."
+  }
+  assert {
+    condition     = length(data.aws_iam_policy_document.gateway_trust.statement) == 1 && alltrue([for s in data.aws_iam_policy_document.gateway_trust.statement : anytrue([for c in s.condition : c.test == "ArnLike" && c.variable == "aws:SourceArn" && c.values == tolist(["arn:aws:bedrock-agentcore:us-east-1:123456789012:gateway/orion-vlab-*"])]) && anytrue([for c in s.condition : c.test == "StringEquals" && c.variable == "aws:SourceAccount" && c.values == tolist(["123456789012"])])])
+    error_message = "orion-gateway trusts AgentCore only for the Gateway orion-vlab, not any Gateway."
+  }
+  # INFRA-3: orion-bff only for the frontend's ServiceAccount, through session tags kept on.
+  assert {
+    condition     = anytrue([for s in data.aws_iam_policy_document.bff_trust.statement : s.sid == "EksPodIdentity" && anytrue([for c in s.condition : c.test == "StringEquals" && c.variable == "aws:RequestTag/kubernetes-namespace" && c.values == tolist(["mmrf-synthetic"])]) && anytrue([for c in s.condition : c.test == "StringEquals" && c.variable == "aws:RequestTag/kubernetes-service-account" && c.values == tolist(["orion-frontend"])]) && anytrue([for c in s.condition : c.test == "ArnEquals" && c.variable == "aws:SourceArn" && c.values == tolist(["arn:aws:eks:us-east-1:123456789012:cluster/mmrf-synthetic"])])])
+    error_message = "orion-bff trusts Pod Identity only for mmrf-synthetic/orion-frontend on the sandbox cluster."
+  }
+  assert {
+    condition     = aws_eks_pod_identity_association.bff.disable_session_tags == false
+    error_message = "The association keeps session tags on; orion-bff's trust needs them."
+  }
+  # INFRA-6: the lifecycle never expires a tagged (live or rollback) agent image.
+  assert {
+    condition     = alltrue([for r in jsondecode(aws_ecr_lifecycle_policy.agent.policy).rules : r.selection.tagStatus == "untagged"])
+    error_message = "The ECR lifecycle expires untagged images only, never a tag a Runtime version runs."
+  }
+}
+
+run "renamed_runtime_and_gateway_trust" {
+  command = plan
+  variables {
+    runtime_name = "orion_agent_test"
+    gateway_name = "Orion-VLab-Test"
+  }
+  assert {
+    condition     = alltrue([for s in data.aws_iam_policy_document.runtime_trust.statement : anytrue([for c in s.condition : c.variable == "aws:SourceArn" && c.values == tolist(["arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/orion_agent_test-*"])])])
+    error_message = "A second workspace's Runtime role trusts only its own Runtime name."
+  }
+  assert {
+    condition     = alltrue([for s in data.aws_iam_policy_document.gateway_trust.statement : anytrue([for c in s.condition : c.variable == "aws:SourceArn" && c.values == tolist(["arn:aws:bedrock-agentcore:us-east-1:123456789012:gateway/orion-vlab-test-*"])])])
+    error_message = "A Gateway id is its name in lower case, so the trust prefix is lower-cased."
+  }
+}
+
+run "mantle_base_ids" {
+  command = plan
+  variables {
+    bedrock_client    = "mantle"
+    planner_model_id  = "anthropic.claude-opus-5-5"
+    composer_model_id = "anthropic.claude-opus-5-5"
+    fallback_model_id = "anthropic.claude-opus-5"
+  }
+  assert {
+    condition     = anytrue([for s in data.aws_iam_policy_document.runtime.statement : s.sid == "PlannerComposerFallbackModels" && s.resources == toset(["arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5-5", "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5"])]) && !anytrue([for s in data.aws_iam_policy_document.runtime.statement : s.sid == "ModelsOnlyThroughProfiles"])
+    error_message = "Base ids are granted as foundation models in var.region only, with no wildcard Region."
   }
 }
 
@@ -113,7 +191,7 @@ run "stage_1_base" {
     error_message = "Stage 1 creates no Runtime and no tools."
   }
   assert {
-    condition     = output.iam_actions.bff == ["s3:GetObject"]
+    condition     = output.iam_actions.bff == tolist(["s3:GetObject"])
     error_message = "Without a Runtime the BFF can only read records."
   }
 }
@@ -172,7 +250,11 @@ run "global_inference_profile" {
     planner_model_id = "global.anthropic.claude-opus-5-5"
   }
   assert {
-    condition     = anytrue([for s in data.aws_iam_policy_document.runtime.statement : s.sid == "PlannerComposerFallbackModels" && contains(tolist(s.resources), "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-opus-5-5") && contains(tolist(s.resources), "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5-5")])
-    error_message = "A cross-Region profile grants the profile and its foundation model in every Region."
+    condition     = anytrue([for s in data.aws_iam_policy_document.runtime.statement : s.sid == "PlannerComposerFallbackModels" && contains(tolist(s.resources), "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-opus-5-5") && !contains(tolist(s.resources), "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5-5")])
+    error_message = "A cross-Region profile is granted as the profile itself, never with an unconditioned foundation model."
+  }
+  assert {
+    condition     = anytrue([for s in data.aws_iam_policy_document.runtime.statement : s.sid == "ModelsOnlyThroughProfiles" && contains(tolist(s.resources), "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5-5") && alltrue([for c in s.condition : c.variable == "bedrock:InferenceProfileArn" && contains(c.values, "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-opus-5-5")])])
+    error_message = "A global. profile's foundation model is granted in every Region (the * Region also matches global.'s Region-less ARN), but only through the profile."
   }
 }

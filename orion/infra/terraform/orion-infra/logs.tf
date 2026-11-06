@@ -1,7 +1,9 @@
 # CloudWatch: the tool Lambda's log group is in tools.tf. The Runtime writes its container stdout
-# (one JSON line per event) to the service-created group /aws/bedrock-agentcore/runtimes/<id>-<endpoint>;
-# the vended deliveries below add application logs, and optionally spans, under groups this module
-# owns, so their retention is set here and destroy removes them.
+# (plain-text Python logging and uvicorn access lines) to the service-created groups
+# /aws/bedrock-agentcore/runtimes/<id>-<endpoint>, one per endpoint, created on first use and never
+# expiring until the operator sets their retention (README, deploy step 6). The vended deliveries
+# below add application logs, and optionally spans, under groups this module owns, so their
+# retention is set here and destroy removes them.
 
 resource "aws_cloudwatch_log_group" "runtime_app" {
   count             = var.create_runtime && var.enable_log_delivery ? 1 : 0

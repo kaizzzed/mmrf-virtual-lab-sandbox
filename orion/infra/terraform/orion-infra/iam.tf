@@ -8,6 +8,9 @@
 
 # --- orion-runtime -----------------------------------------------------------------------------
 
+# Only this module's Runtime may assume the role: its ARN is runtime/<runtime_name>-<10 characters>
+# and its endpoints sit under it (runtime/<id>/runtime-endpoint/<name>). A Runtime name has no
+# hyphen, so the prefix matches no other Runtime, and no Gateway, code interpreter or browser.
 data "aws_iam_policy_document" "runtime_trust" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -23,7 +26,7 @@ data "aws_iam_policy_document" "runtime_trust" {
     condition {
       test     = "ArnLike"
       variable = "aws:SourceArn"
-      values   = ["arn:aws:bedrock-agentcore:${var.region}:${local.account}:*"]
+      values   = ["arn:aws:bedrock-agentcore:${var.region}:${local.account}:runtime/${var.runtime_name}-*"]
     }
   }
 }
@@ -87,10 +90,27 @@ data "aws_iam_policy_document" "runtime" {
       "arn:aws:bedrock-agentcore:${var.region}:${local.account}:workload-identity-directory/default/workload-identity/${var.runtime_name}-*",
     ]
   }
+  # The inference profiles themselves (and any base id, unconditioned in var.region only).
   statement {
     sid       = "PlannerComposerFallbackModels"
     actions   = var.bedrock_invoke_actions
-    resources = local.model_arns
+    resources = concat(local.inference_profile_arns, local.direct_model_arns)
+  }
+  # A profile's foundation model in the Regions it routes to, only through one of those profiles
+  # (AWS's documented pattern: Bedrock sets bedrock:InferenceProfileArn on the routed call). A direct
+  # InvokeModel on the base model, in any Region, carries no such key and is not allowed.
+  dynamic "statement" {
+    for_each = length(local.profile_ids) > 0 ? [1] : []
+    content {
+      sid       = "ModelsOnlyThroughProfiles"
+      actions   = var.bedrock_invoke_actions
+      resources = local.profile_model_arns
+      condition {
+        test     = "StringLike"
+        variable = "bedrock:InferenceProfileArn"
+        values   = local.inference_profile_arns
+      }
+    }
   }
   statement {
     sid     = "RunRecordsAndLedger"
@@ -100,16 +120,13 @@ data "aws_iam_policy_document" "runtime" {
       "${aws_s3_bucket.runs.arn}/${local.threads_prefix}*",
     ]
   }
-  # Without ListBucket a missing record reads as 403, not 404; scoped to the record prefix.
+  # Without ListBucket a missing record reads as 403, not 404, and run_store.py treats only 404 as
+  # missing (a new thread's ledger read). No s3:prefix condition: a GetObject carries no s3:prefix
+  # key, so S3's ListBucket check for the 404 would fail it. The bucket holds only ORION data.
   statement {
     sid       = "ListRunRecords"
     actions   = ["s3:ListBucket"]
     resources = [aws_s3_bucket.runs.arn]
-    condition {
-      test     = "StringLike"
-      variable = "s3:prefix"
-      values   = ["${var.run_prefix}*"]
-    }
   }
   dynamic "statement" {
     for_each = local.use_gateway ? [aws_bedrockagentcore_gateway.vlab[0].gateway_arn] : []
@@ -138,6 +155,10 @@ resource "aws_iam_role_policy" "runtime" {
 
 # --- orion-bff (EKS Pod Identity) --------------------------------------------------------------
 
+# Pod Identity on the sandbox cluster, and only for the frontend's ServiceAccount: EKS passes the
+# kubernetes-namespace and kubernetes-service-account session tags on every AssumeRole (the EKS
+# guide's trust conditions), so another association on this role, in any namespace, gets nothing.
+# The association must keep session tags on (eks.tf, disable_session_tags = false).
 data "aws_iam_policy_document" "bff_trust" {
   statement {
     sid     = "EksPodIdentity"
@@ -155,6 +176,16 @@ data "aws_iam_policy_document" "bff_trust" {
       test     = "ArnEquals"
       variable = "aws:SourceArn"
       values   = [local.cluster_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/kubernetes-namespace"
+      values   = [var.kubernetes_namespace]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/kubernetes-service-account"
+      values   = [var.frontend_service_account]
     }
   }
   # Mode H: the BFF runs locally and assumes this role from a developer profile.
@@ -204,6 +235,8 @@ resource "aws_iam_role_policy" "bff" {
 
 # --- Gateway service role ----------------------------------------------------------------------
 
+# Only this module's Gateway may assume the role (the AgentCore guide's gateway/<name>-* pattern).
+# A Gateway id is its name in lower case, a hyphen and 10 characters, hence lower().
 data "aws_iam_policy_document" "gateway_trust" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -219,7 +252,7 @@ data "aws_iam_policy_document" "gateway_trust" {
     condition {
       test     = "ArnLike"
       variable = "aws:SourceArn"
-      values   = ["arn:aws:bedrock-agentcore:${var.region}:${local.account}:gateway/*"]
+      values   = ["arn:aws:bedrock-agentcore:${var.region}:${local.account}:gateway/${lower(var.gateway_name)}-*"]
     }
   }
 }
