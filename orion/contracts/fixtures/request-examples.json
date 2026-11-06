@@ -1,0 +1,485 @@
+{
+  "schema": "orion.request-examples/v1",
+  "examples": [
+    {
+      "name": "warmup when the Assistant opens",
+      "body": {
+        "threadId": "eb3893e3ec4b61d471d1cba4abfd912a",
+        "runId": "e9ebd15b38efbb912955b5d0c7e71c1e",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "warmup"
+          }
+        }
+      }
+    },
+    {
+      "name": "ask, J3",
+      "body": {
+        "threadId": "987b269628d80c4082f4a97ea8dbab19",
+        "runId": "fcaafcbf0caa8ff44247f558033f9095",
+        "state": {},
+        "messages": [
+          {
+            "id": "31d5c3184a796dde0d93f16e4955f883",
+            "role": "user",
+            "content": "Differential expression between patients with and without a KRAS mutation, top 10 genes"
+          }
+        ],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "ask",
+            "question": "Differential expression between patients with and without a KRAS mutation, top 10 genes",
+            "cohortContext": {
+              "active": {
+                "id": null,
+                "name": "All cases",
+                "filters": {
+                  "mode": "and",
+                  "root": {}
+                },
+                "caseCount": 1000
+              },
+              "saved": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "ask, J2: top mutated genes in a planned cohort, saved after one confirmation",
+      "body": {
+        "threadId": "ea980fb6d7119fb24fc2c6b3b86f6b0a",
+        "runId": "fe9593270ead6f22f108c4a714b60aa7",
+        "state": {},
+        "messages": [
+          {
+            "id": "5e8930d602e163e219e44b39ee8788c8",
+            "role": "user",
+            "content": "Top 3 most frequently mutated genes in CGS high-risk patients"
+          }
+        ],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "ask",
+            "question": "Top 3 most frequently mutated genes in CGS high-risk patients",
+            "cohortContext": {
+              "active": {
+                "id": null,
+                "name": "All cases",
+                "filters": {
+                  "mode": "and",
+                  "root": {}
+                },
+                "caseCount": 1000
+              },
+              "saved": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "ask, the follow-up chip after J1 with CGS high-risk already saved (reused, no save), carrying the J1 card's viz report",
+      "body": {
+        "threadId": "eb3893e3ec4b61d471d1cba4abfd912a",
+        "runId": "501ccb84c0f09b97e054211a7d5e886b",
+        "state": {},
+        "messages": [
+          {
+            "id": "059b36784f806a9a6f77ef0a4e22e5ed",
+            "role": "user",
+            "content": "Top 3 most frequently mutated genes in CGS high-risk patients"
+          }
+        ],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "ask",
+            "question": "Top 3 most frequently mutated genes in CGS high-risk patients",
+            "cohortContext": {
+              "active": {
+                "id": null,
+                "name": "All cases",
+                "filters": {
+                  "mode": "and",
+                  "root": {}
+                },
+                "caseCount": 1000
+              },
+              "saved": [
+                {
+                  "id": "3c7a1e9b-5d2f-4b8a-9e6c-1f0d2a4b6c88",
+                  "name": "CGS high-risk (ORION)",
+                  "filters": {
+                    "mode": "and",
+                    "root": {
+                      "cgs_risk_key_criteria.cgs_risk_category": {
+                        "operator": "includes",
+                        "field": "cgs_risk_key_criteria.cgs_risk_category",
+                        "operands": [
+                          "High risk"
+                        ]
+                      }
+                    }
+                  },
+                  "caseCount": 339
+                }
+              ]
+            },
+            "vizReports": [
+              {
+                "runId": "725ff3c629bddfbbadaad7e5513f479b",
+                "vizId": "v1",
+                "mounted": true,
+                "error": null,
+                "pinnedHashVerified": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "ask that first cancels the paused run (cancelWaiting)",
+      "body": {
+        "threadId": "1f3a6bade172977a7e128eeeb7928b1f",
+        "runId": "0fec7f520c96019f5fe07fa80696b271",
+        "state": {},
+        "messages": [
+          {
+            "id": "dfb6becca70c326f17fbaa89f1d6ed00",
+            "role": "user",
+            "content": "Compare survival of high-risk patients with everyone else"
+          }
+        ],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "ask",
+            "question": "Compare survival of high-risk patients with everyone else",
+            "cohortContext": {
+              "active": {
+                "id": null,
+                "name": "All cases",
+                "filters": {
+                  "mode": "and",
+                  "root": {}
+                },
+                "caseCount": 1000
+              },
+              "saved": []
+            },
+            "cancelWaiting": "b3a7eadfdfd136d93e645b38d461c1bd"
+          }
+        }
+      }
+    },
+    {
+      "name": "cancel (Stop)",
+      "body": {
+        "threadId": "30bd3e4b17b82aa436647fc45b348ea8",
+        "runId": "d0120840e82e4f6db72c9a7d31fe0a00",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "cancel"
+          }
+        }
+      }
+    },
+    {
+      "name": "clarify_answer",
+      "body": {
+        "threadId": "ae3d35f35b0028bd35e1147a6c6c9340",
+        "runId": "7bb1884935c3cb3cf11f731373aadcc8",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "clarify_answer",
+            "optionId": "cgs_risk_key_criteria.cgs_risk_category"
+          }
+        }
+      }
+    },
+    {
+      "name": "consent, accepted",
+      "body": {
+        "threadId": "d5b236a55faf84453a417411b2da1989",
+        "runId": "1539d443c281e36fb523591cbfb27d0f",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "consent",
+            "accept": true
+          }
+        }
+      }
+    },
+    {
+      "name": "consent, declined",
+      "body": {
+        "threadId": "d5b236a55faf84453a417411b2da1989",
+        "runId": "1539d443c281e36fb523591cbfb27d0f",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "consent",
+            "accept": false
+          }
+        }
+      }
+    },
+    {
+      "name": "confirm, Create with make-active",
+      "body": {
+        "threadId": "987b269628d80c4082f4a97ea8dbab19",
+        "runId": "fcaafcbf0caa8ff44247f558033f9095",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "confirm",
+            "nonce": "0ae0ecc3587c126130530d43cbf279ef",
+            "decision": "create",
+            "saved": [
+              {
+                "ref": "kras_wt",
+                "cohortId": "5f2c9a7e-1b3d-4e6f-8a0c-2d4b6e8f0a13",
+                "name": "KRAS not detected (ORION)",
+                "defSha256": "1379daf9a9bf11130f4383815d15251999206d7b45b527c84acab524ea53fff2",
+                "reused": false
+              },
+              {
+                "ref": "kras_mut",
+                "cohortId": "9a1e3c5b-7d2f-4a6e-b8c0-4e6a8c0e2b57",
+                "name": "KRAS mutated (ORION)",
+                "defSha256": "c3b0f0a47af5e376d48966c772cbaa79c2deb6250d9a1bef7a12af041cddd995",
+                "reused": false
+              }
+            ],
+            "makeActive": "kras_mut"
+          }
+        }
+      }
+    },
+    {
+      "name": "confirm, Create of J2's one cohort",
+      "body": {
+        "threadId": "ea980fb6d7119fb24fc2c6b3b86f6b0a",
+        "runId": "fe9593270ead6f22f108c4a714b60aa7",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "confirm",
+            "nonce": "19258d9bb7eba3f12cd080bfd95d433b",
+            "decision": "create",
+            "makeActive": null,
+            "saved": [
+              {
+                "ref": "high",
+                "cohortId": "3c7a1e9b-5d2f-4b8a-9e6c-1f0d2a4b6c88",
+                "name": "CGS high-risk (ORION)",
+                "defSha256": "983a8d0214513dad4ad1a628dcbfa59d6cae1075b5d984b431782188c37007f0",
+                "reused": false
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "confirm, Don't save",
+      "body": {
+        "threadId": "9e809b2629218213c76cf666bad75bd0",
+        "runId": "d18828198e176b9dbbb088c415683f84",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "confirm",
+            "nonce": "110d0304a6513d39c852937f1d930717",
+            "decision": "dont_save",
+            "saved": [],
+            "makeActive": null
+          }
+        }
+      }
+    },
+    {
+      "name": "edit_plan, scope chip (altScopeChoice or a scope picked on the plan card)",
+      "body": {
+        "threadId": "987b269628d80c4082f4a97ea8dbab19",
+        "runId": "fcaafcbf0caa8ff44247f558033f9095",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "edit_plan",
+            "field": "scope",
+            "value": {
+              "source": "all_cases"
+            },
+            "cohortContext": {
+              "active": {
+                "id": null,
+                "name": "All cases",
+                "filters": {
+                  "mode": "and",
+                  "root": {}
+                },
+                "caseCount": 1000
+              },
+              "saved": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "edit_plan, method",
+      "body": {
+        "threadId": "987b269628d80c4082f4a97ea8dbab19",
+        "runId": "fcaafcbf0caa8ff44247f558033f9095",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "edit_plan",
+            "field": "method",
+            "value": "edgeR"
+          }
+        }
+      }
+    },
+    {
+      "name": "edit_plan, top N",
+      "body": {
+        "threadId": "987b269628d80c4082f4a97ea8dbab19",
+        "runId": "fcaafcbf0caa8ff44247f558033f9095",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "edit_plan",
+            "field": "topN",
+            "value": 20
+          }
+        }
+      }
+    },
+    {
+      "name": "edit_plan, thresholds",
+      "body": {
+        "threadId": "987b269628d80c4082f4a97ea8dbab19",
+        "runId": "fcaafcbf0caa8ff44247f558033f9095",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "edit_plan",
+            "field": "thresholds",
+            "value": {
+              "pValueCutoff": 0.01,
+              "pValueType": "adjusted",
+              "foldChangeCutoff": 1.0
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "edit_plan, rename at the save pause",
+      "body": {
+        "threadId": "4050a0319f6cf76ceb8839916eed2c2c",
+        "runId": "3d714682f09d00a3e6b210c7c40dd0b0",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "edit_plan",
+            "field": "cohortName",
+            "value": "KRAS wild-type (ORION)",
+            "ref": "kras_wt"
+          }
+        }
+      }
+    },
+    {
+      "name": "retry_step",
+      "body": {
+        "threadId": "5f8028847670abd19e9bb57a16aa63e4",
+        "runId": "f0618656cd9dbfc4b27818fec4c8edb2",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "retry_step",
+            "stepId": "s4"
+          }
+        }
+      }
+    },
+    {
+      "name": "viz_report, standalone (no turn in flight)",
+      "body": {
+        "threadId": "eb3893e3ec4b61d471d1cba4abfd912a",
+        "runId": "725ff3c629bddfbbadaad7e5513f479b",
+        "state": {},
+        "messages": [],
+        "tools": [],
+        "context": [],
+        "forwardedProps": {
+          "orion": {
+            "action": "viz_report",
+            "vizId": "v1",
+            "mounted": false,
+            "error": "bindProteinPaint rejected: termdb/survival 503",
+            "pinnedHashVerified": null
+          }
+        }
+      }
+    }
+  ]
+}

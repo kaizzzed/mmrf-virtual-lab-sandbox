@@ -1,0 +1,313 @@
+{
+  "schema": "orion.cohort-def-vectors/v1",
+  "about": "defSha256 test vectors. Each vector has a `definition` (the agent's canonical cohort definition, possibly unnormalized) or a `filterSet` (a saved cohort's stored filters, as the browser reads them). Both sides must reproduce `canonical` and `sha256`; null means the filters cannot be read and never match.",
+  "vectors": [
+    {
+      "name": "case IDs, unsorted, one duplicate",
+      "definition": {
+        "kind": "case_ids",
+        "caseIds": [
+          "SYNTH-CASE-0010",
+          "SYNTH-CASE-0003",
+          "SYNTH-CASE-0001",
+          "SYNTH-CASE-0003"
+        ]
+      },
+      "canonical": "{\"caseIds\":[\"SYNTH-CASE-0001\",\"SYNTH-CASE-0003\",\"SYNTH-CASE-0010\"],\"kind\":\"case_ids\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "eccf5566d40177d6b280c97d26c4acaacd4d2f0476c876dbf8047086bd5ee206"
+    },
+    {
+      "name": "the same case IDs as the platform's case-list FilterSet (case_id in)",
+      "filterSet": {
+        "mode": "and",
+        "root": {
+          "case_id": {
+            "operator": "in",
+            "field": "case_id",
+            "operands": [
+              "SYNTH-CASE-0010",
+              "SYNTH-CASE-0003",
+              "SYNTH-CASE-0001",
+              "SYNTH-CASE-0003"
+            ]
+          }
+        }
+      },
+      "canonical": "{\"caseIds\":[\"SYNTH-CASE-0001\",\"SYNTH-CASE-0003\",\"SYNTH-CASE-0010\"],\"kind\":\"case_ids\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "eccf5566d40177d6b280c97d26c4acaacd4d2f0476c876dbf8047086bd5ee206"
+    },
+    {
+      "name": "the same case IDs as cases.case_id includes, with legacy {cases.case_id: id} operands",
+      "filterSet": {
+        "mode": "and",
+        "root": {
+          "cases.case_id": {
+            "operator": "includes",
+            "field": "cases.case_id",
+            "operands": [
+              {
+                "cases.case_id": "SYNTH-CASE-0010"
+              },
+              {
+                "cases.case_id": "SYNTH-CASE-0003"
+              },
+              {
+                "cases.case_id": "SYNTH-CASE-0001"
+              },
+              {
+                "cases.case_id": "SYNTH-CASE-0003"
+              }
+            ]
+          }
+        }
+      },
+      "canonical": "{\"caseIds\":[\"SYNTH-CASE-0001\",\"SYNTH-CASE-0003\",\"SYNTH-CASE-0010\"],\"kind\":\"case_ids\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "eccf5566d40177d6b280c97d26c4acaacd4d2f0476c876dbf8047086bd5ee206"
+    },
+    {
+      "name": "a filter definition with one case_id clause becomes a case-ID list",
+      "definition": {
+        "kind": "filter",
+        "clauses": [
+          {
+            "field": "case_id",
+            "op": "in",
+            "values": [
+              "SYNTH-CASE-0010",
+              "SYNTH-CASE-0003",
+              "SYNTH-CASE-0001",
+              "SYNTH-CASE-0003"
+            ]
+          }
+        ]
+      },
+      "canonical": "{\"caseIds\":[\"SYNTH-CASE-0001\",\"SYNTH-CASE-0003\",\"SYNTH-CASE-0010\"],\"kind\":\"case_ids\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "eccf5566d40177d6b280c97d26c4acaacd4d2f0476c876dbf8047086bd5ee206"
+    },
+    {
+      "name": "J2 race cohort as a definition",
+      "definition": {
+        "kind": "filter",
+        "clauses": [
+          {
+            "field": "demographic.race",
+            "op": "in",
+            "values": [
+              "black or african american"
+            ]
+          }
+        ]
+      },
+      "canonical": "{\"clauses\":[{\"field\":\"demographic.race\",\"op\":\"in\",\"values\":[\"black or african american\"]}],\"kind\":\"filter\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "2575da06c003e84d9cc6c453c2e72a18d1d84487dc2d4342564d3b97b25aeeaa"
+    },
+    {
+      "name": "J2 race cohort as the facet FilterSet",
+      "filterSet": {
+        "mode": "and",
+        "root": {
+          "demographic.race": {
+            "operator": "includes",
+            "field": "demographic.race",
+            "operands": [
+              "black or african american"
+            ]
+          }
+        }
+      },
+      "canonical": "{\"clauses\":[{\"field\":\"demographic.race\",\"op\":\"in\",\"values\":[\"black or african american\"]}],\"kind\":\"filter\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "2575da06c003e84d9cc6c453c2e72a18d1d84487dc2d4342564d3b97b25aeeaa"
+    },
+    {
+      "name": "two fields in reverse order, values unsorted",
+      "filterSet": {
+        "mode": "and",
+        "root": {
+          "diagnoses.iss_stage": {
+            "operator": "includes",
+            "field": "diagnoses.iss_stage",
+            "operands": [
+              "Stage III",
+              "Stage I"
+            ]
+          },
+          "demographic.race": {
+            "operator": "includes",
+            "field": "demographic.race",
+            "operands": [
+              "white",
+              "asian"
+            ]
+          }
+        }
+      },
+      "canonical": "{\"clauses\":[{\"field\":\"demographic.race\",\"op\":\"in\",\"values\":[\"asian\",\"white\"]},{\"field\":\"diagnoses.iss_stage\",\"op\":\"in\",\"values\":[\"Stage I\",\"Stage III\"]}],\"kind\":\"filter\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "512347cf5523197d3ad7e0dae03627ac5fd18a760ed483df5c5b87db2cda7677"
+    },
+    {
+      "name": "a numeric range is an and of two clauses; 65.0 prints as 65",
+      "filterSet": {
+        "mode": "and",
+        "root": {
+          "diagnoses.age_at_diagnosis": {
+            "operator": "and",
+            "operands": [
+              {
+                "operator": "<",
+                "field": "diagnoses.age_at_diagnosis",
+                "operand": 75.5
+              },
+              {
+                "operator": ">=",
+                "field": "diagnoses.age_at_diagnosis",
+                "operand": 65.0
+              }
+            ]
+          }
+        }
+      },
+      "canonical": "{\"clauses\":[{\"field\":\"diagnoses.age_at_diagnosis\",\"op\":\"<\",\"values\":[75.5]},{\"field\":\"diagnoses.age_at_diagnosis\",\"op\":\">=\",\"values\":[65]}],\"kind\":\"filter\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "fd161aad1b0966bb1e0a9c4e03ba90e3dda170e1f2c3536220acbcb4e8109764"
+    },
+    {
+      "name": "= becomes in",
+      "filterSet": {
+        "mode": "and",
+        "root": {
+          "diagnoses.iss_stage": {
+            "operator": "=",
+            "field": "diagnoses.iss_stage",
+            "operand": "Stage II"
+          }
+        }
+      },
+      "canonical": "{\"clauses\":[{\"field\":\"diagnoses.iss_stage\",\"op\":\"in\",\"values\":[\"Stage II\"]}],\"kind\":\"filter\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "ed4555a314402fb7d942d498581583885f7c2816f519561a5a0334beb1b6b6e8"
+    },
+    {
+      "name": "= and includes of one value hash alike",
+      "filterSet": {
+        "mode": "and",
+        "root": {
+          "diagnoses.iss_stage": {
+            "operator": "includes",
+            "field": "diagnoses.iss_stage",
+            "operands": [
+              "Stage II"
+            ]
+          }
+        }
+      },
+      "canonical": "{\"clauses\":[{\"field\":\"diagnoses.iss_stage\",\"op\":\"in\",\"values\":[\"Stage II\"]}],\"kind\":\"filter\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "ed4555a314402fb7d942d498581583885f7c2816f519561a5a0334beb1b6b6e8"
+    },
+    {
+      "name": "a case-ID clause beside another clause stays a filter",
+      "filterSet": {
+        "mode": "and",
+        "root": {
+          "case_id": {
+            "operator": "in",
+            "field": "case_id",
+            "operands": [
+              "SYNTH-CASE-0010",
+              "SYNTH-CASE-0003"
+            ]
+          },
+          "demographic.race": {
+            "operator": "includes",
+            "field": "demographic.race",
+            "operands": [
+              "white"
+            ]
+          }
+        }
+      },
+      "canonical": "{\"clauses\":[{\"field\":\"case_id\",\"op\":\"in\",\"values\":[\"SYNTH-CASE-0003\",\"SYNTH-CASE-0010\"]},{\"field\":\"demographic.race\",\"op\":\"in\",\"values\":[\"white\"]}],\"kind\":\"filter\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "5cf529983350f363e83542aa5ff99d67c27bb67e095b88eafbb0aababded1e2b"
+    },
+    {
+      "name": "all cases: no filters",
+      "filterSet": {
+        "mode": "and",
+        "root": {}
+      },
+      "canonical": "{\"clauses\":[],\"kind\":\"filter\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "f097e778dab3c3e78da06d54d2730bd31eae4bd430b0090d67e9abf0177f27be"
+    },
+    {
+      "name": "non-ASCII values stay unescaped",
+      "definition": {
+        "kind": "filter",
+        "clauses": [
+          {
+            "field": "project.project_id",
+            "op": "in",
+            "values": [
+              "MMRF – café",
+              "MMRF-COMMPASS"
+            ]
+          }
+        ]
+      },
+      "canonical": "{\"clauses\":[{\"field\":\"project.project_id\",\"op\":\"in\",\"values\":[\"MMRF – café\",\"MMRF-COMMPASS\"]}],\"kind\":\"filter\",\"schema\":\"orion.cohort-def/v1\"}",
+      "sha256": "d9cd37b5f19076baf7910e09efcb60bd83fad73ffd12a1f4c1410dc32eb1d55f"
+    },
+    {
+      "name": "unreadable: OR across two fields never matches",
+      "filterSet": {
+        "mode": "or",
+        "root": {
+          "demographic.race": {
+            "operator": "includes",
+            "field": "demographic.race",
+            "operands": [
+              "white"
+            ]
+          },
+          "diagnoses.iss_stage": {
+            "operator": "includes",
+            "field": "diagnoses.iss_stage",
+            "operands": [
+              "Stage I"
+            ]
+          }
+        }
+      },
+      "canonical": null,
+      "sha256": null
+    },
+    {
+      "name": "unreadable: an excludes filter never matches",
+      "filterSet": {
+        "mode": "and",
+        "root": {
+          "demographic.race": {
+            "operator": "excludes",
+            "field": "demographic.race",
+            "operands": [
+              "white"
+            ]
+          }
+        }
+      },
+      "canonical": null,
+      "sha256": null
+    },
+    {
+      "name": "unreadable: a number outside the canonical range (0.00005) has no portable hash",
+      "filterSet": {
+        "mode": "and",
+        "root": {
+          "diagnoses.age_at_diagnosis": {
+            "operator": ">=",
+            "field": "diagnoses.age_at_diagnosis",
+            "operand": 5e-05
+          }
+        }
+      },
+      "canonical": null,
+      "sha256": null
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+# Allow-list: only the dependency pins and the package enter the build context. Tests, captured
+# streams (.dev/), local run records (.orion-runs/) and caches never reach an image.
+*
+!requirements.txt
+!orion_agent/
+orion_agent/**/__pycache__
+orion_agent/**/*.py[cod]

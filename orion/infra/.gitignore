@@ -1,0 +1,19 @@
+# Terraform working state: never committed. The provider lock file (.terraform.lock.hcl) is
+# committed on purpose, so every operator installs the same hashicorp/aws build.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Built tool Lambda packages and other local build output.
+build/
+*.zip
+__pycache__/
+.mypy_cache/

@@ -1,0 +1,194 @@
+{
+  "schema": "orion.golden/v1",
+  "kind": "proteinpaint/termdb-matrix",
+  "viewer": "OncoMatrix (/?app=OncoMatrix)",
+  "flow": "Default view on all cases, after topMutatedGenes",
+  "stage": "pre-bridge",
+  "proteinpaintServer": "2.216.0",
+  "normalized": [
+    "body.embedder",
+    "body.terms[*].$id",
+    "response.<echoed term-wrapper $id>",
+    "response.<matrix term shortId>"
+  ],
+  "requests": [
+    {
+      "step": "oncomatrix-default",
+      "method": "POST",
+      "path": "/protein-paint/termdb/matrix",
+      "query": null,
+      "body": {
+        "genome": "hg38",
+        "dslabel": "MMRF",
+        "terms": [
+          {
+            "type": "GvValuesTW",
+            "term": {
+              "gene": "BRAF",
+              "type": "geneVariant",
+              "genes": [
+                {
+                  "gene": "BRAF",
+                  "type": "geneVariant",
+                  "kind": "gene",
+                  "name": "BRAF",
+                  "id": "BRAF"
+                }
+              ],
+              "name": "BRAF",
+              "groupsetting": {
+                "disabled": false
+              }
+            },
+            "q": {
+              "type": "values",
+              "hiddenValues": {}
+            },
+            "$id": "TwBase_4_<page load>"
+          },
+          {
+            "type": "GvValuesTW",
+            "term": {
+              "gene": "DIS3",
+              "type": "geneVariant",
+              "genes": [
+                {
+                  "gene": "DIS3",
+                  "type": "geneVariant",
+                  "kind": "gene",
+                  "name": "DIS3",
+                  "id": "DIS3"
+                }
+              ],
+              "name": "DIS3",
+              "groupsetting": {
+                "disabled": false
+              }
+            },
+            "q": {
+              "type": "values",
+              "hiddenValues": {}
+            },
+            "$id": "TwBase_2_<page load>"
+          },
+          {
+            "type": "GvValuesTW",
+            "term": {
+              "gene": "KRAS",
+              "type": "geneVariant",
+              "genes": [
+                {
+                  "gene": "KRAS",
+                  "type": "geneVariant",
+                  "kind": "gene",
+                  "name": "KRAS",
+                  "id": "KRAS"
+                }
+              ],
+              "name": "KRAS",
+              "groupsetting": {
+                "disabled": false
+              }
+            },
+            "q": {
+              "type": "values",
+              "hiddenValues": {}
+            },
+            "$id": "TwBase_0_<page load>"
+          },
+          {
+            "type": "GvValuesTW",
+            "term": {
+              "gene": "MYC",
+              "type": "geneVariant",
+              "genes": [
+                {
+                  "gene": "MYC",
+                  "type": "geneVariant",
+                  "kind": "gene",
+                  "name": "MYC",
+                  "id": "MYC"
+                }
+              ],
+              "name": "MYC",
+              "groupsetting": {
+                "disabled": false
+              }
+            },
+            "q": {
+              "type": "values",
+              "hiddenValues": {}
+            },
+            "$id": "TwBase_3_<page load>"
+          },
+          {
+            "type": "GvValuesTW",
+            "term": {
+              "gene": "NRAS",
+              "type": "geneVariant",
+              "genes": [
+                {
+                  "gene": "NRAS",
+                  "type": "geneVariant",
+                  "kind": "gene",
+                  "name": "NRAS",
+                  "id": "NRAS"
+                }
+              ],
+              "name": "NRAS",
+              "groupsetting": {
+                "disabled": false
+              }
+            },
+            "q": {
+              "type": "values",
+              "hiddenValues": {}
+            },
+            "$id": "TwBase_1_<page load>"
+          },
+          {
+            "type": "GvValuesTW",
+            "term": {
+              "gene": "TP53",
+              "type": "geneVariant",
+              "genes": [
+                {
+                  "gene": "TP53",
+                  "type": "geneVariant",
+                  "kind": "gene",
+                  "name": "TP53",
+                  "id": "TP53"
+                }
+              ],
+              "name": "TP53",
+              "groupsetting": {
+                "disabled": false
+              }
+            },
+            "q": {
+              "type": "values",
+              "hiddenValues": {}
+            },
+            "$id": "TwBase_5_<page load>"
+          }
+        ],
+        "filter": {
+          "type": "tvslst",
+          "in": true,
+          "join": "",
+          "lst": []
+        },
+        "embedder": "<page hostname>",
+        "filter0": {
+          "and": []
+        }
+      },
+      "payloadSha256": "640be1ed23f807fdb785e1dfa5f7adc26aa8ef2f079f548cf707acaed64e8d1b",
+      "response": {
+        "status": 200,
+        "bytes": 319415,
+        "sha256": "ce74f89244207bd6f7c5982663038832424d46fc150ad587c57af45c09dd3810"
+      }
+    }
+  ]
+}

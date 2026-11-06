@@ -1,0 +1,193 @@
+{
+  "about": "Values that config/cohort-fields.json omits, copied from the synthetic generator at the cited lines, plus the Elasticsearch-only fields the ProteinPaint bridge rejects (identity/cohorts.mjs:19-21). Paths are relative to the sandbox repo root.",
+  "fields": {
+    "case_id": {
+      "type": "case_id",
+      "pattern": "^SYNTH-CASE-[0-9]{4}$",
+      "source": "synthetic/generate.py:484 (case ids); identity/cohorts.mjs:23-29 (case_id and cases.case_id filters, legacy {'cases.case_id': id} operands)"
+    },
+    "cases.case_id": {
+      "type": "case_id",
+      "pattern": "^SYNTH-CASE-[0-9]{4}$",
+      "source": "synthetic/generate.py:484 (case ids); identity/cohorts.mjs:23-29 (case_id and cases.case_id filters, legacy {'cases.case_id': id} operands)"
+    },
+    "cgs_risk_key_criteria.cgs_risk_category": {
+      "values": [
+        "High risk",
+        "Standard risk"
+      ],
+      "source": "synthetic/generate.py:467"
+    },
+    "cgs_risk_key_criteria.cgs_risk_criteria": {
+      "values": [
+        "del(17p) and/or TP53 mutation",
+        "t(4;14), t(14;16), or t(14;20) with 1q+ and/or del(1p32)",
+        "Monoallelic del(1p32) with 1q+, or biallelic del(1p32)",
+        "Beta-2 microglobulin >=5.5 mg/L with creatinine <1.2 mg/dL"
+      ],
+      "source": "synthetic/generate.py:25-30 (CGS_CRITERIA), used at :468"
+    },
+    "cgs_risk_key_criteria.other_criteria": {
+      "values": [
+        "del(17p) at qualifying clonal fraction: Present",
+        "del(17p) at qualifying clonal fraction: Absent",
+        "TP53 mutation: Present",
+        "TP53 mutation: Absent",
+        "1q gain/amplification: Present",
+        "1q gain/amplification: Absent",
+        "Monoallelic del(1p32): Present",
+        "Monoallelic del(1p32): Absent",
+        "Biallelic del(1p32): Present",
+        "Biallelic del(1p32): Absent",
+        "Beta-2 microglobulin >=5.5 mg/L: Present",
+        "Beta-2 microglobulin >=5.5 mg/L: Absent",
+        "Creatinine <1.2 mg/dL: Present",
+        "Creatinine <1.2 mg/dL: Absent",
+        "t(4;14): Present",
+        "t(4;14): Absent",
+        "t(14;16): Present",
+        "t(14;16): Absent",
+        "t(14;20): Present",
+        "t(14;20): Absent"
+      ],
+      "source": "synthetic/generate.py:456-465 (markers), formatted at :469"
+    },
+    "available_variation_data": {
+      "type": "enum",
+      "values": [
+        "ssm",
+        "cnv"
+      ],
+      "esOnly": true,
+      "source": "synthetic/seed_es.py:181"
+    },
+    "gene.symbol": {
+      "type": "enum",
+      "values": [
+        "KRAS",
+        "NRAS",
+        "TP53",
+        "BRAF",
+        "DIS3",
+        "MYC"
+      ],
+      "esOnly": true,
+      "source": "synthetic/generate.py:14-21 (GENES), indexed at synthetic/seed_es.py:205"
+    },
+    "gene.gene_id": {
+      "type": "enum",
+      "values": [
+        "ENSG00000133703",
+        "ENSG00000213281",
+        "ENSG00000141510",
+        "ENSG00000157764",
+        "ENSG00000083520",
+        "ENSG00000136997"
+      ],
+      "esOnly": true,
+      "source": "synthetic/generate.py:14-21 (GENES), indexed at synthetic/seed_es.py:205"
+    },
+    "summary.experimental_strategies.experimental_strategy": {
+      "type": "enum",
+      "values": [
+        "WGS",
+        "WXS",
+        "RNA-Seq",
+        "scRNA-Seq"
+      ],
+      "esOnly": true,
+      "source": "synthetic/generate.py:37-44 (FILE_PROFILES), indexed at synthetic/seed_es.py:179"
+    }
+  },
+  "labels": {
+    "cgs_risk_key_criteria.cgs_risk_category": {
+      "label": "CGS risk category",
+      "group": "CGS risk",
+      "valuePrefix": "CGS",
+      "splitAssumption": "SPLIT_CGS_RISK"
+    },
+    "diagnoses.iss_stage": {
+      "label": "ISS stage",
+      "group": "ISS stage",
+      "valuePrefix": "",
+      "splitAssumption": "SPLIT_ISS_STAGE"
+    },
+    "demographic.race": {
+      "label": "Race",
+      "group": "race",
+      "valuePrefix": "",
+      "splitAssumption": "SPLIT_RACE"
+    },
+    "demographic.gender": {
+      "label": "Gender",
+      "group": "gender",
+      "valuePrefix": "",
+      "splitAssumption": "SPLIT_GENDER"
+    },
+    "demographic.vital_status": {
+      "label": "Vital status",
+      "group": "vital status",
+      "valuePrefix": "",
+      "splitAssumption": "SPLIT_VITAL_STATUS"
+    },
+    "available_variation_data": {
+      "label": "Available variation data",
+      "group": "variation data",
+      "valuePrefix": "",
+      "splitAssumption": "SPLIT_VARIATION_DATA"
+    },
+    "case_id": {
+      "label": "Case ID",
+      "group": "case",
+      "valuePrefix": "",
+      "splitAssumption": null
+    },
+    "cases.case_id": {
+      "label": "Case ID",
+      "group": "case",
+      "valuePrefix": "",
+      "splitAssumption": null
+    },
+    "demographic.ethnicity": {
+      "label": "Ethnicity",
+      "group": "ethnicity",
+      "valuePrefix": "",
+      "splitAssumption": "SPLIT_ETHNICITY"
+    }
+  },
+  "proteinpaintTwins": {
+    "about": "Gen3 field -> ProteinPaint termdb term id, from make_termdb at synthetic/generate.py:636-648.",
+    "terms": {
+      "cgs_risk_key_criteria.cgs_risk_category": "cgs_risk_category",
+      "demographic.gender": "gender",
+      "demographic.race": "race",
+      "demographic.vital_status": "vital_status"
+    }
+  },
+  "valueNames": {
+    "about": "How a cohort ORION proposes is named from a value (a code template: the planner names no cohort). A value missing here is named by its field's valuePrefix and the stored value with a capital first letter.",
+    "fields": {
+      "cgs_risk_key_criteria.cgs_risk_category": {
+        "High risk": "CGS high-risk",
+        "Standard risk": "CGS standard-risk"
+      },
+      "demographic.race": {
+        "white": "White",
+        "black or african american": "Black or African American",
+        "asian": "Asian"
+      },
+      "demographic.gender": {
+        "female": "Female",
+        "male": "Male"
+      },
+      "demographic.ethnicity": {
+        "hispanic or latino": "Hispanic or Latino",
+        "not hispanic or latino": "Not Hispanic or Latino"
+      },
+      "demographic.vital_status": {
+        "Alive": "Alive",
+        "Dead": "Deceased"
+      }
+    }
+  }
+}

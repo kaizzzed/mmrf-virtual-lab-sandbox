@@ -1,0 +1,434 @@
+{
+  "schema": "orion.request-pinned-vectors/v1",
+  "vectors": [
+    {
+      "name": "survival_compare on all cases: scope null, the split field's twin as overlay",
+      "launcher": "survival",
+      "request": {
+        "scope": null,
+        "term": "overall_survival",
+        "split": {
+          "field": "cgs_risk_key_criteria.cgs_risk_category",
+          "overlay": "cgs_risk_category"
+        },
+        "groups": [
+          {
+            "label": "High risk",
+            "filter": {
+              "and": [
+                {
+                  "in": {
+                    "cgs_risk_key_criteria.cgs_risk_category": [
+                      "High risk"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "label": "Standard risk",
+            "filter": {
+              "and": [
+                {
+                  "in": {
+                    "cgs_risk_key_criteria.cgs_risk_category": [
+                      "Standard risk"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "pinned": {
+        "kind": "survival",
+        "filter0": null,
+        "term": "overall_survival",
+        "overlay": "cgs_risk_category"
+      },
+      "requestPinnedHash": "660a67ada3be378c148e83443173994dccfad7e7bb579eaac5a4f1f1f3d7f5de"
+    },
+    {
+      "name": "survival_compare on a filtered scope: the scope filter becomes filter0",
+      "launcher": "survival",
+      "request": {
+        "scope": {
+          "and": [
+            {
+              "in": {
+                "demographic.race": [
+                  "black or african american"
+                ]
+              }
+            }
+          ]
+        },
+        "term": "overall_survival",
+        "split": {
+          "field": "cgs_risk_key_criteria.cgs_risk_category",
+          "overlay": "cgs_risk_category"
+        },
+        "groups": [
+          {
+            "label": "High risk",
+            "filter": {
+              "and": [
+                {
+                  "in": {
+                    "cgs_risk_key_criteria.cgs_risk_category": [
+                      "High risk"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "label": "Standard risk",
+            "filter": {
+              "and": [
+                {
+                  "in": {
+                    "cgs_risk_key_criteria.cgs_risk_category": [
+                      "Standard risk"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "pinned": {
+        "kind": "survival",
+        "filter0": {
+          "and": [
+            {
+              "in": {
+                "demographic.race": [
+                  "black or african american"
+                ]
+              }
+            }
+          ]
+        },
+        "term": "overall_survival",
+        "overlay": "cgs_risk_category"
+      },
+      "requestPinnedHash": "7a661343e7fab986ed1b7338794e6e7c84bb485b9de7c30972da53c4cfb8d880"
+    },
+    {
+      "name": "top_mutated_genes: filter0 from the request, genes in the output's order",
+      "launcher": "oncomatrix",
+      "request": {
+        "filter0": {
+          "and": [
+            {
+              "in": {
+                "case_id": [
+                  "SYNTH-CASE-0003",
+                  "SYNTH-CASE-0001"
+                ]
+              }
+            }
+          ]
+        },
+        "geneCount": 3
+      },
+      "observed": {
+        "genes": [
+          {
+            "gene": "KRAS",
+            "cases": 2
+          },
+          {
+            "gene": "NRAS",
+            "cases": 1
+          },
+          {
+            "gene": "DIS3",
+            "cases": 1
+          }
+        ]
+      },
+      "pinned": {
+        "kind": "oncomatrix",
+        "filter0": {
+          "and": [
+            {
+              "in": {
+                "case_id": [
+                  "SYNTH-CASE-0003",
+                  "SYNTH-CASE-0001"
+                ]
+              }
+            }
+          ]
+        },
+        "genes": [
+          "KRAS",
+          "NRAS",
+          "DIS3"
+        ]
+      },
+      "requestPinnedHash": "fcfe510e894b7e42993390bcb1a67d6f4df3dc60da776678195d4d07add3daa9"
+    },
+    {
+      "name": "de_run, direct: names and sample ids; thresholds give the volcano pins (-log10 0.05 = 1.3)",
+      "launcher": "deDirect",
+      "request": {
+        "groups": [
+          {
+            "name": "KRAS not detected (ORION)",
+            "sampleIds": [
+              9,
+              2,
+              5
+            ],
+            "cohortId": "c-0001",
+            "filter0": {
+              "and": [
+                {
+                  "in": {
+                    "case_id": [
+                      "SYNTH-CASE-0002",
+                      "SYNTH-CASE-0005",
+                      "SYNTH-CASE-0009"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "KRAS mutated (ORION)",
+            "sampleIds": [
+              7,
+              1,
+              3
+            ],
+            "cohortId": "c-0002",
+            "filter0": {
+              "and": [
+                {
+                  "in": {
+                    "case_id": [
+                      "SYNTH-CASE-0001",
+                      "SYNTH-CASE-0003",
+                      "SYNTH-CASE-0007"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "method": "wilcoxon",
+        "thresholds": {
+          "pValueCutoff": 0.05,
+          "pValueType": "adjusted",
+          "foldChangeCutoff": 0.3
+        }
+      },
+      "pinned": {
+        "kind": "deDirect",
+        "groups": [
+          {
+            "name": "KRAS not detected (ORION)",
+            "sampleIds": [
+              9,
+              2,
+              5
+            ]
+          },
+          {
+            "name": "KRAS mutated (ORION)",
+            "sampleIds": [
+              7,
+              1,
+              3
+            ]
+          }
+        ],
+        "method": "wilcoxon",
+        "volcano": {
+          "foldChangeCutoff": 0.3,
+          "pValue": 1.3,
+          "pValueType": "adjusted"
+        }
+      },
+      "requestPinnedHash": "72ca2a6becfe5b3502b74bc9af94b73b52cacf2b580e04ad9d49fc602f94f1b9"
+    },
+    {
+      "name": "de_run, direct, no thresholds: no volcano",
+      "launcher": "deDirect",
+      "request": {
+        "groups": [
+          {
+            "name": "KRAS not detected (ORION)",
+            "sampleIds": [
+              9,
+              2,
+              5
+            ],
+            "cohortId": "c-0001",
+            "filter0": {
+              "and": [
+                {
+                  "in": {
+                    "case_id": [
+                      "SYNTH-CASE-0002",
+                      "SYNTH-CASE-0005",
+                      "SYNTH-CASE-0009"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "KRAS mutated (ORION)",
+            "sampleIds": [
+              7,
+              1,
+              3
+            ],
+            "cohortId": "c-0002",
+            "filter0": {
+              "and": [
+                {
+                  "in": {
+                    "case_id": [
+                      "SYNTH-CASE-0001",
+                      "SYNTH-CASE-0003",
+                      "SYNTH-CASE-0007"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "method": "wilcoxon"
+      },
+      "pinned": {
+        "kind": "deDirect",
+        "groups": [
+          {
+            "name": "KRAS not detected (ORION)",
+            "sampleIds": [
+              9,
+              2,
+              5
+            ]
+          },
+          {
+            "name": "KRAS mutated (ORION)",
+            "sampleIds": [
+              7,
+              1,
+              3
+            ]
+          }
+        ],
+        "method": "wilcoxon"
+      },
+      "requestPinnedHash": "c1205540a9376fd49f6b160714f5eea2a396bad075d5862a6bc55bad6ad641d6"
+    },
+    {
+      "name": "de_run on saved cohorts: names, cohort ids and filters",
+      "launcher": "deInput",
+      "request": {
+        "groups": [
+          {
+            "name": "KRAS not detected (ORION)",
+            "sampleIds": [
+              9,
+              2,
+              5
+            ],
+            "cohortId": "c-0001",
+            "filter0": {
+              "and": [
+                {
+                  "in": {
+                    "case_id": [
+                      "SYNTH-CASE-0002",
+                      "SYNTH-CASE-0005",
+                      "SYNTH-CASE-0009"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "KRAS mutated (ORION)",
+            "sampleIds": [
+              7,
+              1,
+              3
+            ],
+            "cohortId": "c-0002",
+            "filter0": {
+              "and": [
+                {
+                  "in": {
+                    "case_id": [
+                      "SYNTH-CASE-0001",
+                      "SYNTH-CASE-0003",
+                      "SYNTH-CASE-0007"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "method": "wilcoxon"
+      },
+      "pinned": {
+        "kind": "deInput",
+        "groups": [
+          {
+            "name": "KRAS not detected (ORION)",
+            "cohortId": "c-0001",
+            "filter0": {
+              "and": [
+                {
+                  "in": {
+                    "case_id": [
+                      "SYNTH-CASE-0002",
+                      "SYNTH-CASE-0005",
+                      "SYNTH-CASE-0009"
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "KRAS mutated (ORION)",
+            "cohortId": "c-0002",
+            "filter0": {
+              "and": [
+                {
+                  "in": {
+                    "case_id": [
+                      "SYNTH-CASE-0001",
+                      "SYNTH-CASE-0003",
+                      "SYNTH-CASE-0007"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "requestPinnedHash": "c2bf167942a25865dfcc312ee42195b34c1695eb6b0136fcf9adb55cef204a9a"
+    }
+  ]
+}

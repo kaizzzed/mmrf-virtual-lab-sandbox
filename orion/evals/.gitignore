@@ -1,0 +1,5 @@
+# Generated reports stay out of the repo; the folder and its note stay in.
+reports/*
+!reports/README.md
+__pycache__/
+.mypy_cache/

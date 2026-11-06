@@ -1,0 +1,111 @@
+--- a/sources.json
++++ b/sources.json
+@@ -1,7 +1,7 @@
+ {
+   "frontend": {
+-    "url": "https://github.com/theMMRF/mmrf-data-commons.git",
+-    "commit": "27cf09aca01a496b9d52f1b6a14e6859bf530fbb"
++    "url": "https://github.com/kaizzzed/mmrf-data-commons.git",
++    "commit": "b260945c09bce46c83ab470a5caf7908ceb27423"
+   },
+   "guppy": {
+     "url": "https://github.com/theMMRF/guppy.git",
+--- a/helm/values.yaml
++++ b/helm/values.yaml
+@@ -30,3 +30,25 @@
+   default:
+     requests: {cpu: 100m, memory: 128Mi}
+     limits: {memory: 1Gi}
++# ORION Workstream 2, mode A only (orion/infra/README.md). Off by default: with enabled false the
++# chart renders exactly as without this block. Fill it from orion-infra's Terraform output
++# helm_values; it holds ARNs and names, never a credential.
++orion:
++  enabled: false
++  mode: A
++  runtimeArn: ''
++  runtimeQualifier: DEFAULT
++  runBucket: ''
++  runPrefix: orion/
++  region: us-east-1
++  # Bound to the orion-bff role by an EKS Pod Identity association (orion-infra).
++  serviceAccountName: orion-frontend
++  # Open question 19: whether Pod Identity works with service-account tokens off. Set true only
++  # if the day-1 test shows the frontend pod gets no credentials without it.
++  automountServiceAccountToken: false
++  egress:
++    # HTTPS to public AWS endpoints (AgentCore Runtime, S3), never to private or link-local ranges.
++    exceptCidrs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
++    # The EKS Pod Identity Agent on the node.
++    podIdentityAgentCidr: 169.254.170.23/32
++    podIdentityAgentPort: 80
+--- a/helm/templates/workloads.yaml
++++ b/helm/templates/workloads.yaml
+@@ -23,7 +23,12 @@
+         {{- end }}
+       {{- end }}
+     spec:
++      {{- if and (eq $name "frontend") $.Values.orion.enabled }}
++      serviceAccountName: {{ $.Values.orion.serviceAccountName | quote }}
++      automountServiceAccountToken: {{ $.Values.orion.automountServiceAccountToken }}
++      {{- else }}
+       automountServiceAccountToken: false
++      {{- end }}
+       {{- if or (eq $name "guppy") (eq $name "analysis") }}
+       initContainers:
+         - name: wait-for-synthetic-data
+@@ -50,6 +55,14 @@
+             - {name: GEN3_AUTHZ_SERVICE, value: 'http://identity:8080'}
+             - {name: GEN3_ANALYSIS_API, value: 'http://identity:8080/analysis/v0'}
+             - {name: TERMS_BFF_ORIGIN, value: 'http://frontend:3000'}
++            {{- if $.Values.orion.enabled }}
++            - {name: ORION_MODE, value: {{ $.Values.orion.mode | quote }}}
++            - {name: ORION_RUNTIME_ARN, value: {{ required "orion.runtimeArn is required when orion.enabled" $.Values.orion.runtimeArn | quote }}}
++            - {name: ORION_RUNTIME_QUALIFIER, value: {{ $.Values.orion.runtimeQualifier | quote }}}
++            - {name: ORION_RUN_BUCKET, value: {{ required "orion.runBucket is required when orion.enabled" $.Values.orion.runBucket | quote }}}
++            - {name: ORION_RUN_PREFIX, value: {{ $.Values.orion.runPrefix | quote }}}
++            - {name: AWS_REGION, value: {{ $.Values.orion.region | quote }}}
++            {{- end }}
+           {{- else if eq $name "guppy" }}
+             - {name: GEN3_ES_ENDPOINT, value: 'http://elasticsearch:9200'}
+             - {name: GEN3_ARBORIST_ENDPOINT, value: 'http://identity:8080'}
+--- /dev/null
++++ b/helm/templates/orion.yaml
+@@ -0,0 +1,38 @@
++{{- if .Values.orion.enabled }}
++{{- if ne .Values.orion.mode "A" }}
++{{- fail "orion.mode must be A: modes L and H never run ORION in the cluster" }}
++{{- end }}
++# ORION Workstream 2, mode A: the frontend's identity for EKS Pod Identity (the association to
++# orion-bff is made by orion/infra/terraform/orion-infra) and the egress its BFF route needs.
++apiVersion: v1
++kind: ServiceAccount
++metadata:
++  name: {{ .Values.orion.serviceAccountName }}
++  labels: {app.kubernetes.io/part-of: orion, app.kubernetes.io/instance: {{ .Release.Name }}}
++automountServiceAccountToken: {{ .Values.orion.automountServiceAccountToken }}
++{{- if .Values.networkPolicy.enabled }}
++---
++# Adds to sandbox-only (NetworkPolicies are additive): only the frontend pod gains these routes.
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: orion-frontend-egress
++spec:
++  podSelector:
++    matchLabels: {app.kubernetes.io/name: frontend, app.kubernetes.io/instance: {{ .Release.Name }}}
++  policyTypes: [Egress]
++  egress:
++    # InvokeAgentRuntime, StopRuntimeSession and S3 GetObject on run records, over HTTPS.
++    - to:
++        - ipBlock:
++            cidr: 0.0.0.0/0
++            except: {{ toJson .Values.orion.egress.exceptCidrs }}
++      ports:
++        - {protocol: TCP, port: 443}
++    # Credentials for orion-bff from the EKS Pod Identity Agent.
++    - to:
++        - ipBlock: {cidr: {{ .Values.orion.egress.podIdentityAgentCidr }}}
++      ports:
++        - {protocol: TCP, port: {{ .Values.orion.egress.podIdentityAgentPort }}}
++{{- end }}
++{{- end }}

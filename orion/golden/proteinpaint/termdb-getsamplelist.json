@@ -1,0 +1,129 @@
+{
+  "schema": "orion.golden/v1",
+  "kind": "proteinpaint/termdb-getsamplelist",
+  "viewer": "Differential Gene Expression (/?app=DE)",
+  "flow": "Submit (New group vs New group 1): one sample list per group, in group order",
+  "stage": "pre-bridge",
+  "proteinpaintServer": "2.216.0",
+  "normalized": [],
+  "requests": [
+    {
+      "step": "de-preanalysis",
+      "method": "GET",
+      "path": "/protein-paint/termdb",
+      "query": {
+        "genome": "hg38",
+        "dslabel": "MMRF",
+        "getsamplelist": 1,
+        "filter": {
+          "type": "tvslst",
+          "in": true,
+          "join": "",
+          "lst": [
+            {
+              "type": "tvs",
+              "tvs": {
+                "term": {
+                  "id": "kras_status",
+                  "name": "KRAS mutation status",
+                  "type": "categorical",
+                  "isleaf": true,
+                  "values": {
+                    "Mutated": {
+                      "label": "Mutated"
+                    },
+                    "No mutation": {
+                      "label": "No mutation"
+                    }
+                  },
+                  "included_types": [
+                    "categorical"
+                  ],
+                  "child_types": []
+                },
+                "values": [
+                  {
+                    "samplecount": 520,
+                    "key": "No mutation",
+                    "label": "No mutation",
+                    "bar_width_frac": 1
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "filter0": {
+          "and": []
+        },
+        "mapParent2Children": true
+      },
+      "body": null,
+      "payloadSha256": "c29ea6165375cfc60ed6a93f0b9fdbc062ca25b25949f145613609653ba4368d",
+      "response": {
+        "status": 200,
+        "bytes": 19700,
+        "sha256": "dd1951e73d2654338e40e397d11a083453f15a91e84091e7b1965bdb2bd215cf"
+      }
+    },
+    {
+      "step": "de-preanalysis",
+      "method": "GET",
+      "path": "/protein-paint/termdb",
+      "query": {
+        "genome": "hg38",
+        "dslabel": "MMRF",
+        "getsamplelist": 1,
+        "filter": {
+          "type": "tvslst",
+          "in": true,
+          "join": "",
+          "lst": [
+            {
+              "type": "tvs",
+              "tvs": {
+                "term": {
+                  "id": "kras_status",
+                  "name": "KRAS mutation status",
+                  "type": "categorical",
+                  "isleaf": true,
+                  "values": {
+                    "Mutated": {
+                      "label": "Mutated"
+                    },
+                    "No mutation": {
+                      "label": "No mutation"
+                    }
+                  },
+                  "included_types": [
+                    "categorical"
+                  ],
+                  "child_types": []
+                },
+                "values": [
+                  {
+                    "samplecount": 480,
+                    "key": "Mutated",
+                    "label": "Mutated",
+                    "bar_width_frac": 0.9231
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "filter0": {
+          "and": []
+        },
+        "mapParent2Children": true
+      },
+      "body": null,
+      "payloadSha256": "bbdd48f7bb2af91220ac64e6a7a54077509a5e4e92a7f553e55cc87bac3d6043",
+      "response": {
+        "status": 200,
+        "bytes": 18195,
+        "sha256": "9476e1fe370e1c7d4d9d6de85f2de08d34820d073d89b8806e6267fab4349435"
+      }
+    }
+  ]
+}

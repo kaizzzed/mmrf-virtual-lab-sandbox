@@ -1,0 +1,32 @@
+{
+  "schema": "orion.golden/v1",
+  "kind": "proteinpaint/termdb-topMutatedGenes",
+  "viewer": "OncoMatrix (/?app=OncoMatrix)",
+  "flow": "Default view on all cases",
+  "stage": "pre-bridge",
+  "proteinpaintServer": "2.216.0",
+  "normalized": [],
+  "requests": [
+    {
+      "step": "oncomatrix-default",
+      "method": "GET",
+      "path": "/protein-paint/termdb/topMutatedGenes",
+      "query": {
+        "genome": "hg38",
+        "dslabel": "MMRF",
+        "maxGenes": 50,
+        "geneFilter": "CGC",
+        "filter0": {
+          "and": []
+        }
+      },
+      "body": null,
+      "payloadSha256": "c1f1b33e40431efdb55e55bad14a1f5a1798c57a405e1ce249d2d121da9fd1fb",
+      "response": {
+        "status": 200,
+        "bytes": 334,
+        "sha256": "f86b8d333c63d9ff388e3e32a035ebe48c45c68dbbe729d3b00c78441d8d6fdd"
+      }
+    }
+  ]
+}
