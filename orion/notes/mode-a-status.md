@@ -1,45 +1,17 @@
 # ORION mode A (AgentCore on AWS): status
 
-As of 2026-11-06, 04:50 UTC, with the Runtime version 4 update of 05:36 UTC added. Mode A of RFA
-rev 25 is deployed in the sandbox account, in us-east-1, and is **left running on purpose** for the
-demo. To remove it, follow `mode-a-teardown.md`. All data is synthetic.
+As of 2026-11-06, 06:56 UTC. Mode A of RFA rev 25 is deployed in the sandbox account, in us-east-1,
+and is **left running on purpose**. To remove it, follow `mode-a-teardown.md`. All data is synthetic.
 
-The code is on branch `orion/mode-a` at `4609db6`: stage 2's head `0c3fded` plus 10 stage 3
-commits. They are committed locally and not pushed or tagged. Besides these notes and the README
-updates that go with them, the only uncommitted change is `terraform/.terraform.lock.hcl`, which
-gained one hash. The frontend is the fork at `3fc0e6a`. The agent version is 0.2.0, with prompts
-`orion-prompts@5`.
+What runs now:
 
-**The live Runtime is now version 4** (2026-11-06 05:36 UTC, user-approved, findings). Its image
-`97926b08c368` is built from `orion/mode-a-rebased` at `97926b0`: the same 10 stage 3 commits
-rebased onto `orion/bedrock` `bf0a8b7`, which adds the treatment-run guard (a run defined by a
-treatment gets no model text and ends ObservedOnly). That branch is local and not pushed. It is
-checked out in a scratch worktree, `wt-mode-a-rb` (`git worktree list`), not here.
-**Version 4 got a smoke only** (below).
-Every E2E and eval result in this note ran on version 3, image `4609db670295`.
+- **Agent:** Runtime version 4, image `97926b08c368`, built from `97926b0` (stage 3, rebased on stage
+  2's `bf0a8b7`, with the treatment-run guard). Agent version 0.2.0, prompts `orion-prompts@5`.
+- **Frontend:** the fork at `e91490e` (stage 4: deleting a thread, and the Assistant item in the top
+  navigation), Helm release revision 5 with ORION on.
+- **Code:** stages 1 to 3 are merged into `main`; stage 4 is on `orion/ux` in both repositories.
 
-**Verdict: mode A works end to end on AWS.** Every user-facing check passes except one: the plan
-p95 gate (NFR-01, still a **Proposal**) fails in mode A, and that is for the team to decide.
-
-- **Browser end to end (Runtime version 3, image `4609db670295`):** 15 of 15 scenarios and 118
-  checks pass.
-  - The full run passed 14 of 15. Its one failure was a connection the test client lost on the
-    port-forward, not an ORION fault (see "Known limits", 7).
-  - A rerun of that one scenario passed.
-- **Evals (5 repeats, through the hosted BFF, Runtime version 3):** 22 pass, 0 fail, 2 not run
-  (E11, E20). Both not-run evals are gaps that need a test Runtime in mode A.
-- **Runtime version 4:** a smoke through the BFF only, no E2E and no evals (findings). The
-  warm-up answered, J1 was Complete with an Interpretation, and a treatment-defined survival
-  question ended ObservedOnly with the treatment reason and a `CLINICAL_ADVICE` limitation
-  (`$S3/smoke/v4-treat.json`).
-- **Gates:** 7 of 9 pass. Honest limits is not run (because E11 is not run). The plan-visible p95
-  gate **fails**: 8.08 s over 91 asks, against a 5 s target. The main cause is Bedrock planner
-  time. Cold microVMs add to it but are not the root cause.
-- **First-deploy risks:** all four that the design named are settled. One of them, unbuffered
-  streaming through CloudFront, was the user's own check in their browser.
-- **Reviews:** every review fix is deployed. Undoing an eval or infra fix in a scratch copy makes
-  its tests fail.
-- **No gate, check or assertion was weakened.**
+The sections below describe the stage 3 verification (Runtime version 3) unless they say otherwise.
 
 ## Where the numbers come from
 
@@ -150,6 +122,15 @@ session and skips CloudFront for the browser hop only. From there:
    The BFF's view and record routes read them with `s3:GetObject`.
 
 ## What was verified live
+
+### Latest: browser end to end on the stage 4 deployment
+
+`SANDBOX_ORIGIN=http://127.0.0.1:3081 ORION_E2E_MODEL=bedrock ORION_E2E_MODE=A node
+orion/scripts/e2e-mode-l.mjs`, on Runtime version 4 and frontend `e91490e`, 2026-11-06 ~06:45–06:56 UTC:
+**17 of 17 scenarios, 129 checks**, all on the gateway transport with Claude Opus 5.5
+(`orion/notes/screenshots/e2e/summary-mode-a-bedrock-20261106T065624Z.json`, gitignored). This adds
+`nav` (2 checks) and `delete` (9 checks) to the 15 scenarios below.
+
 
 ### Browser end to end (final, Runtime version 3)
 

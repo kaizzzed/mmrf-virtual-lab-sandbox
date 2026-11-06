@@ -1,5 +1,7 @@
 # ORION agent (run controller and engine)
 
+New to ORION? Start with [ORION_QUICKSTART.md](../../ORION_QUICKSTART.md).
+
 The ORION Workstream 2 run controller: plain Python on the `bedrock-agentcore` SDK's `AGUIApp`
 (RFA rev 25, A2 and A3). It serves `POST /invocations` (AG-UI events over SSE), `GET /ping`
 and `/ws` on port 8080, and speaks the wire contract in `../contracts/README.md` (v1.2). The tool

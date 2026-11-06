@@ -314,6 +314,15 @@ corrections below: two values files for Helm, and the secret imported. Step 6's 
    `automountServiceAccountToken` renders empty). Any later `aws_sandbox.py deploy` runs
    `helm upgrade` with `values.json` alone, which turns ORION off again: repeat this command after it.
 
+   **While ORION is on, a redeploy briefly takes the frontend down.** `aws_sandbox.py deploy` removes
+   the `orion-frontend` ServiceAccount, but on Helm 4 the frontend Deployment keeps
+   `serviceAccountName: orion-frontend`. The new frontend pod then cannot mount its Pod Identity token
+   (`serviceaccounts "orion-frontend" not found`), the single replica's old pod is already gone, and
+   the deploy fails after the rollout deadline. Run the `helm upgrade` above as soon as the deploy has
+   published its images: it recreates the ServiceAccount and the pod starts. To shorten the gap, use
+   `orion/infra/scripts/guarded_deploy.py` (it applies the sandbox plan only when it changes nothing
+   but the operator allowlist) and run the upgrade the moment its log shows the images published.
+
    `.sources/frontend` must already be at the pinned commit (or have the fork as `origin`):
    `fetch_sources.py` fetches from `origin`, which in this checkout is theMMRF's repository.
 8. **Check the BFF path**: the frontend pod has `serviceAccountName: orion-frontend`, the six

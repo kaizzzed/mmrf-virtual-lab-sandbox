@@ -327,8 +327,7 @@ was p95 4.52 s over 94 asks in the 5-repeat run with `orion-prompts@4`, and comp
      fetch", from a source that is not ORION's. The first version of this fix kept every console
      error of that window apart, in both modes. That was narrowed in the review round below, so
      every other console error fails the scenario again, as in stage 1.
-3. **Docs:** the agent README's stage 2 section (the chip rule and the Bedrock E2E), the demo
-   script (the Bedrock E2E command, the warm-up advice, and the model's own chips), and the E2E
+3. **Docs:** the agent README's stage 2 section (the chip rule and the Bedrock E2E) and the E2E
    script's header.
 
 ## Evals after the composer change (before the review round)
@@ -449,9 +448,8 @@ What the rerun shows:
   94. The warm timings right after it, and the browser E2E, were back to normal. This is not a
   code regression, and no code was changed for it. Whether NFR-01 holds after the round still
   needs the re-measure.
-- **The docs held.** The demo script's timings still match the measurements: the plan takes
-  7–11 s when the first question meets the warm-up and about 3 s otherwise, and J1's "Writing
-  interpretation" takes about 8–15 s. It was not changed.
+- **The timings held.** The plan takes 7–11 s when the first question meets the warm-up and
+  about 3 s otherwise, and J1's "Writing interpretation" takes about 8–15 s.
 
 **The Docker engine restart.** At 19:59:52 UTC, a change to Docker Desktop's resource settings
 (CPUs, memory and swap) restarted the Docker engine. Docker Desktop's own log
@@ -532,8 +530,8 @@ get-caller-identity`. orion-agent was left running in Bedrock mode (the containe
    `summary-bedrock-20261106T014241Z.json`). The same happens after a reload or browser Back,
    since each mounts a new controller and warms again.
    - The evals miss this because they ask after the warm-up.
-   - A user who reads the starters for a few seconds does not see it. A presenter clicking at
-     once does, so the demo script now says to wait about 5 s.
+   - A user who reads the starters for a few seconds does not see it; someone who asks at once
+     does. Waiting about 5 s after opening the Assistant avoids it.
    - Options, for the team to decide:
      - (a) the browser cancels a still-running warm-up when a question is sent. The agent's
        warm-up task is cancelled when its stream closes; a cold cache cost nothing measurable in
