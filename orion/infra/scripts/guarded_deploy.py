@@ -27,6 +27,8 @@ def plan_ok(config):
     plan = json.loads(raw)
     changes = [r for r in plan.get("resource_changes", []) if r["change"]["actions"] not in (["no-op"], ["read"])]
     summary = [(r["address"], r["change"]["actions"]) for r in changes]
+    if not summary:
+        return True, "plan OK: no infrastructure changes (images and Helm only)"
     if summary != [("aws_eks_cluster.sandbox", ["update"])]:
         return False, f"unexpected resource changes: {summary}"
     before, after = changes[0]["change"]["before"], changes[0]["change"]["after"]

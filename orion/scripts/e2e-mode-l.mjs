@@ -19,7 +19,10 @@
 // (an edit at the save pause, then Stop during de_run), dont-save, e21 (Enter as the card
 // appears), restore (reload at the pause and during de_run), follow (plan-card edit, E14, a
 // follow-up chip, thread switching), edges (E7, E10, E8, E17), e18 (Unsupported, Open on this
-// cohort). orion/notes/mode-l-status.md lists what each checks.
+// cohort), nav (the header's Assistant link, from the main page), delete (deleting threads: off,
+// with its reason, while a run is in flight; the dialog's Cancel, Escape and Delete; focus, the
+// announcement, storage, a reload; no delete for the tab's only empty thread).
+// orion/notes/mode-l-status.md lists what each checks.
 //
 // ORION_E2E_MODEL names the agent's planner and composer: `stub` (the default; stage 1) or
 // `bedrock` (stage 2, `orion/scripts/orion-local.sh up --bedrock`). Both modes run every
@@ -41,6 +44,8 @@
 // Model calls cost money: a full bedrock run takes about 6 minutes and makes about 80 Bedrock calls,
 // about 40 recorded in run records and about 40 more in the Assistant's warm-up turns (two calls per
 // fresh tab, new thread or reload; not recorded). orion/notes/bedrock-status.md has the results.
+// Those counts predate nav and delete, which add about 10 more: delete asks once (J1) and sends three
+// warm-ups (the tab's own thread, New thread, the reload); nav sends one.
 //
 // Each scenario runs in a fresh browser context (its own sessionStorage, localStorage and
 // IndexedDB), so the saved cohorts of one never leak into another. Screenshots go to
@@ -186,7 +191,9 @@ class Scenario {
     this.markWarm = false;
   }
 
-  async open() {
+  /** assistant: false leaves the new page blank, for a scenario that starts elsewhere (no warm-up turn is sent). */
+  async open({assistant = true} = {}) {
+    // 1600 px wide: above the lg breakpoint (1024 px), where the header's navigation links show.
     this.context = await browser.newContext({viewport: {width: 1600, height: 1100}});
     await this.context.addInitScript(timelineRecorder);
     this.page = await this.context.newPage();
@@ -218,7 +225,7 @@ class Scenario {
     };
     this.page.on('requestfinished', ended);
     this.page.on('requestfailed', ended);
-    await this.gotoAssistant();
+    if (assistant) await this.gotoAssistant();
   }
 
   async gotoAssistant() {
@@ -684,8 +691,9 @@ const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const skipped = [];
 
-async function scenario(id, title, body, {bedrockOnly = false} = {}) {
+async function scenario(id, title, body, {bedrockOnly = false, assistant = true} = {}) {
   // bedrockOnly: needs real models (time to see "Planning" or "Writing interpretation", model text to re-compose).
+  // assistant: false starts on a blank page instead of the Assistant (the body goes where it starts).
   if (filters.length > 0 && !filters.some(word => id.includes(word))) return;
   if (bedrockOnly && !BEDROCK) {
     skipped.push(id);
@@ -699,7 +707,7 @@ async function scenario(id, title, body, {bedrockOnly = false} = {}) {
   const started = Date.now();
   process.stdout.write(`- ${id}: ${title} ... `);
   try {
-    await s.open();
+    await s.open({assistant});
     await body(s);
     await s.shot('end');
     const relevant = s.errors.filter(e => !/Failed to load resource|favicon/.test(e));
@@ -1206,6 +1214,239 @@ try {
     await expect(s.page.getByRole('article', {name: PROMPTS.venn, exact: true})).toBeVisible({timeout: 60_000});
     await s.waitStatus('Not supported');
     s.pass('browser Back returns to the thread, restored');
+  });
+
+  // ------------------------------------------------------------------ the thread list and the header
+  await scenario('nav', 'The header\'s "Assistant" link: second, after Analysis Center; it opens the Assistant in the same tab', async s => {
+    // Starts on the main page, so the only warm-up turn is the one the Assistant sends when the link opens it.
+    await s.page.goto(`${origin}/`, {waitUntil: 'domcontentloaded'});
+    // The header's links (hidden below the lg breakpoint; the context is 1600 px wide).
+    const header = s.page.getByTestId('mmrf-mainNavigation-links');
+    await expect(header).toBeVisible({timeout: 60_000});
+    // Exact, so the main page's "ORION Assistant" card is not matched.
+    const link = header.getByRole('link', {name: 'Assistant', exact: true});
+    await expect(link).toHaveCount(1);
+    await expect(link).toHaveAttribute('href', '/?app=Assistant');
+    const links = header.getByRole('link');
+    await expect(links.nth(0)).toHaveAccessibleName('Analysis Center');
+    await expect(links.nth(1)).toHaveAccessibleName('Assistant');
+    s.pass(`main page header: "Assistant" (href /?app=Assistant) is the second of ${await links.count()} links, after "Analysis Center"`);
+    await s.shot('main-page');
+    await link.click();
+    await s.page.waitForURL(/[?&]app=Assistant\b/, {timeout: 30_000});
+    expect(new URL(s.page.url()).search).toBe('?app=Assistant');
+    expect(s.context.pages(), 'the same tab').toHaveLength(1);
+    const threads = s.page.getByRole('navigation', {name: 'Threads in this tab'});
+    await expect(threads).toBeVisible({timeout: 60_000});
+    await expect(threads.getByRole('listitem')).toHaveCount(1);
+    await expect(threads.getByRole('listitem').getByRole('button', {name: 'New thread', exact: true})).toHaveAttribute('aria-current', 'true');
+    await expect(s.composer).toBeVisible();
+    await expect(s.page.getByText('Try a reference question')).toBeVisible();
+    const warmMs = await s.waitWarm();
+    s.pass(`the link opened the Assistant in the same tab (?app=Assistant): its thread list with one active "New thread", the composer and the starters; its warm-up turn ended in ${warmMs} ms`);
+  }, {assistant: false});
+
+  await scenario('delete', 'Deleting threads: off while a run is in flight; the dialog (Cancel, Escape, Delete), focus, the announcement, storage, a reload', async s => {
+    const RUN_IN_PROGRESS = "Can't delete while a run is in progress";
+    const threads = s.page.getByRole('navigation', {name: 'Threads in this tab'});
+    const rows = threads.getByRole('listitem');
+    // Each row's first button is the thread, named by its title (its first question, or "New thread").
+    const rowTitles = () => rows.evaluateAll(items => items.map(li => li.querySelector('button')?.textContent.trim() ?? null));
+    const row = title => rows.getByRole('button', {name: title, exact: true});
+    // The delete control and its dialog quote the title's first 80 characters, ending in "…" when cut.
+    const quoted = title => {
+      const chars = [...title];
+      return chars.length <= 80 ? title : `${chars.slice(0, 79).join('').trimEnd()}…`;
+    };
+    const deleteControl = title => threads.getByRole('button', {name: `Delete thread: ${quoted(title)}`, exact: true});
+    const anyDeleteControl = threads.getByRole('button', {name: /^Delete thread: /});
+    // Portalled to body; its description is the copy alone.
+    const dialog = s.page.getByRole('dialog', {name: 'Delete this thread?'});
+    const cancel = dialog.getByRole('button', {name: 'Cancel', exact: true});
+    const confirm = dialog.getByRole('button', {name: 'Delete', exact: true});
+    const consequences = title =>
+      `“${quoted(title)}” will be removed from this tab. This can't be undone. Cohorts you saved and the run records on the server are not affected.`;
+    // The single polite live region.
+    const announced = s.page.getByRole('status').filter({hasText: 'Thread deleted'});
+    const tooltip = s.page.getByRole('tooltip').filter({hasText: RUN_IN_PROGRESS});
+    const reasonInRows = rows.getByText(RUN_IN_PROGRESS, {exact: true});
+    const tab = () => s.page.evaluate(() => JSON.parse(sessionStorage.getItem('orion:assistant:v1')));
+    const stored = async () => {
+      const state = await tab();
+      // threadIds is the list's order (newest first); the keys of threads have no order that matters, so they are sorted.
+      return {activeThreadId: state.activeThreadId, threadIds: state.threadIds, threads: Object.keys(state.threads).sort()};
+    };
+    const viewerDrawn = () => expect(s.run.locator('[data-phase]').first()).toHaveAttribute('data-phase', 'mounted', {timeout: MOUNT_TIMEOUT});
+
+    // The tab's only thread, with no runs, offers no delete.
+    await expect.poll(rowTitles).toEqual(['New thread']);
+    await expect(row('New thread')).toHaveAttribute('aria-current', 'true');
+    await expect(anyDeleteControl).toHaveCount(0);
+    const [first] = (await tab()).threadIds;
+    s.pass('a fresh tab: one thread, "New thread", active, with no delete control (the only thread, with no runs)');
+
+    // While the run is in flight, recorded on every DOM change in which Stop shows (a MutationObserver, as the
+    // timeline is), so the check does not depend on how long the run takes: each row's title and its delete control.
+    await s.page.evaluate(() => {
+      window.__orionDeleteControls = [];
+      let last = '';
+      const record = () => {
+        if (![...document.querySelectorAll('button')].some(b => b.textContent.trim() === 'Stop')) return;
+        const state = [...document.querySelectorAll('nav[aria-label="Threads in this tab"] li')].map(li => {
+          const [thread, control] = li.querySelectorAll('button');
+          const reasonId = control?.getAttribute('aria-describedby');
+          return {
+            title: thread?.textContent.trim() ?? null,
+            label: control?.getAttribute('aria-label') ?? null,
+            ariaDisabled: control?.getAttribute('aria-disabled') ?? null,
+            disabled: control?.disabled ?? null,
+            description: reasonId ? document.getElementById(reasonId)?.textContent.trim() ?? null : null,
+          };
+        });
+        const snapshot = JSON.stringify(state);
+        if (snapshot !== last) {
+          last = snapshot;
+          window.__orionDeleteControls.push(state);
+        }
+      };
+      new MutationObserver(record).observe(document.body, {
+        subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['disabled', 'aria-disabled', 'aria-describedby', 'aria-label'],
+      });
+    });
+    // The one ask (J1, a run that saves nothing). Its POST is held until the in-flight checks are done, so the run
+    // stays in flight (Stop shown) for as long as they take, in either model mode; then it goes out unchanged.
+    let release = () => {};
+    const gate = new Promise(resolve => {
+      release = resolve;
+    });
+    const hold = async route => {
+      const request = route.request();
+      if (request.method() === 'POST' && (request.postData() ?? '').includes('"action":"ask"')) await gate;
+      await route.continue().catch(() => {});
+    };
+    await s.page.route('**/api/orion/agui', hold);
+    const control = deleteControl(PROMPTS.j1Open);
+    try {
+      await s.pickStarter('J1', 'open-ended', PROMPTS.j1Open);
+      await expect(s.page.getByRole('button', {name: 'Stop', exact: true})).toBeVisible();
+      // Off but not `disabled`: aria-disabled, its reason as the description, and still focusable.
+      await expect(control).toHaveAttribute('aria-disabled', 'true');
+      expect(await control.evaluate(node => node.disabled), 'the control is not disabled (so it takes hover and focus)').toBe(false);
+      await expect(control).toHaveAccessibleDescription(RUN_IN_PROGRESS);
+      // No line of text under the row: the reason's only copy there is the visually hidden description.
+      await expect(reasonInRows).toHaveCount(1);
+      expect(await reasonInRows.evaluate(node => {
+        const box = node.getBoundingClientRect();
+        return box.width <= 1 && box.height <= 1;
+      }), 'the reason is visually hidden, not shown under the row').toBe(true);
+      // The reason shows on hover, and on keyboard focus (Tab from the thread's row, so the focus is a visible one).
+      await control.hover();
+      await expect(tooltip).toBeVisible();
+      await s.page.mouse.move(0, 0);
+      await expect(tooltip).toBeHidden();
+      await row(PROMPTS.j1Open).focus();
+      await s.page.keyboard.press('Tab');
+      await expect(control).toBeFocused();
+      await expect(tooltip).toBeVisible();
+      await s.shot('in-flight');
+      // A click on it does nothing (forced: Playwright waits for an aria-disabled control to be enabled).
+      await control.click({force: true});
+      await s.page.waitForTimeout(500);
+      await expect(dialog).toHaveCount(0);
+      s.pass(`in flight (its ask held back, Stop shown): "Delete thread: <question>" has aria-disabled="true" and is not disabled, its description is "${RUN_IN_PROGRESS}" (not shown under the row), hover and keyboard focus show it as a tooltip, and a click opens nothing`);
+    } finally {
+      release();
+    }
+    await s.page.unroute('**/api/orion/agui', hold);
+    await s.waitStatus('Complete');
+    const inFlight = await s.page.evaluate(() => window.__orionDeleteControls);
+    expect(inFlight.length, 'DOM states with Stop shown').toBeGreaterThan(0);
+    for (const state of inFlight) {
+      expect(state, 'while Stop shows: the running thread\'s delete control is off, with the reason').toEqual([
+        {title: PROMPTS.j1Open, label: `Delete thread: ${quoted(PROMPTS.j1Open)}`, ariaDisabled: 'true', disabled: false, description: RUN_IN_PROGRESS},
+      ]);
+    }
+    await expect(control).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(control).toBeEnabled();
+    await expect(reasonInRows).toHaveCount(0);
+    await expect(tooltip).toBeHidden();
+    s.pass(`in all ${inFlight.length} distinct DOM states with Stop shown the control had aria-disabled="true" and "${RUN_IN_PROGRESS}"; once Complete it is on, with no reason and no tooltip`);
+    const {runId, threadId} = await s.ids();
+    expect(threadId).toBe(first);
+    // The survival viewer has drawn, so leaving the thread never tears down a viewer that is still starting.
+    await viewerDrawn();
+
+    // A second thread: New thread (the first has a run now), then back to the first, so the delete hands over.
+    await threads.getByRole('button', {name: 'New thread', exact: true}).click();
+    await expect.poll(rowTitles).toEqual(['New thread', PROMPTS.j1Open]);
+    const other = (await tab()).activeThreadId;
+    expect(other).not.toBe(first);
+    await expect(row('New thread')).toHaveAttribute('aria-current', 'true');
+    // With two threads, each offers its delete, the empty one included.
+    await expect(deleteControl('New thread')).toBeEnabled();
+    await expect(control).toBeEnabled();
+    await row(PROMPTS.j1Open).click();
+    await expect(s.page.getByRole('article', {name: PROMPTS.j1Open, exact: true})).toBeVisible();
+    await expect(row(PROMPTS.j1Open)).toHaveAttribute('aria-current', 'true');
+    await viewerDrawn();
+    await expect.poll(stored).toEqual({activeThreadId: first, threadIds: [other, first], threads: [other, first].sort()});
+    s.pass('New thread made a second thread, listed first; both rows offer a delete control; the asked thread is active again, its viewer drawn');
+
+    // Cancel: the dialog names the thread and what stays; focus starts on Cancel and returns to the control.
+    await control.click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveAccessibleDescription(consequences(PROMPTS.j1Open));
+    await expect(cancel).toBeFocused();
+    await expect(confirm).toBeEnabled();
+    await s.shot('dialog');
+    await cancel.click();
+    await expect(dialog).toBeHidden();
+    await expect(control).toBeFocused();
+    await expect.poll(rowTitles).toEqual(['New thread', PROMPTS.j1Open]);
+    s.pass('"Delete thread: <question>" opens "Delete this thread?", described as removing the thread from this tab for good while saved cohorts and server run records stay, with focus on Cancel; Cancel closes it, keeps the thread and returns focus to the control');
+
+    // Escape cancels the same way.
+    await control.click();
+    await expect(cancel).toBeFocused();
+    await s.page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(control).toBeFocused();
+    await expect.poll(rowTitles).toEqual(['New thread', PROMPTS.j1Open]);
+    await expect.poll(stored).toEqual({activeThreadId: first, threadIds: [other, first], threads: [other, first].sort()});
+    s.pass('Escape closes the dialog, keeps the thread (on screen and in storage) and returns focus to the control');
+
+    // Delete: the active thread goes; the other takes over, with focus on its row.
+    await control.click();
+    await expect(cancel).toBeFocused();
+    await confirm.click();
+    await expect(dialog).toBeHidden();
+    await expect.poll(rowTitles).toEqual(['New thread']);
+    await expect(row(PROMPTS.j1Open)).toHaveCount(0);
+    await expect(row('New thread')).toHaveAttribute('aria-current', 'true');
+    await expect(row('New thread')).toBeFocused();
+    await expect(s.page.getByText('Try a reference question')).toBeVisible();
+    await expect(announced).toHaveCount(1);
+    await expect(announced).toHaveText('Thread deleted');
+    // What is left is the tab's only thread, with no runs: no delete control.
+    await expect(anyDeleteControl).toHaveCount(0);
+    await s.shot('deleted');
+    s.pass('Delete: the row is gone, the other thread is now active (aria-current) and on screen with focus on its row, the live region says "Thread deleted", and that last empty thread has no delete control');
+    await expect.poll(stored).toEqual({activeThreadId: other, threadIds: [other], threads: [other]});
+    const record = await s.record(runId, threadId);
+    expect(record.status).toBe('Complete');
+    expect(record.question).toBe(PROMPTS.j1Open);
+    s.pass(`storage: orion:assistant:v1 no longer has the thread ${first.slice(0, 8)}… in threadIds or threads; its run record ${runId.slice(0, 8)}… is kept (record route: Complete)`);
+
+    // A reload restores the tab without it.
+    await s.reload();
+    await expect(s.assistant).toBeVisible({timeout: 60_000});
+    await expect(threads).toBeVisible({timeout: 60_000});
+    await expect.poll(rowTitles).toEqual(['New thread']);
+    await expect(row(PROMPTS.j1Open)).toHaveCount(0);
+    await expect(row('New thread')).toHaveAttribute('aria-current', 'true');
+    await expect(anyDeleteControl).toHaveCount(0);
+    expect(await stored()).toEqual({activeThreadId: other, threadIds: [other], threads: [other]});
+    s.pass('after a reload the deleted thread stays gone: one row, "New thread", active and with no delete control; storage unchanged');
   });
 
   // ------------------------------------------------------------------ real composer only (bedrock)
