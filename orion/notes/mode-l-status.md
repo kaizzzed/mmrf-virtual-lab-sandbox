@@ -1,8 +1,9 @@
 # ORION mode L: status
 
-As of 2026-11-05, after the review-and-fix round. The sandbox is on `orion/day1` at 0ba3fc8 plus the
-working tree; the frontend fork is on `orion/day1` at ca51c09 plus the working tree; the agent version
-is 0.2.0. Mode L means:
+As of 2026-11-05, after the review-and-fix round. The sandbox was then on `orion/day1` at 0ba3fc8
+plus the working tree, and the frontend fork on `orion/day1` at ca51c09 plus the working tree; that
+round is committed as `1742abf` and the fork's `3fc0e6a`, both tagged `orion-mode-l` and merged
+into `main`. The agent version is 0.2.0. Mode L means:
 
 - the local Compose stack (project `mmrf-synthetic`) with the override `orion/compose.orion.yaml`;
 - the `orion-agent` service: the run controller with in-process tools against
@@ -18,7 +19,8 @@ live steps, the confirmation card and the cohort saves, then the live viz card a
 answer, and it writes a run record to the local volume. Two checks back this:
 
 - **The browser end-to-end script:** 11 of 11 scenarios and 72 checks pass in headless Chromium
-  against freshly rebuilt services.
+  against freshly rebuilt services (13 of 13 and 83 checks with stage 4's `nav` and `delete`,
+  stub run of 2026-11-06).
 - **The eval harness:** 23 evals pass, 0 fail and 1 is not run (E22, which needs the Bedrock
   planner). That holds both agent direct and through the BFF. E20's live lease expiry also passes.
 
@@ -267,7 +269,7 @@ All commands run from the sandbox root, with `export PATH=$HOME/.docker/bin:$PAT
 up first (above).
 
 - **Browser end to end:** `node orion/scripts/e2e-mode-l.mjs`. It takes about a minute and ends
-  "11 of 11 scenarios passed; 72 checks". Pass words to run a subset, for example
+  "13 of 13 scenarios passed; 83 checks; 4 skipped" (the Bedrock-only scenarios). Pass words to run a subset, for example
   `node orion/scripts/e2e-mode-l.mjs j3 stop`. It uses the root devDependency
   `@playwright/test` 1.58.2 and its Chromium, as `golden-capture.mjs` does; nothing new is
   installed. Screenshots and `summary.json` (every check, plus the last UI timeline on a failure)

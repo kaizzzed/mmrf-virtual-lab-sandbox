@@ -23,7 +23,7 @@ deployment's names and revisions filled in.
 
 ```sh
 export PATH=$HOME/.docker/bin:$PATH AWS_PROFILE=sandbox AWS_REGION=us-east-1 AWS_PAGER=""
-ROOT=/Users/kaized/Desktop/mmrf/mmrf-virtual-lab-sandbox; cd $ROOT
+ROOT=$(git rev-parse --show-toplevel); cd $ROOT      # run from inside the sandbox checkout
 INFRA=$ROOT/orion/infra/terraform/orion-infra
 red() { sed -E 's/[0-9]{12}/<ACCT>/g'; }
 K() { kubectl --kubeconfig $ROOT/generated/aws/kubeconfig --context mmrf-synthetic -n mmrf-synthetic "$@"; }
@@ -108,16 +108,18 @@ Helm goes first. After it, the frontend no longer uses the Pod Identity associat
 longer calls the Runtime that the destroy removes.
 
 ```sh
-H history synthetic      # expect revision 3 "deployed" (ORION on), 2 and 1 "superseded"
+H history synthetic      # expect revision 5 "deployed" (ORION on), 4 "failed", 3, 2 and 1 "superseded"
 ```
 
 | Revision | What it is |
 | --- | --- |
 | 1 | The sandbox before ORION: the unpatched chart and the upstream frontend `build-188f27662ebc4be2` (`sha256:4f1d1da8…`) |
 | 2 | The patched chart with `orion.enabled` false, and the fork's frontend `build-367ebcf26bc746f0` (`sha256:d78cb60b…`) |
-| 3 | ORION on (`values.json` plus `orion-values.json`). This is current |
+| 3 | ORION on (`values.json` plus `orion-values.json`) |
+| 4 | Failed: the stage 4 sandbox redeploy (`build-01113ac244d94caf`) removed the `orion-frontend` ServiceAccount, so the new frontend pod never started |
+| 5 | ORION on again (`values.json` plus `orion-values.json`), with the fork's frontend at `e91490e` (`build-01113ac244d94caf`, `sha256:b98ba976…`). This is current |
 
-If the history shows a revision after 3, re-read it before choosing: someone deployed again.
+If the history shows a revision after 5, re-read it before choosing: someone deployed again.
 
 **Rollback target: revision 1.** The full teardown also reverts the patch (step 3), and revision 1
 is the release that matches the reverted checkout. Revision 1 pins all six services' images by
@@ -135,8 +137,16 @@ cp generated/aws/values.pre-orion.json generated/aws/values.json   # the values 
 ```
 
 There is an alternative, if the fork's frontend should stay, with ORION off:
-`H rollback synthetic 2 --wait --timeout 20m`. Then skip the `cp`, and skip the `sources.json`
+`H rollback synthetic 2 --wait --timeout 20m` (revision 2 runs the fork's stage 3 frontend at
+`3fc0e6a`, not `e91490e`). Then skip the `cp`, and skip the `sources.json`
 part of step 3. Never use `--reuse-values`.
+
+Watch for the Helm 4 behaviour that failed revision 4 (`orion/infra/README.md`, "Deploy order",
+step 7): the frontend Deployment can keep `serviceAccountName: orion-frontend` after the
+ServiceAccount is removed, and the new frontend pod then never starts. After the rollback, run
+`K rollout status deployment/frontend --timeout 5m` and
+`K get deployment frontend -o jsonpath='{.spec.template.spec.serviceAccountName}'` (expect empty).
+A rollback was never run, so this check is untested.
 
 Check:
 
@@ -161,7 +171,7 @@ jq -r .frontend.commit sources.json              # 27cf09aca01a496b9d52f1b6a14e6
 git status --short                               # sources.json, helm/values.yaml, helm/templates/workloads.yaml; helm/templates/orion.yaml deleted
 ```
 
-The reverse check passed on 2026-11-06 against `4609db6`. Commit only with the user's approval,
+The reverse check passed on 2026-11-06 against `97926b0`, and again on `main` after stage 4 (`6a1da53`). Commit only with the user's approval,
 and never push to `upstream`.
 
 A later `aws_sandbox.py build` moves `.sources/frontend` back to the upstream pin by itself.
@@ -177,9 +187,9 @@ Two side effects to know before that build:
 - **The local Compose stack loses the fork too.** `orion/scripts/orion-local.sh up` builds the
   frontend from `.sources/frontend`, so once that checkout is back at `27cf09a`, the next mode L
   frontend build has no Assistant. Keep mode L on the fork by not running `aws_sandbox.py build`
-  or `fetch_sources.py` until mode L is done, or by re-checking out `3fc0e6a` (remote `fork`)
+  or `fetch_sources.py` until mode L is done, or by re-checking out `e91490e` (remote `fork`)
   before building mode L.
-- **`generated/aws/build.json` still records the fork's build** `build-367ebcf26bc746f0`. An
+- **`generated/aws/build.json` still records the fork's build** `build-01113ac244d94caf`. An
   `aws_sandbox.py deploy --skip-build` republishes that record, which puts the fork's frontend
   back with ORION off. Use a full `aws_sandbox.py deploy` (it rebuilds) when the sandbox should
   run the upstream images again.

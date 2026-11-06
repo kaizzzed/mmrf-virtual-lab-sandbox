@@ -287,9 +287,10 @@ after 7 to 11 s in the browser. The evals do not measure that path
 The same image runs as the AgentCore Runtime `orion_agent`. It is built for arm64 with the named
 contexts and deployed by `orion/infra` (`../infra/README.md`). The Runtime sets `ORION_MODE=A`,
 records in S3 and `ORION_TOOLS=gateway`. Each thread is its own Runtime session
-(`orion-<threadId>`). The deployed version is 4, image `97926b08c368` (this branch's commits
-rebased onto `orion/bedrock` `bf0a8b7`, the treatment-run guard; smoke-tested only). The results
-below ran on version 3, image `4609db670295`.
+(`orion-<threadId>`). The deployed version is 4, image `97926b08c368` (stage 3's commits
+rebased onto `orion/bedrock` `bf0a8b7`, the treatment-run guard; the stage 4 browser E2E passed 17
+of 17 scenarios on it, and the evals were not rerun). The results below ran on version 3, image
+`4609db670295`.
 
 Two Gateway rules came from the first live calls:
 

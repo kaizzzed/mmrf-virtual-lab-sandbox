@@ -9,7 +9,7 @@ What runs now:
   2's `bf0a8b7`, with the treatment-run guard). Agent version 0.2.0, prompts `orion-prompts@5`.
 - **Frontend:** the fork at `e91490e` (stage 4: deleting a thread, and the Assistant item in the top
   navigation), Helm release revision 5 with ORION on.
-- **Code:** stages 1 to 3 are merged into `main`; stage 4 is on `orion/ux` in both repositories.
+- **Code:** stages 1 to 4 are merged into `main` in both repositories.
 
 The sections below describe the stage 3 verification (Runtime version 3) unless they say otherwise.
 
@@ -23,11 +23,11 @@ Every number below names its source. The sources are all local: none is pushed.
 | report `020003Z` | `orion/evals/reports/orion-evals-20261106T020003Z.json`: mode L stubs on the same code, agent direct, 5 repeats. Gitignored |
 | report `105200Z` | `orion/evals/reports/orion-evals-20261105T105200Z.json`: E20 with its live lease expiry in mode L (`evals-mode-l.sh e20-lease`), 2026-11-05 10:52 UTC, on the code of that day, before stage 3. Gitignored |
 | E2E `041700Z` | `orion/notes/screenshots/e2e/summary-mode-a-bedrock-20261106T041700Z.json`: the final browser E2E, full run, 04:09:19–04:17:00 UTC. Gitignored |
-| E2E `041958Z` | `orion/notes/screenshots/e2e/summary-mode-a-bedrock-20261106T041958Z.json`: the rerun of `edges` at 04:19 UTC. `summary.json` currently holds this 1-scenario rerun |
+| E2E `041958Z` | `orion/notes/screenshots/e2e/summary-mode-a-bedrock-20261106T041958Z.json`: the rerun of `edges` at 04:19 UTC. `summary.json` held this 1-scenario rerun until stage 4's runs overwrote it (the stub run `064657Z`, then `065624Z`) |
 | E2E `232119Z` | `summary-mode-a-bedrock-20261105T232119Z.json`: the prep image pass. It lives in the stage 3 worktree's screenshots folder (`$S3/../wt-mode-a/orion/notes/screenshots/e2e/`), not in this checkout |
 | findings | `orion/notes/mode-a-findings.md` (committed copy of `$S3/mode-a-findings.md`): the live smoke checks, the IAM smoke, the user's browser check and the version 4 update |
 | integrity check | `$S3/integrity-check/summary.txt`: a read-only re-check of these notes on 2026-11-06 about 05:30–05:55 UTC (Lambda, Gateway and Runtime logs, the `edges` record, the Runtime versions, the force and destroy plans) |
-| `$S3/...` | The stage 3 scratchpad, `/private/tmp/claude-501/-Users-kaized-Library-Application-Support-Claude-scratch-workspaces-dade3e05-93a8-418c-acf0-02462b3639f6-f71a3e76-88e2-42d3-ad53-23f582f5b75d-scratch-2026-11-04-c981aa/fbd85976-ea01-42e3-8f2d-64198c4fbfda/scratchpad/stage3`. It holds the runbook (`mode-a-runbook.md`), the prep eval reports (`modeA-evals/reports/`), the final eval derivations (`modeA-final-evals/`: `usage-20261106T040956Z.json`, `record-checks.txt`, `plan-breakdown.txt`, `logs/`), smoke streams and records (`smoke/`), the review evidence, plan and apply logs (`*.log`) and the pre-IAM policy documents (`revert/`). **`/private/tmp` is cleared on reboot**: copy what must be kept next to the reports |
+| `$S3/...` | The stage 3 scratchpad, a scratch folder of the build session under `/private/tmp` on the build machine (not in the repository; a restart clears it). It holds the runbook (`mode-a-runbook.md`), the prep eval reports (`modeA-evals/reports/`), the final eval derivations (`modeA-final-evals/`: `usage-20261106T040956Z.json`, `record-checks.txt`, `plan-breakdown.txt`, `logs/`), smoke streams and records (`smoke/`), the review evidence, plan and apply logs (`*.log`) and the pre-IAM policy documents (`revert/`). **`/private/tmp` is cleared on reboot**: copy what must be kept next to the reports |
 | state | `orion/infra/terraform/orion-infra/terraform.tfstate` (serial 66 after the version 4 apply, Terraform 1.17.1). Backup: `generated/aws/orion-infra.tfstate.bak` (identical) |
 
 Numbers marked "E2E log sweep" come from the final E2E's read-only CloudWatch and cluster queries.
@@ -40,7 +40,7 @@ integrity check (`$S3/integrity-check/summary.txt`); the BFF, pod and port-forwa
 
 | Kind | Name | Notes |
 | --- | --- | --- |
-| AgentCore Runtime | `orion_agent` (id `orion_agent-RE0ngY6qRl`) | **Version 4**. PUBLIC network mode, AG-UI protocol, arm64 image `orion/agent:97926b08c368` (built from `orion/mode-a-rebased` `97926b0`, last updated 2026-11-06 05:36:02 UTC). Idle session timeout 900 s; maximum session lifetime 8 h |
+| AgentCore Runtime | `orion_agent` (id `orion_agent-RE0ngY6qRl`) | **Version 4**. PUBLIC network mode, AG-UI protocol, arm64 image `orion/agent:97926b08c368` (built from `97926b0`, on `main`, last updated 2026-11-06 05:36:02 UTC). Idle session timeout 900 s; maximum session lifetime 8 h |
 | AgentCore Runtime endpoint | `orion_live` | Live version 4. The BFF calls this qualifier |
 | AgentCore Gateway | `orion-vlab` | MCP, `AWS_IAM` inbound. Target `vlab` (the Lambda), with its tool schema in S3 |
 | Lambda | `orion-vlab-tools` | python3.12, arm64, 58 s, 512 MB, X-Ray active. Package `orion/agent/lambda/dist/orion-vlab-tools-arm64.zip` (its hash equals the state's `source_code_hash`) |
@@ -60,8 +60,8 @@ Runtime versions (from the plan and image logs, `$S3/full-plan.log`, `prep-plan.
 | --- | --- | --- | --- |
 | 1 | `pre-bb7c6e0bde78` | 2026-11-05, 20:57:43 | First smoke. J1 ended Partial on the Gateway null error, and the J3 `de_run` went through the Gateway |
 | 2 | `prep-66ee4ff8529c` | 2026-11-05, 21:13:41 | The null fix. The user's browser check through CloudFront, the prep test pass, the IAM smoke |
-| 3 | `4609db670295` | 2026-11-06, 04:06:27 | HEAD `4609db6` of this checkout. The final smoke, E2E and evals |
-| 4 | `97926b08c368` | 2026-11-06, 05:36:02 | `orion/mode-a-rebased` `97926b0` (adds `bf0a8b7`'s treatment-run guard). A BFF smoke only (findings) |
+| 3 | `4609db670295` | 2026-11-06, 04:06:27 | `4609db6`, stage 3 before its rebase onto `bf0a8b7` (on no branch; merged as `97926b0`). The final smoke, E2E and evals |
+| 4 | `97926b08c368` | 2026-11-06, 05:36:02 | `97926b0` (adds `bf0a8b7`'s treatment-run guard). A BFF smoke (findings), then the stage 4 browser E2E |
 
 The final apply (v3) was 0 to add, 3 to change and 0 to destroy (`$S3/final-plan.log`). It changed
 the Runtime, the endpoint and the `orion-bff` role policy (re-rendered, because its document reads
@@ -73,12 +73,14 @@ the Runtime). The version 4 apply had the same shape (`$S3/rb-plan.log`, `rb.tfp
   four guarded applies, each exactly 1 in-place update, 0 add and 0 destroy, and each a /32 for
   the user's current address (`$S3/deploy.log`, `deploy2.log`, `allowlist.log`,
   `allowlist2.log`).
-- **Sandbox images:** all six `mmrf-synthetic/*` repos got the additive tag
+- **Sandbox images:** in stage 3, all six `mmrf-synthetic/*` repos got the additive tag
   `build-367ebcf26bc746f0`. Its frontend is the fork at `3fc0e6a`, digest `sha256:d78cb60b…`.
-  The upstream frontend `build-188f27662ebc4be2` (`sha256:4f1d1da8…`) was not deleted
+  Stage 4's redeploy added `build-01113ac244d94caf`, whose frontend is the fork at `e91490e`
+  (`sha256:b98ba976…`); revision 5 runs it. The upstream frontend `build-188f27662ebc4be2` (`sha256:4f1d1da8…`) was not deleted
   (`$S3/deploy.log`). `generated/aws/values.pre-orion.json` keeps the pre-ORION digests.
-- **The sandbox patch** (`orion/infra/patches/sandbox.patch`, re-pinned to the fork's `3fc0e6a`)
-  is applied and committed in `66fa5c8`. It changes `sources.json`, adds the chart's `orion:`
+- **The sandbox patch** (`orion/infra/patches/sandbox.patch`, pinned to the fork's `e91490e` since
+  stage 4) is applied and committed in `e2d1a6e` (stage 3, at `3fc0e6a`) and `7bd9869` (stage 4).
+  It changes `sources.json`, adds the chart's `orion:`
   block, and adds the template with the ServiceAccount `orion-frontend` and the NetworkPolicy
   `orion-frontend-egress`.
 - **Helm release `synthetic`, namespace `mmrf-synthetic`:**
@@ -87,7 +89,9 @@ the Runtime). The version 4 apply had the same shape (`$S3/rb-plan.log`, `rb.tfp
   | --- | --- |
   | 1 | The original sandbox, before ORION: the unpatched chart and the upstream frontend |
   | 2 | `aws_sandbox.py deploy --skip-build`, 2026-11-05 21:02 UTC (`$S3/deploy2.log`): the patched chart with `orion.enabled` false and the fork's frontend |
-  | 3 | `helm upgrade` with `values.json` and `orion-values.json` (`generated/aws/orion-values.json`): **ORION on**, the current revision |
+  | 3 | `helm upgrade` with `values.json` and `orion-values.json` (`generated/aws/orion-values.json`): **ORION on** |
+  | 4 | The stage 4 sandbox redeploy, 2026-11-06 06:36 UTC: **failed**. It removed the `orion-frontend` ServiceAccount, so the new frontend pod never started (`../infra/README.md`, deploy step 7) |
+  | 5 | The same `helm upgrade` with both values files, 06:47 UTC: **ORION on** with the fork's frontend at `e91490e`, the current revision |
 
   The frontend pod was restarted after the IAM apply (a rollout restart, findings). That made no
   new revision.
@@ -126,7 +130,7 @@ session and skips CloudFront for the browser hop only. From there:
 ### Latest: browser end to end on the stage 4 deployment
 
 `SANDBOX_ORIGIN=http://127.0.0.1:3081 ORION_E2E_MODEL=bedrock ORION_E2E_MODE=A node
-orion/scripts/e2e-mode-l.mjs`, on Runtime version 4 and frontend `e91490e`, 2026-11-06 ~06:45–06:56 UTC:
+orion/scripts/e2e-mode-l.mjs`, on Runtime version 4 and frontend `e91490e`, 2026-11-06 06:48–06:56 UTC:
 **17 of 17 scenarios, 129 checks**, all on the gateway transport with Claude Opus 5.5
 (`orion/notes/screenshots/e2e/summary-mode-a-bedrock-20261106T065624Z.json`, gitignored). This adds
 `nav` (2 checks) and `delete` (9 checks) to the 15 scenarios below.
@@ -262,7 +266,7 @@ What the 101 run records of the report say (`$S3/modeA-final-evals/record-checks
    - The first J1 on Runtime v1 ended Partial `TOOL_FAILED`. The Gateway refused
      `survival_compare` with "Field '/scope' has invalid type: null found, object expected"
      (`$S3/smoke/j1.record.json`).
-   - Fixed in the agent (`2d22819`): the Gateway client sends arguments without null-valued keys,
+   - Fixed in the agent (`dae7307`): the Gateway client sends arguments without null-valued keys,
      and the recorded request keeps its nulls. Every nullable Input field defaults to None, so the
      Lambda reads an omitted field as null.
    - J1 was Complete on v2 (findings), and in every E2E and eval run since.
@@ -323,7 +327,8 @@ On Runtime v4 (2026-11-06 about 05:37 UTC, through a port-forward on 3085; findi
   interpretation of it" and a `CLINICAL_ADVICE` limitation (`$S3/smoke/v4-treat.json`, mode A,
   transport gateway).
 
-That is all that ran on version 4. The browser E2E and the evals were not rerun on it.
+That is all that ran on version 4 in stage 3. Stage 4's browser E2E then ran on it (17 of 17,
+"Latest" above); the evals were not rerun on it.
 `bf0a8b7`'s commit message says no eval or E2E scenario uses a treatment-defined run and that every
 other run is unchanged.
 
@@ -424,8 +429,8 @@ CloudFront adds its own hop, which was not timed.
 6. **The user's changing public IP, and the EKS API allowlist.** The EKS API admits a single /32
    (the sandbox's `operator_cidr` rule).
    - The allowlist was re-pointed four times in stage 3 ("The sandbox side"). The findings
-     record two egress changes, once across networks and once within the same /16; a third, to a
-     different /16, came before the version 3 deploy (`$S3/allowlist2.log`, about 04:05 UTC).
+     record three egress changes: once across networks, once within the same /16, and once to a
+     different /16 before the version 3 deploy (`$S3/allowlist2.log`, about 04:05 UTC).
    - When it changes, `kubectl`, `helm` and the port-forward time out until the allowlist is
      re-pointed. The re-point is a guarded sandbox plan of exactly one in-place update of
      `public_access_cidrs`, with no helm and no image publish (`$S3/update_allowlist.py` with
@@ -469,7 +474,7 @@ CloudFront adds its own hop, which was not timed.
    - (c) The teardown passed `force_delete` and `force_destroy` only on the destroy plan, where
      they have no effect.
 
-   All three were fixed in `66fa5c8`, and the contract text in `8cce3af`:
+   All three were fixed in `e2d1a6e`, and the contract text in `c1b29cd`:
    - the prefix condition was removed;
    - the README now passes both values files, applies the force flags before the destroy plan,
      and documents importing an operator-created secret.
@@ -477,8 +482,8 @@ CloudFront adds its own hop, which was not timed.
    The first asks of new threads then read their ledgers without error.
 2. **The first live deploy (Runtime v1, about 20:58 UTC on 2026-11-05).**
    - The Gateway refused explicit nulls. That is the first-deploy risk 3 above, fixed in
-     `2d22819`.
-   - The browser E2E gained its mode switch (`160dba4`, `ORION_E2E_MODE=A` with Gateway transport
+     `dae7307`.
+   - The browser E2E gained its mode switch (`c6576d7`, `ORION_E2E_MODE=A` with Gateway transport
      checks).
    - The first `aws_sandbox.py deploy` stopped at `kubectl` with an i/o timeout to the EKS API.
      With the allowlist re-pointed to the then-current address, the second deploy made Helm
@@ -488,9 +493,9 @@ CloudFront adds its own hop, which was not timed.
      `save_cohorts`, but the record says `client`, as `TOOLS.md` section 4 specifies: the save
      runs in the browser (`$S3/modeA-e2e/run1.log`).
    - The check now expects `client` for `save_cohorts` and still requires `gateway` for every
-     server tool (`5d2b7ac`). The rerun passed 15 of 15 (E2E `232119Z`).
+     server tool (`7cfd168`). The rerun passed 15 of 15 (E2E `232119Z`).
    - The evals' plan p95 of 11.55 s without warm-up led to the opt-in `--warmup-threads`
-     (`ff76bde`). It gave 5.61 s, still over the target, and changes no threshold.
+     (`9129f3b`). It gave 5.61 s, still over the target, and changes no threshold.
 4. **The mode A review round (after the prep pass).** The eval and infra fixes were checked by
    undoing each one in a scratch copy and watching its tests fail:
    - eval fixes: 12 undo variants, each failing 1 to 4 of the 132 tests, while the fixed code
@@ -501,7 +506,7 @@ CloudFront adds its own hop, which was not timed.
      reproduction (`$S3/modeA-gw-signer-verify/repro.py`). Their results were not saved as files.
 
    The fixes:
-   - **Evals harness, "reports only what ran" (`538b1df`):**
+   - **Evals harness, "reports only what ran" (`a1df273`):**
      - **F1:** E20's lease-expiry case counted as covered when a unit-test name matched a regex.
        It is now not run without `--restart-cmd`, and the unit test is listed as non-gating.
      - **F2:** gates and evals scored "in 5 of 5 runs" passed at 1 repeat. They are now not run
@@ -514,21 +519,21 @@ CloudFront adds its own hop, which was not timed.
      - So the prep reports `231125Z` and `233911Z` (1 repeat, old harness) pass Phrasing parity,
        Interpretation present and E20, which today's harness reports not run. Those passes are
        not results.
-   - **Gateway signer (`179ed10`):**
+   - **Gateway signer (`81fa0c0`):**
      - **Found:** `BotocoreSigner` built a botocore Session and walked the credential chain on
        every MCP POST. A credential or signing failure surfaced as `INVALID_INPUT`, which is not
        retried.
      - **Fix:** it resolves once and signs with the same refreshable credentials, refreshing off
        the event loop when a refresh is due. A signing failure is a retryable `HTTP_ERROR`, with
        one retry.
-   - **Infra least privilege (`b49363e`):** INFRA-1, INFRA-2, INFRA-3 and the ECR lifecycle, as
+   - **Infra least privilege (`bce1220`):** INFRA-1, INFRA-2, INFRA-3 and the ECR lifecycle, as
      above.
      - The README records the open egress as a residual risk and gives retention steps for the
        service-created log groups.
      - **Found:** the old lifecycle expired any image beyond the 10 most recent, tagged or not
        (`$S3/revert/ecr-lifecycle.json`). It could therefore expire the live or the previous
        Runtime tag, and a Runtime version names its image by tag.
-   - `4609db6`: the E2E summary-shape test expects the new `mode` field.
+   - `97926b0`: the E2E summary-shape test expects the new `mode` field.
    - Then, in this order (UTC, 2026-11-06):
      - the IAM change was applied with the user's approval (01:42);
      - the mode L stub E2E passed 11 of 11 with 72 checks (`summary-stub-20261106T015947Z.json`,
@@ -537,7 +542,7 @@ CloudFront adds its own hop, which was not timed.
      - Runtime v3 was deployed (04:06);
      - the final E2E and evals above ran on v3;
      - Runtime v4, the same commits rebased onto `bf0a8b7`, was deployed with the user's approval
-       (05:36) and smoke-tested only.
+       (05:36) and smoke-tested only; stage 4's browser E2E ran on it later.
 5. **Final runs (Runtime v3).** No product bug was found and no code was changed. The two issues
    seen (Known limits 7 and 4) belong to the sandbox.
 
@@ -548,7 +553,7 @@ and never read `generated/aws/access.json` in a shared terminal.
 
 ```sh
 export PATH=$HOME/.docker/bin:$PATH AWS_PROFILE=sandbox AWS_REGION=us-east-1 AWS_PAGER=""
-ROOT=/Users/kaized/Desktop/mmrf/mmrf-virtual-lab-sandbox; cd $ROOT
+ROOT=$(git rev-parse --show-toplevel); cd $ROOT      # run from inside the sandbox checkout
 red() { sed -E 's/[0-9]{12}/<ACCT>/g'; }
 aws sts get-caller-identity --query Arn --output text | red     # assumed-role/WSParticipantRole/…; ExpiredToken: the user refreshes
 ```
@@ -564,7 +569,7 @@ aws bedrock-agentcore-control get-agent-runtime-endpoint --agent-runtime-id $RID
 ```
 
 Expect version 4, READY, image tag `97926b08c368`, and endpoint READY at live version 4 (since
-05:36 UTC on 2026-11-06; the E2E and evals above ran on version 3).
+05:36 UTC on 2026-11-06; the stage 3 E2E and the evals above ran on version 3).
 
 **2. The loopback port-forward.** Use one port per concurrent client. It injects the synthetic
 session, so no Basic login is needed. Never use the Basic credential here.

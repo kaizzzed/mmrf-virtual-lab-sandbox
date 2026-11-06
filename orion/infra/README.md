@@ -9,9 +9,9 @@ arm64 agent image, and the sandbox patch for mode A. Design: ORION RFA rev 25, A
 **Mode A is deployed** (2026-11-05, in the sandbox account, us-east-1): orion-infra stages 1 and 2
 are applied, the sandbox patch is applied and the cluster runs the fork's frontend with ORION on.
 It is left running on purpose. The live Runtime is `orion_agent` version 4 (image tag
-`97926b08c368`, from `orion/mode-a-rebased` `97926b0`, since 2026-11-06 05:36 UTC; smoke-tested
-only), and the Helm release `synthetic` is at revision 3. The browser E2E and the evals ran on
-version 3 (image `4609db670295`).
+`97926b08c368`, from `97926b0` on `main`, since 2026-11-06 05:36 UTC), and the Helm release
+`synthetic` is at revision 5. The stage 4 browser E2E ran on version 4; the stage 3 browser E2E
+and the evals ran on version 3 (image `4609db670295`).
 
 - `../notes/mode-a-status.md` has what was run and verified, the timings, the known limits and
   how to rerun everything.
@@ -27,7 +27,7 @@ version 3 (image `4609db670295`).
 | `terraform/orion-infra/` | Runtime, Gateway, tool Lambda, S3, Secrets Manager, IAM, Pod Identity, CloudWatch |
 | `terraform/orion-infra/vlab-tools.json` | The `vlab` target's MCP tool schema, generated from the catalog |
 | `gateway_tools.py`, `tests/` | The schema generator and its tests |
-| `patches/sandbox.patch` | The sandbox patch (mode A only, values-gated, off by default). Applied and committed on `orion/mode-a` (`66fa5c8`); `../notes/mode-a-teardown.md` step 3 reverts it |
+| `patches/sandbox.patch` | The sandbox patch (mode A only, values-gated, off by default). Applied and committed in `e2d1a6e` and re-pinned in `7bd9869`, both on `main`; `../notes/mode-a-teardown.md` step 3 reverts it |
 
 ## Modes
 
@@ -224,7 +224,7 @@ corrections below: two values files for Helm, and the secret imported. Step 6's 
    terraform apply base.tfplan
    ```
 
-   Creates ECR, the bucket, the empty secret, the four roles, the Pod Identity add-on and association.
+   Creates ECR, the bucket, the empty secret, the roles `orion-runtime` and `orion-bff`, the Pod Identity add-on and association.
    If the operator already created `orion/vlab-basic`, adopt it before the plan instead of creating it
    (the plan then shows only an in-place tag update for it, never a replace), and skip step 2:
 
@@ -295,9 +295,9 @@ corrections below: two values files for Helm, and the secret imported. Step 6's 
    that endpoint's first call. Repeat for every new Runtime id (a test Runtime, or a redeploy after
    teardown) and for any new endpoint. The policy stays on a group across Runtime versions.
 7. **Sandbox patch (mode A only; needs MMRF's approval, Open question 14).** The patch's
-   `sources.json` hunk pins the frontend to the fork `kaizzzed/mmrf-data-commons` at `3fc0e6a`
-   (`3fc0e6aec6737b30e012dab1dae51828336c376d`), the head of the fork's `orion/mode-l` branch (also
-   tag `orion-mode-l`). To ship a newer frontend, push it to the fork first and set the new commit in
+   `sources.json` hunk pins the frontend to the fork `kaizzzed/mmrf-data-commons` at `e91490e`
+   (`e91490e052cc4c6c2a09e43c66455604c33b0f40`), the head of the fork's `orion/ux` branch (also
+   tag `orion-ux`, merged into the fork's `main`). To ship a newer frontend, push it to the fork first and set the new commit in
    that hunk. Then, in the sandbox checkout:
 
    ```sh
@@ -468,7 +468,7 @@ Does Wilcoxon DE on the J3 groups finish inside the A4 budget through CloudFront
 | The image with the Compose environment and the current code | Starts and turns healthy on the Compose network |
 | The Runtime's Terraform environment through `Settings.from_env`, `tools.config` and `model.config` | Parses: mode A, bedrock planner and composer, engine executor, Gateway tools, `us.` model profiles |
 | `python -m unittest discover -s tests` in `orion/infra`, `mypy --strict` | Pass |
-| `git apply --check orion/infra/patches/sandbox.patch` in the sandbox | Pass; applied later for mode A (`66fa5c8`), and `git apply -R --check` passes on `4609db6` |
+| `git apply --check orion/infra/patches/sandbox.patch` in the sandbox | Pass; applied later for mode A (`e2d1a6e`), and `git apply -R --check` passes on `97926b0` |
 | `helm template` / `helm lint` of the patched chart (scratch copy) | Off: renders byte-identical to the current chart; on: the ServiceAccount, `orion-frontend-egress`, `serviceAccountName` and the six variables only |
 
 ## Teardown

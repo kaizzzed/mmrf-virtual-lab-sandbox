@@ -10,7 +10,7 @@ stack (synthetic data, seed 42), `@sjcrh/proteinpaint-client` 2.216.0 (installed
 The DEinput fallback works too, but only after one fix to the seeded group shape (below).
 Open question 9 is **no**: no pinned setting changes the p-value table's sort, so the caption stays.
 
-## Where the code is (frontend fork, uncommitted)
+## Where the code is (frontend fork; uncommitted at the spike, since committed in `cc89ca7`)
 
 | File | What it does |
 | --- | --- |
