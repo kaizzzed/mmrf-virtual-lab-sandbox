@@ -393,6 +393,12 @@ class FakeVerifier:
     def allow_list(self, vocab: Vocabulary, ledger: SessionLedger | None, plan: CompiledPlan) -> list[str]:
         return ["log2FC"]
 
+    def treatment_defined(
+        self, facts: Sequence[FactRecord], ledger: SessionLedger | None, vocab: Vocabulary, *,
+        plan: CompiledPlan, observed: ObservedResult, allow_list: Sequence[str],
+    ) -> bool:
+        return False
+
     def verify(
         self, composer_output: ComposerOutput, facts: Sequence[FactRecord], ledger: SessionLedger | None, vocab: Vocabulary, *,
         plan: CompiledPlan, observed: ObservedResult, attempt: int, allow_list: Sequence[str],

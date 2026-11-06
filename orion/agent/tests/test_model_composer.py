@@ -94,6 +94,19 @@ class BedrockComposerTest(unittest.TestCase):
         self.assertEqual(result.decline_reason, "Claude Opus 5.5 and its fallback, Claude Opus 5, declined to interpret these results")
         self.assertEqual([c.call_id[-2:] for c in result.model_calls], ["c1", "c2"])
 
+    def test_a_refusal_whose_fallback_call_fails_declines(self) -> None:
+        """sdk-1: the refusal is kept when the fallback call fails, so the answer is MODEL_DECLINED, not an error."""
+        for status in (403, 500):
+            with self.subTest(status=status):
+                bedrock = ScriptedBedrock({PRIMARY: [refusal(PRIMARY)], FALLBACK: [status]})
+                result = self.compose(self.composer(bedrock))
+                self.assertIsNone(result.output)
+                self.assertTrue(result.declined)
+                self.assertEqual(result.decline_reason,
+                                 "Claude Opus 5.5 declined to interpret these results, and the fallback model could not be reached")
+                self.assertEqual([(c.model, c.fallback, c.outcome) for c in result.model_calls],
+                                 [(PRIMARY, False, "refused"), (FALLBACK, True, "error")])
+
     def test_an_answer_that_does_not_validate_declines(self) -> None:
         bedrock = ScriptedBedrock({PRIMARY: [message(PRIMARY, json.dumps({"interpretation": []}))]})
         result = self.compose(self.composer(bedrock))

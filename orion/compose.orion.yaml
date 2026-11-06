@@ -4,20 +4,23 @@
 #   docker compose -f compose.yaml -f orion/compose.orion.yaml config --quiet   # check the merge
 #   (to print it, add --no-interpolate: an interpolated print shows exported AWS credentials)
 #   orion/scripts/orion-local.sh up                                        # build and start
+#   orion/scripts/orion-local.sh up --bedrock                              # stage 2: the agent on Bedrock
+#   orion/scripts/orion-local.sh up --stub                                 # back to the stubs
 #
 # Paths below are relative to the project directory (the repo root, where compose.yaml lives),
 # because Compose resolves every file's relative paths against the first file's directory.
 #
 # What it adds:
-# - `orion-agent`: the run controller with in-process tools against http://identity:8080, the
-#   stub planner and stub composer (no model call, so no AWS credential is needed), and the
+# - `orion-agent`: the run controller with in-process tools against http://identity:8080, by default
+#   the stub planner and stub composer (no model call, so no AWS credential is needed), and the
 #   run-record volume `orion-runs` mounted read-write at /data/runs.
 # - `frontend`: the same volume read-only plus ORION_MODE=L, ORION_AGENT_URL and ORION_RUN_DIR
 #   for the BFF routes (src/pages/api/orion/).
 #
-# Bedrock (real planner or composer) stays off. Every AWS and model variable below is listed
-# without a value, so Compose passes it only when it is set in your shell; nothing is read from
-# ~/.aws. Export short-term credentials and the model settings first (orion-local.sh help).
+# Bedrock (real planner or composer) stays off unless ORION_PLANNER or ORION_COMPOSER is bedrock.
+# Every AWS and model variable below is listed without a value, so Compose passes it only when it
+# is set in your shell; nothing is read from ~/.aws here. `orion-local.sh up --bedrock` exports the
+# sandbox profile's short-term credentials and the Bedrock settings, then recreates only the agent.
 #
 # Mode L never tunnels the gateway to the internet: the agent's port is published on 127.0.0.1 only.
 
@@ -55,6 +58,13 @@ services:
       ORION_PLANNER_MODEL:
       ORION_COMPOSER_MODEL:
       ORION_FALLBACK_MODEL:
+      ORION_PLANNER_EFFORT:
+      ORION_COMPOSER_EFFORT:
+      ORION_PLANNER_TIMEOUT_S:
+      ORION_COMPOSER_TIMEOUT_S:
+      ORION_MODEL_MAX_RETRIES:
+      ORION_MODEL_MAX_TOKENS:
+      ORION_MODEL_CACHE_TTL:
       AWS_REGION:
       AWS_ACCESS_KEY_ID:
       AWS_SECRET_ACCESS_KEY:

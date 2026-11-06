@@ -11,7 +11,18 @@ base `anthropic.*` ids). Both carry two middlewares:
   accepted.
 - `HopRecorder`, inside it: sees every HTTP attempt, the fallback hop and the SDK's retries
   included, and turns each into a ModelCallRecord (callId, model, fallback, effort, attempt,
-  outcome, stop reason, tokens with cache reads and writes).
+  outcome, stop reason, tokens with cache reads and writes). `attempt` counts the attempts on
+  that model within the call: the fallback hop runs inside one of the SDK's attempts, so the
+  SDK's own retry count would number the fallback's first attempt 2.
+
+The middleware's refusal path is completed here, where anthropic 2.5.0 leaves it open for
+non-streaming calls (its `handle_async` returns the failed hop's response, and the SDK raises
+that status): a refusal whose fallback call then fails is still a refusal (`CallResult.refused`),
+and a pin to a fallback that failed is lifted so the run's next call starts at the primary again.
+A cancel that lands outside an HTTP attempt (the SDK's retry backoff, request signing) is
+recorded as a cancelled hop, so an aborted call always has its `cancelled` entry. Any other
+exception (unresolved AWS credentials raise a plain RuntimeError while the request is signed)
+becomes a ModelRoleError carrying the calls made.
 
 Every request: the model, `max_tokens`, one cached system block (`cache_control` ephemeral), one
 user message, `output_config` with the role's effort and a JSON schema. No tools, `tool_choice`,
@@ -71,6 +82,7 @@ class HopObservation:
     cache_write_tokens: int | None = None
     cancelled: bool = False
     error: str | None = None
+    refusal_category: str | None = None
 
     @property
     def refused(self) -> bool:
@@ -93,6 +105,14 @@ def _int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
+MAX_ATTEMPT: Final = 4  # ModelCallRecord.attempt is 1 to 4
+
+
+def next_attempt(hops: list[HopObservation], model: str) -> int:
+    """The attempt number of the next hop on `model`: the hops of this call on that model, plus one."""
+    return min(1 + sum(1 for hop in hops if hop.model == model), MAX_ATTEMPT)
+
+
 class HopRecorder(Middleware):
     """Records every HTTP attempt of a traced call. Runs inside the refusal fallback middleware."""
 
@@ -101,9 +121,10 @@ class HopRecorder(Middleware):
         if trace is None:
             return await call_next(request)
         body = request.json if isinstance(request.json, dict) else {}
+        model = str(body.get("model") or "")
         hop = HopObservation(
-            model=str(body.get("model") or ""),
-            attempt=min(request.retries_taken + 1, 4),
+            model=model,
+            attempt=next_attempt(trace.hops, model),
             started_at=iso_now(),
             elapsed_ms=0,
             status_code=None,
@@ -133,6 +154,9 @@ class HopRecorder(Middleware):
             hop.output_tokens = _int(usage.get("output_tokens"))
             hop.cache_read_tokens = _int(usage.get("cache_read_input_tokens"))
             hop.cache_write_tokens = _int(usage.get("cache_creation_input_tokens"))
+            details = data.get("stop_details") if isinstance(data, dict) else None
+            category = details.get("category") if isinstance(details, dict) else None
+            hop.refusal_category = category if isinstance(category, str) else None
         return response
 
 
@@ -173,7 +197,9 @@ class CallResult(Generic[T]):
     """What one model call produced, after the refusal fallback ran."""
 
     value: T | None  # the parsed output, when a model served and its text parsed
-    refused: bool  # the call ended in a refusal: every model tried declined, or the fallback failed
+    # The call ended in a refusal: every model tried declined, or a model declined and the fallback
+    # call then failed (no hop served; `served_model` is None and `declined_models` names who declined).
+    refused: bool
     refusal_category: str | None
     invalid_detail: str | None  # a model served, but its text did not parse
     text: str | None
@@ -192,8 +218,21 @@ def _kind_for(exc: anthropic.APIError) -> tuple[ErrorKind, int | None]:
     if isinstance(exc, anthropic.APIConnectionError):
         return "unavailable", None
     if isinstance(exc, anthropic.APIStatusError):
-        return ("server_error" if exc.status_code >= 500 else "rejected"), exc.status_code
+        status = exc.status_code
+        # Bedrock's ModelTimeoutException is HTTP 408 and its ModelErrorException 424: the model side
+        # timed out or failed, which is not a rejected request.
+        if status == 408:
+            return "timeout", status
+        if status == 424 or status >= 500:
+            return "server_error", status
+        return "rejected", status
     return "server_error", None
+
+
+def _credentials_missing(exc: Exception) -> bool:
+    """anthropic 2.5.0's Bedrock signer raises RuntimeError("could not resolve credentials from
+    session") when boto3 finds no credential; botocore's own credential errors say so in their name."""
+    return "credential" in f"{type(exc).__name__} {exc}".casefold()
 
 
 def _outcome(hop: HopObservation, invalid: bool) -> Outcome:
@@ -287,6 +326,44 @@ class ModelClient:
             )
         self.states = FallbackStates()
 
+    def _targeted(self, state: BetaFallbackState, request: ModelRequest) -> str:
+        """The model the call's next attempt goes to: the pinned fallback, or the request's model."""
+        return self.fallback_model if self.fallback_model and state.index is not None and state.index >= 0 else request.model
+
+    def _record_cancel(self, trace: _Trace, state: BetaFallbackState, request: ModelRequest) -> None:
+        """A cancel outside an HTTP attempt (the SDK's retry backoff, signing) still records the aborted call."""
+        if trace.hops and trace.hops[-1].cancelled:
+            return
+        self._add_unsent(trace, state, request, cancelled=True, error="CANCELLED")
+
+    def _record_failure(self, trace: _Trace, state: BetaFallbackState, request: ModelRequest, exc: Exception) -> None:
+        """An exception outside the SDK's error types. Raised inside an attempt (request signing: no credential
+        resolved), HopRecorder already holds it as an error; after a 200, that hop is marked failed; before
+        any attempt, the call is recorded as one failed attempt."""
+        last = trace.hops[-1] if trace.hops else None
+        if last is not None and last.status_code is None and last.error is not None:
+            return
+        if last is not None and last.status_code == 200 and last.error is None:
+            last.error = type(exc).__name__
+            return
+        self._add_unsent(trace, state, request, cancelled=False, error=type(exc).__name__)
+
+    def _add_unsent(self, trace: _Trace, state: BetaFallbackState, request: ModelRequest, *, cancelled: bool, error: str) -> None:
+        model = self._targeted(state, request)
+        trace.hops.append(
+            HopObservation(
+                model=model, attempt=next_attempt(trace.hops, model), started_at=iso_now(), elapsed_ms=0,
+                status_code=None, cancelled=cancelled, error=error,
+            )
+        )
+
+    def _unpin_failed_fallback(self, trace: _Trace, state: BetaFallbackState, request: ModelRequest) -> None:
+        """The middleware pins the fallback before its hop is sent; when that hop failed, the run's
+        next call starts at the primary model again instead of at a fallback that could not answer."""
+        last = trace.hops[-1] if trace.hops else None
+        if last is not None and last.model != request.model and not last.served:
+            state.index = None
+
     @classmethod
     def from_config(cls, config: ModelConfig) -> "ModelClient":
         return cls(
@@ -342,11 +419,22 @@ class ModelClient:
             with state:
                 message = await self._create(request, system, messages, output_config)
         except asyncio.CancelledError:
+            self._record_cancel(trace, state, request)
             records()
             raise
         except anthropic.APIError as exc:
+            self._unpin_failed_fallback(trace, state, request)
+            declined = [hop.model for hop in trace.hops if hop.refused]
+            if declined:
+                # A model declined and the fallback call then failed: the call still ended in a refusal.
+                category = next((hop.refusal_category for hop in reversed(trace.hops) if hop.refused), None)
+                return CallResult(None, True, category, None, None, "refusal", None, records(), trace.hops, declined)
             kind, status = _kind_for(exc)
             raise ModelRoleError(request.role, kind, f"{type(exc).__name__}: {exc}", records(), status_code=status) from exc
+        except Exception as exc:  # outside the SDK's error types: unresolved credentials, a signing failure
+            failure: ErrorKind = "credentials" if _credentials_missing(exc) else "unavailable"
+            self._record_failure(trace, state, request, exc)
+            raise ModelRoleError(request.role, failure, f"{type(exc).__name__}: {exc}", records()) from exc
         finally:
             _TRACE.reset(token)
 

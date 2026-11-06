@@ -2,12 +2,14 @@
 # ORION mode L on the local sandbox stack (RFA rev 25, A4 "Deployment").
 #
 # Layers orion/compose.orion.yaml on the sandbox's compose.yaml (Compose project mmrf-synthetic):
-# adds the `orion-agent` service (stub planner and composer, in-process tools against
+# adds the `orion-agent` service (stub planner and composer by default, in-process tools against
 # http://identity:8080, run records on the volume `orion-runs`) and gives the frontend the
 # read-only volume plus ORION_MODE=L, ORION_AGENT_URL and ORION_RUN_DIR.
 #
 # Usage, from anywhere in the sandbox checkout:
 #   orion/scripts/orion-local.sh up [--no-build] [--skip-frontend-build]
+#   orion/scripts/orion-local.sh up --bedrock [--no-build] [--profile NAME]
+#   orion/scripts/orion-local.sh up --stub [--no-build]
 #   orion/scripts/orion-local.sh down [--volumes]
 #   orion/scripts/orion-local.sh logs [compose logs options] [service...]
 #   orion/scripts/orion-local.sh status
@@ -18,13 +20,29 @@
 #           then starts orion-agent and recreates the frontend with the ORION settings, and waits
 #           until both are healthy. The rest of the sandbox stack starts if it is not running.
 #           --no-build uses the images already built; --skip-frontend-build builds only the agent.
+#   up --bedrock
+#           Stage 2, "Bedrock only": the same local agent with the real planner and composer,
+#           Claude Opus 5.5 on Amazon Bedrock (us.anthropic.claude-opus-5-5, refusal fallback
+#           us.anthropic.claude-opus-5, region us-east-1). Reads the short-term credentials of the
+#           AWS profile `sandbox` (--profile NAME, or ORION_AWS_PROFILE) with
+#           `aws configure export-credentials`, never printing them, checks them with one
+#           `sts get-caller-identity` (it prints the role name only), sets ORION_PLANNER and
+#           ORION_COMPOSER to bedrock and AWS_REGION and ORION_BEDROCK_REGION to us-east-1, then
+#           rebuilds and recreates only orion-agent (--no-build skips the build). The frontend and
+#           the rest of the stack are not touched. The credentials live only in this script's
+#           process and the container's environment; they expire, and then every model call fails
+#           (the answer is Observed only, or the run ends Failed): refresh the profile and run
+#           `up --bedrock` again. Bedrock calls cost money.
+#   up --stub
+#           Back to the stub planner and composer: recreates only orion-agent with no AWS variable
+#           and no Bedrock setting, whatever the shell exports.
 #   down    Stops and removes only the orion-agent container, then recreates the frontend from
 #           compose.yaml alone, so the sandbox runs as it did before `up`. The rest of the stack
 #           keeps running. --volumes also deletes the volume mmrf-synthetic_orion-runs, which
 #           holds every local run record (no undo).
 #   logs    `docker compose logs` for orion-agent by default; extra arguments pass through
 #           (for example: logs -f --since 10m, or logs frontend).
-#   status  Container states, health, and the agent's /ping answer.
+#   status  Container states, health, the agent's planner and composer, and its /ping answer.
 #   config  Validates the merged Compose file and prints the orion-agent and frontend services
 #           without interpolation (`${VAR}` left as written), so exported AWS credentials are never
 #           printed: the three AWS keys show as null.
@@ -35,15 +53,16 @@
 #   ORION_PLANNER, ORION_COMPOSER   `stub` by default; `bedrock` needs Bedrock, below.
 #   ORION_EXECUTOR, ORION_DE_LAUNCHER, ORION_DEFAULT_SCOPE   Passed to the agent when set.
 #   ORION_FAULTS        E11 fault injection, such as de_run:timeout,composer:refuse (mode L only).
+#   ORION_AWS_PROFILE   The profile `up --bedrock` reads (default sandbox).
 #
-# Bedrock (a real planner or composer) is off unless you provide credentials. This script never
-# calls AWS and never reads ~/.aws. Export short-term credentials and the model settings in your
-# shell first, for example with your own `aws configure export-credentials --format env`, then:
+# Bedrock without --bedrock: plain `up` never calls AWS and never reads ~/.aws. It passes what
+# your shell exports, so with your own short-term credentials exported:
 #   ORION_PLANNER=bedrock ORION_COMPOSER=bedrock AWS_REGION=us-east-1 \
 #     orion/scripts/orion-local.sh up --no-build
-# Compose passes AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
-# ORION_BEDROCK_CLIENT, ORION_BEDROCK_REGION, ORION_PLANNER_MODEL, ORION_COMPOSER_MODEL and
-# ORION_FALLBACK_MODEL only when they are set (the agent's model/config.py has the defaults).
+# Compose passes AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN and the
+# model settings (ORION_BEDROCK_CLIENT, ORION_BEDROCK_REGION, ORION_PLANNER_MODEL,
+# ORION_COMPOSER_MODEL, ORION_FALLBACK_MODEL, the efforts, timeouts, retries, max tokens and cache
+# TTL of orion/agent/orion_agent/model/config.py) only when they are set.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -98,18 +117,66 @@ check_bedrock() {
     || die "a Bedrock planner or composer needs short-term AWS credentials exported in this shell"
 }
 
+# Exports the profile's short-term credentials into this process (never printed) and checks them.
+use_bedrock() {
+  local profile=$1 creds arn
+  command -v aws >/dev/null 2>&1 || die "up --bedrock needs the AWS CLI"
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_CREDENTIAL_EXPIRATION AWS_PROFILE
+  creds=$(aws configure export-credentials --profile "$profile" --format env 2>/dev/null) \
+    || die "could not read credentials of the AWS profile $profile; sign in or refresh it"
+  case $creds in
+    *AWS_ACCESS_KEY_ID=*) ;;
+    *) die "the AWS profile $profile gave no credentials" ;;
+  esac
+  eval "$creds"
+  unset creds
+  export AWS_REGION=us-east-1 ORION_BEDROCK_REGION=us-east-1 ORION_PLANNER=bedrock ORION_COMPOSER=bedrock
+  arn=$(aws sts get-caller-identity --query Arn --output text 2>/dev/null) \
+    || die "the credentials of the AWS profile $profile are expired or invalid; refresh them and run up --bedrock again"
+  case $arn in
+    arn:aws:sts::*:assumed-role/*) arn=${arn#*:assumed-role/}; printf 'orion-local: AWS role %s\n' "${arn%%/*}" ;;
+    *) printf 'orion-local: AWS identity checked\n' ;;
+  esac
+}
+
+# Clears every Bedrock and AWS variable, so Compose starts the agent with the stubs.
+use_stub() {
+  unset ORION_PLANNER ORION_COMPOSER AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_CREDENTIAL_EXPIRATION \
+    AWS_REGION ORION_BEDROCK_CLIENT ORION_BEDROCK_REGION ORION_PLANNER_MODEL ORION_COMPOSER_MODEL ORION_FALLBACK_MODEL
+}
+
 cmd_up() {
-  local build=1 frontend_build=1
+  local build=1 frontend_build=1 roles="" profile=${ORION_AWS_PROFILE:-sandbox}
   while [ $# -gt 0 ]; do
     case $1 in
       --no-build) build=0 ;;
       --skip-frontend-build) frontend_build=0 ;;
+      --bedrock) roles=bedrock ;;
+      --stub) roles=stub ;;
+      --profile)
+        [ $# -ge 2 ] || die "up: --profile needs a profile name"
+        profile=$2
+        shift
+        ;;
       *) die "up: unknown option $1" ;;
     esac
     shift
   done
+  case $roles in
+    bedrock) use_bedrock "$profile" ;;
+    stub) use_stub ;;
+  esac
   check_bedrock
   compose config --quiet
+  if [ -n "$roles" ]; then
+    # Only the agent changes: the frontend and the rest of the stack keep running as they are.
+    if [ "$build" = 1 ]; then
+      compose build orion-agent
+    fi
+    compose up --detach --no-deps --no-build --wait orion-agent
+    cmd_status
+    return 0
+  fi
   if [ "$build" = 1 ]; then
     if [ "$frontend_build" = 1 ]; then
       compose build orion-agent frontend
@@ -171,6 +238,10 @@ cmd_status() {
     return 0
   fi
   printf 'orion-agent health: %s\n' "$(docker inspect --format '{{.State.Health.Status}}' "$id")"
+  # Two named variables only: the container's environment also holds AWS credentials.
+  printf 'orion-agent planner: %s, composer: %s\n' \
+    "$(docker exec "$id" sh -c 'printf %s "${ORION_PLANNER:-stub}"')" \
+    "$(docker exec "$id" sh -c 'printf %s "${ORION_COMPOSER:-stub}"')"
   docker exec "$id" python -c \
     "import urllib.request; print('ping:', urllib.request.urlopen('http://127.0.0.1:8080/ping', timeout=3).read().decode())"
 }

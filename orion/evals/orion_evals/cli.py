@@ -1,5 +1,5 @@
-"""`python -m orion_evals run|oracle|list|prompts` (run it from orion/evals, in a container on
-the Compose network; see the README)."""
+"""`python -m orion_evals run|oracle|list|prompts|timings|usage` (run it from orion/evals, in a
+container on the Compose network; see the README)."""
 
 import argparse
 import ast
@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import report
+from . import report, timings
 from .client import DEFAULT_AGENT_URL, AgentClient, BffRecordSource, DirRecordSource, HttpTransport, NoRecordSource, RecordSource
 from .evals import EVALS
 from .evidence import AgentTarget, EvalContext
@@ -217,6 +217,47 @@ def cmd_prompts(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_timings(args: argparse.Namespace) -> int:
+    """NFR-01 timings through the agent (orion_evals.timings); every ask calls the agent's model roles."""
+    prompts = load_prompts(Path(args.prompts))
+    asks: list[tuple[str, str]] = []
+    for item in args.journeys.split(","):
+        journey, _, phrasing = item.partition(":")
+        question = prompts["reference"].get(journey, {}).get(phrasing)
+        if not isinstance(question, str):
+            _log(f"no reference prompt {item!r}: use journey:phrasing, such as J3:open-ended")
+            return 2
+        asks.append((journey, question))
+    started = datetime.now(UTC)
+    client = AgentClient(HttpTransport(args.agent_url, "agent"), args.turn_timeout_s)
+    rows = timings.run_timings(
+        client, DirRecordSource(Path(args.run_dir)), asks, mode=args.mode, rounds=args.rounds, idle_s=args.idle_s, log=_log
+    )
+    doc = {
+        "schema": "orion.bedrock-timings/v1",
+        "mode": args.mode,
+        "idleS": None if args.mode == "warm" else args.idle_s,
+        "startedAt": started.isoformat(timespec="seconds"),
+        "finishedAt": datetime.now(UTC).isoformat(timespec="seconds"),
+        "summary": timings.summarise(rows),
+        "asks": rows,
+    }
+    directory = Path(args.reports_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"timings-{args.mode}-{report.stamp()}.json"
+    path.write_text(json.dumps(doc, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(json.dumps(doc["summary"], indent=1))
+    _log(f"timings: {path}")
+    return 0
+
+
+def cmd_usage(args: argparse.Namespace) -> int:
+    """Model calls and tokens of an eval report's runs, from their run records."""
+    doc = json.loads(Path(args.report).read_text(encoding="utf-8"))
+    print(json.dumps(timings.usage(doc, Path(args.run_dir)), indent=1))
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     env = os.environ.get
     top = argparse.ArgumentParser(prog="python -m orion_evals", description=__doc__)
@@ -257,6 +298,23 @@ def parser() -> argparse.ArgumentParser:
     prm = sub.add_parser("prompts", help="print every eval prompt (C-31 exclusion list)")
     prm.add_argument("--check-agent", help="orion_agent/model/eval_prompts.py: list the harness prompts it lacks")
     prm.set_defaults(func=cmd_prompts)
+
+    tim = sub.add_parser("timings", help="NFR-01: plan-visible time and the Writing interpretation wait through the agent")
+    tim.add_argument("--agent-url", default=env("ORION_EVAL_AGENT_URL", DEFAULT_AGENT_URL))
+    tim.add_argument("--run-dir", default=env("ORION_RUN_DIR", "/data/runs"), help="the agent's run volume, mounted read-only")
+    tim.add_argument("--mode", choices=timings.MODES, default="warm")
+    tim.add_argument("--rounds", type=int, default=4, help="rounds over --journeys (default 4)")
+    tim.add_argument("--journeys", default="J1:open-ended,J1:tool-named,J2:open-ended,J2:tool-named,J3:open-ended,J3:tool-named",
+                     help="reference prompts as journey:phrasing")
+    tim.add_argument("--idle-s", type=float, default=330.0, help="cold modes: idle before each ask, past the 5-minute cache TTL")
+    tim.add_argument("--turn-timeout-s", type=float, default=900.0)
+    tim.add_argument("--reports-dir", default=env("ORION_EVAL_REPORTS_DIR", str(REPORTS)))
+    tim.set_defaults(func=cmd_timings)
+
+    use = sub.add_parser("usage", help="model calls and tokens of an eval report's runs, from the run records")
+    use.add_argument("report", help="an orion-evals-*.json report")
+    use.add_argument("--run-dir", default=env("ORION_RUN_DIR", "/data/runs"))
+    use.set_defaults(func=cmd_usage)
     return top
 
 

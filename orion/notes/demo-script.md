@@ -15,8 +15,9 @@ fabricated and has no clinical meaning." Say so once at the start.
    `orion/scripts/orion-local.sh up`, then `orion/scripts/orion-local.sh status` shows
    `orion-agent` healthy. Planner and composer: the stubs by default
    (`ORION_PLANNER=stub ORION_COMPOSER=stub`, no AWS). The stub planner answers the six starter
-   prompts; typed paraphrases need `ORION_PLANNER=bedrock` with short-term credentials (see
-   `orion/infra/README.md`). Pick one setup and rehearse in it.
+   prompts; typed paraphrases need the Bedrock planner: `orion/scripts/orion-local.sh up --bedrock`
+   (the sandbox profile's short-term credentials, Claude Opus 5.5 in us-east-1; `status` then
+   reads "planner: bedrock, composer: bedrock"). Pick one setup and rehearse in it.
 2. **Rehearsal gate.** Two checks, both against the running stack:
 
    - The three open-ended journeys through the eval harness (agent direct), then read the report
@@ -29,6 +30,9 @@ fabricated and has no clinical meaning." Say so once at the start.
      E1, E3 and E5 should not fail. A fail names the check (a count against the oracle, a missing
      card); fix it or take the fallback for that journey (section 5) before going on stage. Each
      reference journey leaves a run (and J2 and J3 their cohorts in the simulated browser only).
+     In the Bedrock setup, `orion/scripts/evals-bedrock.sh evals --evals E1,E3,E5,E22 --repeats 1`
+     first checks the credentials and that the agent runs on Bedrock, and E22 adds the held-out
+     paraphrases; results of the full Bedrock run are in `orion/notes/bedrock-evals.md`.
    - The real app in a headless browser, every moment of this script (about 1 minute):
 
      ```sh
@@ -37,7 +41,10 @@ fabricated and has no clinical meaning." Say so once at the start.
 
      It should end "11 of 11 scenarios passed". Its screenshots, one per beat, are in
      `orion/notes/screenshots/e2e/` (gitignored); each scenario uses a fresh browser profile, so
-     your own browser is untouched.
+     your own browser is untouched. In the Bedrock setup run
+     `ORION_E2E_MODEL=bedrock node orion/scripts/e2e-mode-l.mjs` instead (about 6 minutes and 80
+     model calls): it should end "15 of 15 scenarios passed", Stop while "Planning" and while
+     "Writing interpretation" included (`orion/notes/bedrock-status.md`).
 3. **Today's numbers.** `python -m orion_evals oracle` (same container) prints the values the demo
    must show. On 2026-11-05 (fingerprint `80ac2c93…`) the oracle computed:
 
@@ -63,11 +70,11 @@ verified ProteinPaint's sign against the expression data (TOOLS.md open issue). 
 
 | # | Click or type | What the screen shows |
 | --- | --- | --- |
-| 1 | Click the starter **J1 · open-ended** ("Compare survival of CGS high-risk vs. CGS standard-risk patients"), then Enter | The question in the thread. Send turns into **Stop**. The run header reads "Planning" |
+| 1 | Click the starter **J1 · open-ended** ("Compare survival of CGS high-risk vs. CGS standard-risk patients"), then Enter | The question in the thread. Send turns into **Stop**. The run header reads "Planning". With Bedrock, open the Assistant about 5 s before the first question: a question asked while the opening warm-up turn runs waits for it, and the plan then takes 7–11 s instead of about 3 s |
 | 2 | Wait | The **plan card**, "Plan, version 1": the scope line `Scope: All cases · 1,000 cases` (the count carries the chip "Row 1 · s1 fixture_fingerprint"), then row 1 "Count both CGS risk groups" (Cohort Builder counts filter cohorts) and row 2 "Compare survival: Kaplan–Meier, split by CGS risk category" (Correlation Plot runs survival comparisons). Assumptions: "No cohort named: using the active cohort, All cases" and "High risk vs. Standard risk from CGS risk category". The header reads "Running". Point out: the plan was on screen before the first call (FR-05) |
 | 3 | Watch the rows | Rows tick off with durations: s1 (the fixture fingerprint, folded under row 1), s2 "CGS risk category = High risk" → "339 cases", s3 → "661 cases", s4 "2 groups, Kaplan–Meier" → "2 curves, log-rank p reported", s5 "2 curves" → "2 medians" |
 | 4 | Look at the viz card | **Overall survival by CGS risk category**: the native Correlation Plot survival chart, live ("Live · ready in …" in the card header), two curves with group labels, "Pinned to All cases · cites s4". The parity badge reads "Parity: matches s4 survival_compare". Caption under the chart: "The chart's log-rank table shows p = 0; the answer's p-value comes from Gen3 Analysis." The card lists what to set in Correlation Plot to match it (cohort, survival variable, overlay). Hover a curve; click **Expand** to widen it in place |
-| 5 | Read the answer card | Header "Writing interpretation", then "Complete". **Observed**: "High risk: 339 cases, 299 events." "Standard risk: 661 cases, 300 events." "Log-rank p = 7.1e-60 (Gen3 Analysis)." "Median overall survival: High risk 1,147 days; Standard risk 3,315 days (Kaplan–Meier median derived by ORION from the engine's curves)." Then **Interpretation**, **Hypotheses and next steps** (the follow-up chips "Survival by gender" and "Top mutated genes in this cohort", and the link "Open Cohort Comparison"), **Limitations** ("The survival chart shows this p-value as p = 0…", "The platform reports no hazard ratio…"), and the notice |
+| 5 | Read the answer card | Header "Writing interpretation", then "Complete". **Observed**: "High risk: 339 cases, 299 events." "Standard risk: 661 cases, 300 events." "Log-rank p = 7.1e-60 (Gen3 Analysis)." "Median overall survival: High risk 1,147 days; Standard risk 3,315 days (Kaplan–Meier median derived by ORION from the engine's curves)." Then **Interpretation**, **Hypotheses and next steps** (the follow-up chips "Survival by gender" and "Top mutated genes in this cohort", and the link "Open Cohort Comparison"; with the Bedrock composer the text, chips and links are the model's own, such as "Top mutated genes in CGS high-risk cases" and "Survival by ISS stage", and "Writing interpretation" lasts about 8–15 s), **Limitations** ("The survival chart shows this p-value as p = 0…", "The platform reports no hazard ratio…"), and the notice |
 | 6 | Click the chip beside **339** ("Row 1 · s2 cohort_count") | The Evidence Inspector opens on its heading, with "Row 1 · s2 cohort_count": the step, the fact (value, pointer, call, engine and the value found in the call), the other facts from this step, and the call ("Attempt 1 · ok · … · in_process") with its request and output. Show **Export the run record as JSON**. Esc closes it and puts focus back on the chip |
 
 Say: every number on screen is a chip that names its row and step; the eval harness checked these
@@ -175,7 +182,7 @@ The design's cut list, in order, and what the demo does if that cut was taken.
 | Cut 2b: → a static image | The DE card shows its frozen top-10 table (Gene, log2FC, Adjusted p, all chips) and the note; show the full viewer with **Open with this cohort** |
 | Cut 3: mode A → mode H | Same script in the browser; the tools read AWS while the viewers read the local stack, and each card compares the local fingerprint and freezes, saying why, if they differ |
 | A viewer fails to mount | The card keeps its title, caption and frozen table; say the chart is the platform's own and open it with **Open with this cohort** |
-| Bedrock unavailable | Restart with the stubs (`orion/scripts/orion-local.sh up` with `ORION_PLANNER=stub ORION_COMPOSER=stub`) and use the starters. If only the composer refuses, answers read "Interpretation withheld: …" with Observed intact: say that is the designed behaviour (E11) |
+| Bedrock unavailable (or the credentials expired) | Restart with the stubs (`orion/scripts/orion-local.sh up --stub`, which recreates only the agent) and use the starters. If only the composer refuses, answers read "Interpretation withheld: …" with Observed intact: say that is the designed behaviour (E11) |
 | Stretch 1 not built (Open in tool carries settings, FR-22) | The card lists the settings to re-apply; read them out when the full tool opens |
 | Stretch 13 not built (step reuse) | An edit runs every step again; the rows show "Running" instead of "Reused" |
 | The agent will not start | Show the latest eval report and a record in the Evidence Inspector's export; do not improvise answers |

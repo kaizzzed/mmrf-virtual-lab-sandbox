@@ -21,8 +21,11 @@
 #
 # Extra arguments go to `python -m orion_evals run` (for example --evals E1,E7 or --repeats 1).
 # Reports land in orion/evals/reports/ (gitignored). The exit code is the harness's: 1 when an eval
-# fails. Nothing here calls AWS: the planner and composer are the stubs, so E22 reports
-# "needs Bedrock planner".
+# fails. `agent` and `bff` evaluate whatever the Compose orion-agent runs: the stub planner and
+# composer by default (no AWS; E22 then reports "needs Bedrock planner"), or Claude on Bedrock after
+# `orion-local.sh up --bedrock` (E22 runs, and every run calls Bedrock: a full 5-repeat run is about
+# 100 runs and 35 minutes; orion/scripts/evals-bedrock.sh wraps that stage). The fault agents and
+# e20-lease always use the stubs.
 set -euo pipefail
 
 if ! command -v docker >/dev/null 2>&1 && [ -x "$HOME/.docker/bin/docker" ]; then

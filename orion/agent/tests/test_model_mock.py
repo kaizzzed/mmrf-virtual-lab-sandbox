@@ -40,12 +40,25 @@ def refusal(model: str, category: str = "bio") -> dict[str, Any]:
     return body
 
 
-Reply = dict[str, Any] | int | Exception | Callable[[], Awaitable[dict[str, Any]]]
+Reply = dict[str, Any] | int | Exception | Callable[[], Awaitable[Any]]
+
+
+def status_reply(code: int, *, retry_after_s: float) -> Callable[[], Awaitable[Any]]:
+    """An error status whose retry-after keeps the SDK in its backoff (anyio.sleep) for `retry_after_s`."""
+
+    async def reply() -> Any:
+        import httpx2
+
+        body = {"type": "error", "error": {"type": "api_error", "message": "scripted"}}
+        return httpx2.Response(code, json=body, headers={"retry-after-ms": str(int(retry_after_s * 1000))})
+
+    return reply
 
 
 @dataclass
 class ScriptedBedrock:
-    """Replies per model, in order. A dict is a 200 message, an int an error status, an exception is raised."""
+    """Replies per model, in order. A dict is a 200 message, an int an error status, an exception is raised;
+    a callable is awaited for a 200 message body or a whole httpx2.Response."""
 
     script: dict[str, list[Reply]]
     requests: list[dict[str, Any]] = field(default_factory=list)
@@ -72,7 +85,8 @@ class ScriptedBedrock:
             kind = "rate_limit_error" if reply == 429 else "api_error"
             return httpx2.Response(reply, json={"type": "error", "error": {"type": kind, "message": "scripted"}}, headers={"retry-after-ms": "1"})
         if callable(reply):
-            return httpx2.Response(200, json=await reply())
+            made = await reply()
+            return made if isinstance(made, httpx2.Response) else httpx2.Response(200, json=made)
         return httpx2.Response(200, json=reply)
 
     def client(self, *, fallback: str | None = FALLBACK, max_retries: int = 0) -> Any:

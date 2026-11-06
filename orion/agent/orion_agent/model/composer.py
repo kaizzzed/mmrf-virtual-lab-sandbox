@@ -8,9 +8,10 @@ verifier's failed findings.
 The schema the API takes has no length or count constraints, so the reply is clipped to the
 caps of `interfaces.py` (at most 4 interpretation and 3 hypothesis statements of 300 characters,
 3 follow-ups with labels of 60 and questions of 200 characters, 3 apps) before validation: an
-over-long item is dropped, not the whole answer. Both models declining, or a reply that still
-does not validate, is a decline: the answer is Observed only (E11, MODEL_DECLINED). Any other
-failure raises ModelRoleError carrying every call made.
+over-long item is dropped, not the whole answer. Both models declining, a refusal whose fallback
+call then fails, or a reply that still does not validate, is a decline: the answer is Observed
+only (E11, MODEL_DECLINED for a refusal). Any other failure raises ModelRoleError carrying every
+call made.
 """
 
 import json
@@ -27,8 +28,8 @@ from ..models import FactRecord
 from .client import CallResult, ModelClient, ModelRequest
 from .config import WARMUP_MAX_TOKENS, ModelConfig
 from .lexicon import model_display_name
-from .prompts import composer_system_prefix, composer_user_message
-from .schema import composer_output_schema
+from .prompts import composer_system_prefix, composer_user_message, data_block
+from .schema import composer_output_schema, composer_wire
 from .warmup import WarmUpResult, warm_up_result
 
 _FACT_ID: Final = re.compile(r"^f\.s[1-9][0-9]*(\.[A-Za-z0-9_-]+)+$")
@@ -78,12 +79,14 @@ def clip_composer_output(data: JsonValue) -> dict[str, JsonValue]:
 
 
 def parse_composer_reply(text: str) -> ComposerOutput:
-    return ComposerOutput.model_validate(clip_composer_output(json.loads(text)))
+    return ComposerOutput.model_validate(clip_composer_output(composer_wire().decode(json.loads(text))))
 
 
-def decline_reason(result: CallResult[ComposerOutput]) -> str:
+def decline_reason(result: CallResult[ComposerOutput], fallback_model: str | None = None) -> str:
     """The withheld line's reason, naming the models that declined (A3 edge cases)."""
     models = [model_display_name(m) for m in result.declined_models]
+    if fallback_model and fallback_model not in result.declined_models and result.declined_models:
+        return f"{models[0]} declined to interpret these results, and the fallback model could not be reached"
     if len(models) >= 2:
         return f"{models[0]} and its fallback, {models[-1]}, declined to interpret these results"
     if models:
@@ -133,7 +136,8 @@ class BedrockComposer:
         result = await self._client.call(self._request(user, plan.version), parse_composer_reply)
         if result.refused:
             return ComposerResult(
-                output=None, model_calls=result.records, serving_model=None, declined=True, decline_reason=decline_reason(result)
+                output=None, model_calls=result.records, serving_model=None, declined=True,
+                decline_reason=decline_reason(result, self._config.fallback_model),
             )
         if result.value is None:
             return ComposerResult(
@@ -152,7 +156,7 @@ class BedrockComposer:
             "observed": ["The scope has {{f.s1.cases}} cases."],
             "allowedTerms": [],
         }
-        user = "<request>\n" + json.dumps(data, ensure_ascii=False, indent=1) + "\n</request>\nAnswer with the JSON object only."
+        user = "<request>\n" + data_block(data) + "\n</request>\nAnswer with the JSON object only."
         started = time.monotonic()
         return await warm_up_result(
             "composer", self._config.composer_model, self._config.composer_effort, started,
