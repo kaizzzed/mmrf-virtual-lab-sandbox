@@ -6,7 +6,7 @@
 -    "url": "https://github.com/theMMRF/mmrf-data-commons.git",
 -    "commit": "27cf09aca01a496b9d52f1b6a14e6859bf530fbb"
 +    "url": "https://github.com/kaizzzed/mmrf-data-commons.git",
-+    "commit": "b260945c09bce46c83ab470a5caf7908ceb27423"
++    "commit": "3fc0e6aec6737b30e012dab1dae51828336c376d"
    },
    "guppy": {
      "url": "https://github.com/theMMRF/guppy.git",

@@ -23,7 +23,12 @@ spec:
         {{- end }}
       {{- end }}
     spec:
+      {{- if and (eq $name "frontend") $.Values.orion.enabled }}
+      serviceAccountName: {{ $.Values.orion.serviceAccountName | quote }}
+      automountServiceAccountToken: {{ $.Values.orion.automountServiceAccountToken }}
+      {{- else }}
       automountServiceAccountToken: false
+      {{- end }}
       {{- if or (eq $name "guppy") (eq $name "analysis") }}
       initContainers:
         - name: wait-for-synthetic-data
@@ -50,6 +55,14 @@ spec:
             - {name: GEN3_AUTHZ_SERVICE, value: 'http://identity:8080'}
             - {name: GEN3_ANALYSIS_API, value: 'http://identity:8080/analysis/v0'}
             - {name: TERMS_BFF_ORIGIN, value: 'http://frontend:3000'}
+            {{- if $.Values.orion.enabled }}
+            - {name: ORION_MODE, value: {{ $.Values.orion.mode | quote }}}
+            - {name: ORION_RUNTIME_ARN, value: {{ required "orion.runtimeArn is required when orion.enabled" $.Values.orion.runtimeArn | quote }}}
+            - {name: ORION_RUNTIME_QUALIFIER, value: {{ $.Values.orion.runtimeQualifier | quote }}}
+            - {name: ORION_RUN_BUCKET, value: {{ required "orion.runBucket is required when orion.enabled" $.Values.orion.runBucket | quote }}}
+            - {name: ORION_RUN_PREFIX, value: {{ $.Values.orion.runPrefix | quote }}}
+            - {name: AWS_REGION, value: {{ $.Values.orion.region | quote }}}
+            {{- end }}
           {{- else if eq $name "guppy" }}
             - {name: GEN3_ES_ENDPOINT, value: 'http://elasticsearch:9200'}
             - {name: GEN3_ARBORIST_ENDPOINT, value: 'http://identity:8080'}

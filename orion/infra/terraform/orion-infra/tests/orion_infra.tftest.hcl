@@ -1,6 +1,14 @@
 # Plan-only checks with a mocked AWS provider: no credentials, no AWS call. Run with
 # `terraform test` in this directory (orion/infra/README.md, "Checks"). Every value is synthetic.
-mock_provider "aws" {}
+mock_provider "aws" {
+  # A mocked policy document's json is a random string, which the IAM and S3 policy arguments
+  # reject at plan time; the statements the assertions read are configuration, so they stay real.
+  mock_data "aws_iam_policy_document" {
+    defaults = {
+      json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
+    }
+  }
+}
 
 variables {
   sandbox_account_id  = "123456789012"
@@ -65,7 +73,7 @@ run "mode_a_defaults" {
     error_message = "Run records expire after 30 days."
   }
   assert {
-    condition     = output.iam_actions.bff == ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession", "s3:GetObject"]
+    condition     = output.iam_actions.bff == tolist(["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession", "s3:GetObject"])
     error_message = "The BFF may only invoke and stop the Runtime and read run records."
   }
   assert {
@@ -73,7 +81,11 @@ run "mode_a_defaults" {
     error_message = "The Runtime invokes the Gateway and writes records, and cannot read the Basic secret."
   }
   assert {
-    condition     = output.iam_actions.gateway == ["lambda:InvokeFunction", "s3:GetObject"]
+    condition     = alltrue([for s in data.aws_iam_policy_document.runtime.statement : s.sid != "ListRunRecords" || length(s.condition) == 0])
+    error_message = "The Runtime's ListBucket has no s3:prefix condition, so a missing record or ledger reads as 404, not 403."
+  }
+  assert {
+    condition     = output.iam_actions.gateway == tolist(["lambda:InvokeFunction", "s3:GetObject"])
     error_message = "The Gateway role only invokes the tool Lambda (and reads its tool schema)."
   }
   assert {
@@ -113,7 +125,7 @@ run "stage_1_base" {
     error_message = "Stage 1 creates no Runtime and no tools."
   }
   assert {
-    condition     = output.iam_actions.bff == ["s3:GetObject"]
+    condition     = output.iam_actions.bff == tolist(["s3:GetObject"])
     error_message = "Without a Runtime the BFF can only read records."
   }
 }

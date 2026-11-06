@@ -100,16 +100,13 @@ data "aws_iam_policy_document" "runtime" {
       "${aws_s3_bucket.runs.arn}/${local.threads_prefix}*",
     ]
   }
-  # Without ListBucket a missing record reads as 403, not 404; scoped to the record prefix.
+  # Without ListBucket a missing record reads as 403, not 404, and run_store.py treats only 404 as
+  # missing (a new thread's ledger read). No s3:prefix condition: a GetObject carries no s3:prefix
+  # key, so S3's ListBucket check for the 404 would fail it. The bucket holds only ORION data.
   statement {
     sid       = "ListRunRecords"
     actions   = ["s3:ListBucket"]
     resources = [aws_s3_bucket.runs.arn]
-    condition {
-      test     = "StringLike"
-      variable = "s3:prefix"
-      values   = ["${var.run_prefix}*"]
-    }
   }
   dynamic "statement" {
     for_each = local.use_gateway ? [aws_bedrockagentcore_gateway.vlab[0].gateway_arn] : []

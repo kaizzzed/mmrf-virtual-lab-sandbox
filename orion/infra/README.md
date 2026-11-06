@@ -107,7 +107,7 @@ Every name, ARN and model id is a variable (`variables.tf`). The ones you must s
 | Principal | Granted | Never |
 | --- | --- | --- |
 | `orion-bff` (Pod Identity; mode H developers through `bff_extra_trusted_principal_arns`) | `bedrock-agentcore:InvokeAgentRuntime` and `StopRuntimeSession` on the Runtime and its endpoint; `s3:GetObject` on `orion/runs/*` | Bedrock, S3 writes, Gateway, secrets |
-| `orion-runtime` | `bedrock_invoke_actions` on the planner, composer and fallback models; `InvokeGateway` on the one Gateway; `s3:GetObject`/`PutObject` on `orion/runs/*` and `orion/threads/*`, `ListBucket` under `orion/`; logs, X-Ray, metrics in `bedrock-agentcore`, ECR pull, workload token | The Basic secret (granted only under cut 1, `tool_transport = "in_process"`) |
+| `orion-runtime` | `bedrock_invoke_actions` on the planner, composer and fallback models; `InvokeGateway` on the one Gateway; `s3:GetObject`/`PutObject` on `orion/runs/*` and `orion/threads/*`, `ListBucket` on the bucket (no prefix condition: a GetObject has no `s3:prefix`, so a conditioned grant turns a missing record or ledger into 403, and `run_store.py` treats only 404 as missing); logs, X-Ray, metrics in `bedrock-agentcore`, ECR pull, workload token | The Basic secret (granted only under cut 1, `tool_transport = "in_process"`) |
 | `orion-gateway` | `lambda:InvokeFunction` on the tool Lambda (and the kg Lambda when enabled); `s3:GetObject` on its tool schema | Everything else |
 | `orion-vlab-tools` | `secretsmanager:GetSecretValue` on `orion/vlab-basic`; its own log group; X-Ray | Bedrock, S3, Gateway |
 
@@ -162,6 +162,13 @@ Day-2 plan: deploy Runtime, Gateway and Lambda; Pod Identity, egress and the for
    ```
 
    Creates ECR, the bucket, the empty secret, the four roles, the Pod Identity add-on and association.
+   If the operator already created `orion/vlab-basic`, adopt it before the plan instead of creating it
+   (the plan then shows only an in-place tag update for it, never a replace), and skip step 2:
+
+   ```sh
+   terraform import -var-file=stage.tfvars -var create_runtime=false -var create_tools=false \
+     aws_secretsmanager_secret.vlab_basic "$(aws secretsmanager describe-secret --secret-id orion/vlab-basic --query ARN --output text)"
+   ```
 2. **Fill the secret once**, from the team credential `aws_sandbox.py` keeps in
    `generated/aws/access.json` (mode 0600). The value goes through a pipe, never the command line:
 
@@ -204,8 +211,14 @@ Day-2 plan: deploy Runtime, Gateway and Lambda; Pod Identity, egress and the for
    python3 scripts/aws_sandbox.py deploy          # rebuilds and publishes the fork's frontend
    terraform -chdir=orion/infra/terraform/orion-infra output -json helm_values > generated/aws/orion-values.json
    helm upgrade synthetic helm -n mmrf-synthetic --kubeconfig generated/aws/kubeconfig \
-     --reuse-values --values generated/aws/orion-values.json --wait
+     --values generated/aws/values.json --values generated/aws/orion-values.json --wait --timeout 20m
    ```
+
+   Pass both values files; never `--reuse-values`. With `--reuse-values` Helm takes the previous
+   release's merged values instead of the new chart's defaults, so when the release was installed
+   from the unpatched chart `.Values.orion.egress` is missing and the template fails (or
+   `automountServiceAccountToken` renders empty). Any later `aws_sandbox.py deploy` runs
+   `helm upgrade` with `values.json` alone, which turns ORION off again: repeat this command after it.
 
    `.sources/frontend` must already be at the pinned commit (or have the fork as `origin`):
    `fetch_sources.py` fetches from `origin`, which in this checkout is theMMRF's repository.
@@ -225,8 +238,8 @@ At 12:00 on day 2, take **mode A** only if all four hold; otherwise take **mode 
 4. A Gateway call to `vlab___de_run` returns before the Lambda's 58 s (Open question 19); if not,
    take cut 1 too: `-var tool_transport=in_process` (the Runtime then reads the secret).
 
-**Mode H**: do not apply the patch (or undo it: `helm upgrade ... --reuse-values --set
-orion.enabled=false`). Run the fork's frontend locally on the local stack with `ORION_MODE=H`,
+**Mode H**: do not apply the patch (or undo it: `helm upgrade synthetic helm ... --values
+generated/aws/values.json --wait`, which leaves `orion.enabled` at its default, false). Run the fork's frontend locally on the local stack with `ORION_MODE=H`,
 `ORION_RUNTIME_ARN`, `ORION_RUNTIME_QUALIFIER`, `ORION_RUN_BUCKET`, `ORION_RUN_PREFIX` and
 `AWS_REGION` from `terraform output bff_environment`, on a developer profile that assumes
 `orion-bff` (add its role to `bff_extra_trusted_principal_arns`). The tools read the AWS stack, the
@@ -340,7 +353,7 @@ Does Wilcoxon DE on the J3 groups finish inside the A4 budget through CloudFront
 | Check | Result |
 | --- | --- |
 | `terraform fmt -recursive -check`, `init -backend=false`, `validate` in `terraform/orion-infra` | Pass (hashicorp/aws 6.72.0) |
-| `terraform/orion-infra/tests/orion_infra.tftest.hcl` (mocked provider, plan only) | Written and syntax-checked by `validate`; **not run** (`terraform test` is outside this track's allowed commands; `validate` does not resolve test references) |
+| `terraform/orion-infra/tests/orion_infra.tftest.hcl` (mocked provider, plan only) | Pass, 9 of 9 (`terraform test`, Terraform 1.17.1). The mock gives `aws_iam_policy_document` a valid JSON `json`, since the role and bucket policy arguments reject a random string at plan time |
 | `docker compose -f compose.yaml -f orion/compose.orion.yaml config --quiet` | Pass; read only, nothing started (print with `--no-interpolate`: an interpolated print shows exported AWS credentials) |
 | `bash -n orion/scripts/orion-local.sh` | Pass; the script itself was not run |
 | `docker buildx build --platform linux/arm64 --load` as `orion-agent:arm64-check` | Pass: arm64, uid 10001, healthy on `/ping`, warmup turn answered, no mounts needed |
@@ -355,23 +368,34 @@ Does Wilcoxon DE on the J3 groups finish inside the A4 budget through CloudFront
 
 Removes everything the module creates and leaves the sandbox's own stack as it was. **Not run.**
 
-1. **Sandbox patch first.** `helm upgrade synthetic helm -n mmrf-synthetic --reuse-values --set
-   orion.enabled=false --wait` (the ServiceAccount, the NetworkPolicy and the frontend's ORION env
-   go), then `git apply -R orion/infra/patches/sandbox.patch` and redeploy if the fork pin should go too.
-2. **Empty what Terraform will not.** Either set `-var ecr_force_delete=true -var
-   bucket_force_destroy=true` for the destroy (deletes every image and every record version: the
-   run records are gone for good), or empty the ECR repository and the bucket by hand first.
+1. **Sandbox patch first.** `helm upgrade synthetic helm -n mmrf-synthetic --kubeconfig
+   generated/aws/kubeconfig --values generated/aws/values.json --wait` (no `orion-values.json`, so
+   `orion.enabled` is false: the ServiceAccount, the NetworkPolicy and the frontend's ORION env go),
+   or `helm rollback synthetic <revision before the patch>`, then `git apply -R orion/infra/patches/sandbox.patch` and redeploy if the fork pin should go too.
+2. **Empty what Terraform will not.** `force_delete` (ECR) and `force_destroy` (S3) are read from
+   the state when the resource is deleted, so passing them only on the destroy plan has no effect:
+   **apply** them first, with the same variables as the last apply plus the two flags (this deletes
+   every image and every record version when the destroy runs: the run records are gone for good):
+
+   ```sh
+   terraform plan -var-file=stage.tfvars <same -var flags> -var ecr_force_delete=true \
+     -var bucket_force_destroy=true -out=force.tfplan     # expect 2 in-place updates, nothing else
+   terraform apply force.tfplan
+   ```
+
+   Or empty the ECR repository and every object version in the bucket by hand first.
 3. **Destroy** in `orion/infra/terraform/orion-infra`, with the same variables as the last apply:
 
    ```sh
-   terraform plan -destroy -var-file=stage.tfvars <same -var flags> -out=destroy.tfplan
+   terraform plan -destroy -var-file=stage.tfvars <same -var flags, force flags included> -out=destroy.tfplan
    terraform apply destroy.tfplan
    terraform state list        # must print nothing
    ```
 
    This removes the Runtime and endpoint, the Gateway and its targets, the Lambda, the log groups
    and log deliveries, the bucket, the secret (immediately, `secret_recovery_window_days = 0`), the
-   four roles, the Pod Identity association and the add-on.
+   four roles, the Pod Identity association and the add-on. To keep an operator-created secret,
+   `terraform state rm aws_secretsmanager_secret.vlab_basic` before the destroy plan.
 4. **Service-created leftovers.** AgentCore creates `/aws/bedrock-agentcore/runtimes/<runtime_id>-*`
    log groups itself; delete them by name. If `enable_trace_delivery` was on, the X-Ray traces age out.
 5. **Order with the sandbox.** Destroy orion-infra before `aws_sandbox.py destroy`: the association

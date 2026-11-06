@@ -1,0 +1,38 @@
+{{- if .Values.orion.enabled }}
+{{- if ne .Values.orion.mode "A" }}
+{{- fail "orion.mode must be A: modes L and H never run ORION in the cluster" }}
+{{- end }}
+# ORION Workstream 2, mode A: the frontend's identity for EKS Pod Identity (the association to
+# orion-bff is made by orion/infra/terraform/orion-infra) and the egress its BFF route needs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.orion.serviceAccountName }}
+  labels: {app.kubernetes.io/part-of: orion, app.kubernetes.io/instance: {{ .Release.Name }}}
+automountServiceAccountToken: {{ .Values.orion.automountServiceAccountToken }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# Adds to sandbox-only (NetworkPolicies are additive): only the frontend pod gains these routes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orion-frontend-egress
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: frontend, app.kubernetes.io/instance: {{ .Release.Name }}}
+  policyTypes: [Egress]
+  egress:
+    # InvokeAgentRuntime, StopRuntimeSession and S3 GetObject on run records, over HTTPS.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: {{ toJson .Values.orion.egress.exceptCidrs }}
+      ports:
+        - {protocol: TCP, port: 443}
+    # Credentials for orion-bff from the EKS Pod Identity Agent.
+    - to:
+        - ipBlock: {cidr: {{ .Values.orion.egress.podIdentityAgentCidr }}}
+      ports:
+        - {protocol: TCP, port: {{ .Values.orion.egress.podIdentityAgentPort }}}
+{{- end }}
+{{- end }}
